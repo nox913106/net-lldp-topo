@@ -186,7 +186,7 @@ class TopologyEngine:
                 merged_link.current_out_bps = link_info.current_out_bps
                 merged_link.utilization_in_percent = link_info.utilization_in_percent
                 merged_link.utilization_out_percent = link_info.utilization_out_percent
-                merged_link.port_details = port_details_json
+                merged_link.port_pairs = port_details_json
                 merged_link.last_updated = datetime.utcnow()
             else:
                 # Create new
@@ -198,7 +198,7 @@ class TopologyEngine:
                     current_out_bps=link_info.current_out_bps,
                     utilization_in_percent=link_info.utilization_in_percent,
                     utilization_out_percent=link_info.utilization_out_percent,
-                    port_details=port_details_json
+                    port_pairs=port_details_json
                 )
                 self.db.add(merged_link)
         
@@ -359,7 +359,7 @@ class TopologyEngine:
                     "utilization_in_percent": link.utilization_in_percent or 0,
                     "utilization_out_percent": link.utilization_out_percent or 0,
                     "status": self._get_link_status(max_util),
-                    "port_details": link.port_details or []
+                    "port_details": link.port_pairs or []
                 })
         
         return {
