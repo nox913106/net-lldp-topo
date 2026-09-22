@@ -59,6 +59,17 @@ sudo bash deploy.sh native   # Native 部署
 - [API 文件](docs/API.md)
 - [Ubuntu 部署指南](docs/DEPLOYMENT.md) ⭐ 新增
 - [設定說明](docs/CONFIGURATION.md)
+- [收不到 LLDP 排查指南](docs/TROUBLESHOOTING_LLDP.md) ⭐ 新增
+
+## 疑難排解
+
+收不到 LLDP 鄰居 / 拓撲圖空白時，先執行診斷工具：
+
+```bash
+docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -v
+```
+
+詳細說明見 [docs/TROUBLESHOOTING_LLDP.md](docs/TROUBLESHOOTING_LLDP.md)。
 
 ## 授權
 

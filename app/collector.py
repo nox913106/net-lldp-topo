@@ -5,6 +5,7 @@ Integrates with Alert Engine and Topology Engine
 """
 import asyncio
 import logging
+import socket
 from datetime import datetime
 
 from app.config import get_settings
@@ -26,95 +27,76 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-async def auto_discover_neighbor(db, parent_device: Device, neighbor, community: str, log_exporter):
-    """Auto-discover and add neighbor device to database"""
+async def resolve_hostname(hostname: str) -> str:
+    """Resolve a hostname to an IPv4 address without blocking the event loop"""
+    if not hostname:
+        return ""
     try:
-        from pysnmp.hlapi.asyncio import getCmd, SnmpEngine, CommunityData, UdpTransportTarget, ContextData, ObjectType, ObjectIdentity
-        from app.core.snmp_oids import detect_vendor, SYS_NAME, SYS_DESCR
-        import socket
-        
+        loop = asyncio.get_running_loop()
+        infos = await loop.getaddrinfo(hostname, None, family=socket.AF_INET)
+        return infos[0][4][0] if infos else ""
+    except (socket.gaierror, UnicodeError, OSError, IndexError):
+        return ""
+
+
+async def auto_discover_neighbor(db, parent_device: Device, neighbor, collector: SNMPCollector, log_exporter):
+    """Auto-discover and add a neighbor device to the database"""
+    try:
         # Check if neighbor already exists by hostname
         existing = await db.execute(
             select(Device).where(Device.hostname == neighbor.remote_hostname)
         )
         if existing.scalar_one_or_none():
             return  # Already exists
-        
-        # Try to resolve neighbor IP
-        neighbor_ip = None
-        
-        # Method 1: Check if remote_chassis_id looks like an IP
-        if neighbor.remote_chassis_id:
-            try:
-                parts = neighbor.remote_chassis_id.split('.')
-                if len(parts) == 4 and all(0 <= int(p) <= 255 for p in parts):
-                    neighbor_ip = neighbor.remote_chassis_id
-            except:
-                pass
-        
-        # Method 2: Try DNS resolution
-        if not neighbor_ip and neighbor.remote_hostname:
-            try:
-                neighbor_ip = socket.gethostbyname(neighbor.remote_hostname)
-            except socket.gaierror:
-                pass
-        
+
+        # Resolve the neighbor IP:
+        # 1. the management address advertised through LLDP/CDP
+        # 2. DNS lookup of the advertised system name
+        neighbor_ip = neighbor.remote_mgmt_ip
+        if not neighbor_ip:
+            neighbor_ip = await resolve_hostname(neighbor.remote_hostname)
+
         if not neighbor_ip:
             logger.debug(f"Could not resolve IP for neighbor {neighbor.remote_hostname}")
             return
-        
+
         # Check if IP already exists
         existing_ip = await db.execute(
             select(Device).where(Device.ip_address == neighbor_ip)
         )
         if existing_ip.scalar_one_or_none():
             return  # Already exists
-        
-        # Try SNMP to validate device
-        try:
-            error_indication, error_status, error_index, var_binds = await getCmd(
-                SnmpEngine(),
-                CommunityData(community),
-                UdpTransportTarget((neighbor_ip, 161), timeout=2.0, retries=0),
-                ContextData(),
-                ObjectType(ObjectIdentity(SYS_NAME)),
-                ObjectType(ObjectIdentity(SYS_DESCR))
-            )
-            
-            if error_indication or error_status or not var_binds:
-                logger.debug(f"SNMP failed for neighbor {neighbor_ip}")
-                return
-            
-            hostname = var_binds[0][1].prettyPrint()
-            sys_descr = var_binds[1][1].prettyPrint() if len(var_binds) > 1 else ""
-            vendor = detect_vendor(sys_descr)
-            
-            # Add new device
-            new_device = Device(
-                hostname=hostname,
-                ip_address=neighbor_ip,
-                snmp_community=community,
-                device_type="access",
-                vendor=vendor,
-                status="managed",
-                auto_discover=True,
-                parent_device_id=parent_device.id,
-                last_seen=datetime.utcnow()
-            )
-            db.add(new_device)
-            
-            logger.info(f"Auto-discovered neighbor: {hostname} ({neighbor_ip}) via {parent_device.hostname}")
-            
-            await log_exporter.log_discovery(
-                event_type="new_device",
-                device_hostname=hostname,
-                device_ip=neighbor_ip,
-                extra={"discovered_via": parent_device.hostname}
-            )
-            
-        except Exception as e:
-            logger.debug(f"SNMP probe failed for {neighbor_ip}: {e}")
-            
+
+        # Validate the device over SNMP before adding it
+        device_info = await collector.get_device_info(neighbor_ip)
+        if not device_info:
+            logger.debug(f"SNMP probe failed for neighbor {neighbor_ip}")
+            return
+
+        hostname = device_info.hostname or neighbor.remote_hostname
+
+        new_device = Device(
+            hostname=hostname,
+            ip_address=neighbor_ip,
+            snmp_community=collector.community,
+            device_type="access",
+            vendor=device_info.vendor,
+            status="managed",
+            auto_discover=True,
+            parent_device_id=parent_device.id,
+            last_seen=datetime.utcnow()
+        )
+        db.add(new_device)
+
+        logger.info(f"Auto-discovered neighbor: {hostname} ({neighbor_ip}) via {parent_device.hostname}")
+
+        await log_exporter.log_discovery(
+            event_type="new_device",
+            device_hostname=hostname,
+            device_ip=neighbor_ip,
+            extra={"discovered_via": parent_device.hostname}
+        )
+
     except Exception as e:
         logger.error(f"Error in auto_discover_neighbor: {e}")
 
@@ -212,6 +194,12 @@ async def poll_single_device(collector: SNMPCollector, device: Device, db):
                 raw_link = existing.scalar_one_or_none()
                 
                 if raw_link:
+                    # Refresh the details, they can change (and older versions
+                    # of the collector stored unusable values here)
+                    raw_link.local_port_index = neighbor.local_port_index
+                    raw_link.remote_port = neighbor.remote_port
+                    raw_link.remote_chassis_id = neighbor.remote_chassis_id
+                    raw_link.protocol = neighbor.protocol
                     raw_link.last_seen = datetime.utcnow()
                 else:
                     raw_link = RawLink(
@@ -240,10 +228,15 @@ async def poll_single_device(collector: SNMPCollector, device: Device, db):
                 # Auto-discover neighbor devices if enabled
                 if device.auto_discover:
                     await auto_discover_neighbor(
-                        db, device, neighbor, collector.community, log_exporter
+                        db, device, neighbor, collector, log_exporter
                     )
             
-            logger.debug(f"Polled {device.hostname}: OK")
+            logger.info(
+                f"Polled {device.hostname} ({device.ip_address}): "
+                f"{len(result['lldp_neighbors'])} LLDP + "
+                f"{len(result['cdp_neighbors'])} CDP neighbors, "
+                f"{len(result['interface_stats'])} interfaces"
+            )
         else:
             # Mark device as potentially offline
             if device.status != DeviceStatus.OFFLINE:

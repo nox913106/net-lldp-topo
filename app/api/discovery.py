@@ -6,11 +6,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+import asyncio
+import logging
+import socket
 import uuid
 
+from app.config import get_settings
+from app.core.snmp_collector import SNMPCollector
 from app.db.database import get_db
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+async def resolve_hostname(hostname: str) -> Optional[str]:
+    """Resolve a hostname to an IPv4 address without blocking the event loop"""
+    if not hostname:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+        infos = await loop.getaddrinfo(hostname, None, family=socket.AF_INET)
+        return infos[0][4][0] if infos else None
+    except (socket.gaierror, UnicodeError, OSError, IndexError):
+        return None
 
 # In-memory job status (in production, use Redis)
 discovery_jobs = {}
@@ -107,168 +126,117 @@ class ManualDiscoveryResponse(BaseModel):
 @router.post("/manual", response_model=ManualDiscoveryResponse)
 async def manual_discover(request: ManualDiscoveryRequest, db: AsyncSession = Depends(get_db)):
     """
-    Manually discover devices starting from an IP address
+    Manually discover devices starting from an IP address.
+
+    With recursive=True the LLDP/CDP neighbor table of the seed device is read
+    and every neighbor that advertises a management IP (and answers SNMP with
+    the same community) is added as well.
     """
     try:
         from sqlalchemy import select
         from app.models.device import Device
-        from app.core.snmp_oids import detect_vendor, LLDP_REM_SYS_NAME, IF_DESCR
         from datetime import datetime
-        
+
+        settings = get_settings()
+        collector = SNMPCollector(
+            community=request.community,
+            timeout=settings.snmp_timeout,
+            retries=settings.snmp_retries
+        )
+
         discovered_devices = []
         added_count = 0
-        
-        async def discover_single_device(ip: str, community: str) -> dict:
-            """Discover a single device and return its info"""
-            hostname = None
-            sys_descr = None
-            vendor = "unknown"
-            
-            try:
-                from pysnmp.hlapi.asyncio import (
-                    getCmd, SnmpEngine, CommunityData, 
-                    UdpTransportTarget, ContextData, ObjectType, ObjectIdentity
+
+        async def upsert_device(ip: str, parent: Optional[Device] = None) -> Optional[Device]:
+            """Add or refresh a device, returns None when it does not answer SNMP"""
+            nonlocal added_count
+
+            device_info = await collector.get_device_info(ip)
+            if not device_info:
+                return None
+
+            hostname = device_info.hostname or f"device-{ip.replace('.', '-')}"
+
+            result = await db.execute(select(Device).where(Device.ip_address == ip))
+            device = result.scalar_one_or_none()
+
+            if device is None:
+                # A device already known under this hostname but another IP
+                result = await db.execute(select(Device).where(Device.hostname == hostname))
+                device = result.scalar_one_or_none()
+
+            is_new = device is None
+
+            if is_new:
+                device = Device(
+                    hostname=hostname,
+                    ip_address=ip,
+                    snmp_community=request.community,
+                    device_type="access",
+                    vendor=device_info.vendor,
+                    status="managed",
+                    parent_device_id=parent.id if parent else None,
+                    last_seen=datetime.utcnow()
                 )
-                
-                # Get sysName
-                errorIndication, errorStatus, errorIndex, varBinds = await getCmd(
-                    SnmpEngine(),
-                    CommunityData(community),
-                    UdpTransportTarget((ip, 161), timeout=5.0, retries=1),
-                    ContextData(),
-                    ObjectType(ObjectIdentity('1.3.6.1.2.1.1.5.0')),  # sysName
-                    ObjectType(ObjectIdentity('1.3.6.1.2.1.1.1.0'))   # sysDescr
-                )
-                
-                if not errorIndication and not errorStatus and varBinds:
-                    hostname = varBinds[0][1].prettyPrint()
-                    sys_descr = varBinds[1][1].prettyPrint() if len(varBinds) > 1 else ""
-                    vendor = detect_vendor(sys_descr)
-                    
-            except ImportError:
-                pass
-            except Exception as e:
-                print(f"SNMP connection to {ip} failed: {e}")
-            
-            return {
+                db.add(device)
+                added_count += 1
+            else:
+                device.hostname = hostname
+                device.vendor = device_info.vendor
+                device.status = "managed"
+                device.last_seen = datetime.utcnow()
+
+            await db.commit()
+            await db.refresh(device)
+
+            discovered_devices.append({
                 "ip": ip,
-                "hostname": hostname or f"device-{ip.replace('.', '-')}",
-                "sys_descr": sys_descr or "",
-                "vendor": vendor
-            }
-        
-        async def get_lldp_neighbors(ip: str, community: str) -> list:
-            """Get LLDP neighbors from a device"""
-            neighbors = []
-            
-            try:
-                from pysnmp.hlapi.asyncio import (
-                    bulkCmd, SnmpEngine, CommunityData, 
-                    UdpTransportTarget, ContextData, ObjectType, ObjectIdentity
-                )
-                
-                # Walk LLDP remote system names
-                iterator = bulkCmd(
-                    SnmpEngine(),
-                    CommunityData(community),
-                    UdpTransportTarget((ip, 161), timeout=5.0, retries=1),
-                    ContextData(),
-                    0, 25,
-                    ObjectType(ObjectIdentity(LLDP_REM_SYS_NAME)),
-                    lexicographicMode=False
-                )
-                
-                async for errorIndication, errorStatus, errorIndex, varBinds in iterator:
-                    if errorIndication or errorStatus:
-                        break
-                    
-                    for varBind in varBinds:
-                        oid_str = str(varBind[0])
-                        if LLDP_REM_SYS_NAME in oid_str:
-                            remote_hostname = varBind[1].prettyPrint()
-                            if remote_hostname and remote_hostname not in neighbors:
-                                neighbors.append(remote_hostname)
-                        else:
-                            break
-                    
-                    if len(neighbors) >= 50:
-                        break
-                        
-            except ImportError:
-                pass
-            except Exception as e:
-                print(f"LLDP discovery for {ip} failed: {e}")
-            
-            return neighbors
-        
-        # Discover the initial device
-        device_info = await discover_single_device(request.ip, request.community)
-        
-        # Check if device already exists
-        result = await db.execute(
-            select(Device).where(Device.ip_address == request.ip)
-        )
-        existing = result.scalar_one_or_none()
-        
-        if existing:
-            # Update existing device info
-            existing.hostname = device_info["hostname"]
-            existing.vendor = device_info["vendor"]
-            existing.last_seen = datetime.utcnow()
-            existing.status = "managed"
-            await db.commit()
-            
-            discovered_devices.append({
-                "ip": request.ip,
-                "hostname": existing.hostname,
-                "is_new": False
+                "hostname": device.hostname,
+                "is_new": is_new
             })
-        else:
-            # Add new device
-            new_device = Device(
-                hostname=device_info["hostname"],
-                ip_address=request.ip,
-                snmp_community=request.community,
-                device_type="access",
-                vendor=device_info["vendor"],
-                status="managed",
-                last_seen=datetime.utcnow()
+            return device
+
+        seed = await upsert_device(request.ip)
+        if seed is None:
+            return ManualDiscoveryResponse(
+                success=False,
+                error=f"{request.ip} did not answer SNMP (check community / version / ACL)"
             )
-            db.add(new_device)
-            await db.commit()
-            await db.refresh(new_device)
-            
-            discovered_devices.append({
-                "ip": request.ip,
-                "hostname": new_device.hostname,
-                "is_new": True
-            })
-            added_count += 1
-        
-        # Recursive discovery: discover LLDP neighbors
+
+        # Recursive discovery: walk the neighbor table of the seed device
         if request.recursive:
-            lldp_neighbors = await get_lldp_neighbors(request.ip, request.community)
-            print(f"Found {len(lldp_neighbors)} LLDP neighbors: {lldp_neighbors}")
-            
-            # For each neighbor, we need to resolve its IP
-            # This is complex in real world - neighbors are identified by hostname
-            # For now, we just log them. In production, you'd need to:
-            # 1. Query CDP/LLDP cache for IP addresses
-            # 2. Or use DNS to resolve hostnames
-            # 3. Or maintain a mapping table
-            
+            neighbors = await collector.get_lldp_neighbors(request.ip)
+            neighbors += await collector.get_cdp_neighbors(request.ip)
+
+            seen_ips = {request.ip}
+            for neighbor in neighbors:
+                neighbor_ip = neighbor.remote_mgmt_ip
+                if not neighbor_ip:
+                    # No management address advertised - try DNS on the sysName
+                    neighbor_ip = await resolve_hostname(neighbor.remote_hostname)
+                if not neighbor_ip:
+                    logger.info(
+                        "Neighbor %s of %s has no management IP, skipped",
+                        neighbor.remote_hostname, request.ip
+                    )
+                    continue
+
+                if neighbor_ip in seen_ips:
+                    continue
+                seen_ips.add(neighbor_ip)
+
+                await upsert_device(neighbor_ip, parent=seed)
+
         return ManualDiscoveryResponse(
             success=True,
             discovered_count=len(discovered_devices),
             added_count=added_count,
             devices=discovered_devices
         )
-        
+
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Manual discovery failed")
         return ManualDiscoveryResponse(
             success=False,
             error=str(e)
         )
-

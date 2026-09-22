@@ -3,6 +3,7 @@ Topology Engine - Builds and manages network topology graph
 Handles link merging, utilization calculation, and topology queries
 """
 import logging
+import re
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -375,22 +376,46 @@ class TopologyEngine:
         )
         return result.scalar_one_or_none()
     
+    # Interface name prefix -> speed in Mbps, most specific prefix first.
+    # Matched against the leading letters of the port name only: a substring
+    # match would read "GigabitEthernet" as a 10G port because of the "te"
+    # in "gigabi-te-thernet".
+    _SPEED_PREFIXES = [
+        (("hundredgig", "hu"), 100000),
+        (("fortygig", "fo"), 40000),
+        (("twentyfivegig", "twe"), 25000),
+        (("tengigabit", "tengig", "te", "xg", "xe"), 10000),
+        (("gigabitethernet", "gigabit", "gi", "ge"), 1000),
+        (("fastethernet", "fa"), 100),
+        (("ethernet", "eth", "et"), 1000),
+    ]
+
+    # Explicit speed markers used by HP/Aruba/Fortinet style names
+    _SPEED_TOKENS = [
+        ("100g", 100000),
+        ("40g", 40000),
+        ("25g", 25000),
+        ("10g", 10000),
+        ("1g", 1000),
+        ("100m", 100),
+    ]
+
     def _estimate_bandwidth(self, port_name: str) -> int:
         """Estimate bandwidth from port name"""
-        port_lower = port_name.lower()
-        
-        if any(x in port_lower for x in ["hundred", "hu", "100g"]):
-            return 100000
-        elif any(x in port_lower for x in ["forty", "fo", "40g"]):
-            return 40000
-        elif any(x in port_lower for x in ["ten", "te", "10g", "xg"]):
-            return 10000
-        elif any(x in port_lower for x in ["gigabit", "gi", "ge", "1g"]):
+        name = (port_name or "").strip().lower()
+        if not name:
             return 1000
-        elif any(x in port_lower for x in ["fast", "fa", "100m"]):
-            return 100
-        else:
-            return 1000  # Default to 1Gbps
+
+        for token, speed in self._SPEED_TOKENS:
+            if token in name:
+                return speed
+
+        prefix = re.match(r"^[a-z\-]*", name).group(0)
+        for prefixes, speed in self._SPEED_PREFIXES:
+            if any(prefix.startswith(p) for p in prefixes):
+                return speed
+
+        return 1000  # Default to 1Gbps
     
     def _get_link_status(self, utilization: float) -> str:
         """Determine link status based on utilization"""
