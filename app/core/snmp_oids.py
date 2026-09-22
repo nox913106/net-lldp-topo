@@ -4,16 +4,37 @@ SNMP OID definitions for various vendors
 
 # LLDP MIB OIDs (IEEE 802.1AB)
 LLDP_REM_TABLE = "1.0.8802.1.1.2.1.4.1"
+LLDP_REM_CHASSIS_ID_SUBTYPE = "1.0.8802.1.1.2.1.4.1.1.4"
 LLDP_REM_CHASSIS_ID = "1.0.8802.1.1.2.1.4.1.1.5"
+LLDP_REM_PORT_ID_SUBTYPE = "1.0.8802.1.1.2.1.4.1.1.6"
 LLDP_REM_PORT_ID = "1.0.8802.1.1.2.1.4.1.1.7"
+LLDP_REM_PORT_DESC = "1.0.8802.1.1.2.1.4.1.1.8"
 LLDP_REM_SYS_NAME = "1.0.8802.1.1.2.1.4.1.1.9"
+
+# lldpRemManAddrTable - remote management address
+# Index: timeMark.localPortNum.remIndex.addrSubtype.addrLen.address...
+LLDP_REM_MAN_ADDR_IF_SUBTYPE = "1.0.8802.1.1.2.1.4.2.1.3"
+
+# lldpLocPortTable - maps lldpLocPortNum to a human readable port name.
+# lldpLocPortNum is NOT always equal to ifIndex (Cisco/HP use their own
+# numbering), so the LLDP remote table must be mapped through this table.
 LLDP_LOC_PORT_TABLE = "1.0.8802.1.1.2.1.3.7"
+LLDP_LOC_PORT_ID_SUBTYPE = "1.0.8802.1.1.2.1.3.7.1.2"
+LLDP_LOC_PORT_ID = "1.0.8802.1.1.2.1.3.7.1.3"
+LLDP_LOC_PORT_DESC = "1.0.8802.1.1.2.1.3.7.1.4"
+
+# LLDP id subtypes (IEEE 802.1AB)
+LLDP_CHASSIS_SUBTYPE_MAC = 4
+LLDP_CHASSIS_SUBTYPE_NET_ADDR = 5
+LLDP_PORT_SUBTYPE_MAC = 3
+LLDP_PORT_SUBTYPE_NET_ADDR = 4
 
 # CDP OIDs (Cisco)
 CDP_CACHE_DEVICE_ID = "1.3.6.1.4.1.9.9.23.1.2.1.1.6"
 CDP_CACHE_DEVICE_PORT = "1.3.6.1.4.1.9.9.23.1.2.1.1.7"
 CDP_CACHE_PLATFORM = "1.3.6.1.4.1.9.9.23.1.2.1.1.8"
 CDP_CACHE_ADDRESS = "1.3.6.1.4.1.9.9.23.1.2.1.1.4"
+CDP_CACHE_CAPABILITIES = "1.3.6.1.4.1.9.9.23.1.2.1.1.9"
 
 # Interface MIB OIDs
 IF_DESCR = "1.3.6.1.2.1.2.2.1.2"
@@ -23,6 +44,8 @@ IF_HC_IN_OCTETS = "1.3.6.1.2.1.31.1.1.1.6"
 IF_HC_OUT_OCTETS = "1.3.6.1.2.1.31.1.1.1.10"
 IF_OPER_STATUS = "1.3.6.1.2.1.2.2.1.8"
 IF_ADMIN_STATUS = "1.3.6.1.2.1.2.2.1.7"
+IF_NAME = "1.3.6.1.2.1.31.1.1.1.1"
+IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"
 
 # System MIB OIDs
 SYS_NAME = "1.3.6.1.2.1.1.5.0"
