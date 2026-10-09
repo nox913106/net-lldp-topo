@@ -112,7 +112,7 @@ def _sync_upgrade_schema(conn) -> None:
 
 async def init_db():
     """Create missing tables, then upgrade tables that already exist"""
-    from app.models import device, link, alert, profile, group  # noqa
+    from app.models import device, link, alert, profile, group, collector  # noqa
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

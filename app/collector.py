@@ -5,6 +5,7 @@ Integrates with Alert Engine and Topology Engine
 """
 import asyncio
 import logging
+import signal
 import socket
 import time
 from datetime import datetime
@@ -23,18 +24,35 @@ from app.core.trap_receiver import TrapReceiver
 from app.core.topology_engine import TopologyEngine
 from app.core.alert_engine import AlertEngine
 from app.core.discovery_cache import DiscoveryCache
+from app.core.lease import (
+    Coverage, FLEET_LEASE, Lease, coordination_ttl, member_lease
+)
 from app.core.link_index import LinkWriteBuffer, RawLinkIndex
+from app.core.sharding import Shard
 from app.core.traffic import sample_values
 from app.core.log_exporter import get_log_exporter, LogLevel
 from app.models.device import Device, DeviceStatus
 
+settings = get_settings()
+
+# This process's slice of the fleet. Raises on a shard id that is not a shard
+# of the configured count, because the alternative - starting anyway with a
+# clamped value - means some devices are polled twice and others not at all,
+# and nothing in the logs says so (app/core/sharding.py).
+SHARD = Shard.from_settings(settings)
+
+# Every line of every shard says which shard it came from. N collector
+# containers write to the same place, and without this a log line about a
+# device gives no way to tell which process was responsible for it.
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format=(
+        f"%(asctime)s - [{SHARD.label()}] %(name)s - %(levelname)s - %(message)s"
+        if SHARD.enabled
+        else "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
 )
 logger = logging.getLogger(__name__)
-
-settings = get_settings()
 
 # Is the fast loop running? It decides which half of the collector owns the
 # traffic columns of raw_links: whoever samples the counters writes them, and
@@ -89,6 +107,26 @@ fast_pool = CollectorPool(
     collect_traffic=settings.collector_traffic_stats,
     label="fast"
 )
+
+# How many seconds a lease outlives its last renewal, derived from the loop
+# that renews it: the fast loop when it is running, the inventory loop
+# otherwise. Both the fleet-wide lease and this shard's heartbeat use it.
+LEASE_TTL = coordination_ttl(
+    settings.collector_fast_interval if FAST_LOOP_ENABLED
+    else settings.collector_interval
+)
+
+# Exactly one shard rebuilds merged_links and runs the alert checks per
+# interval: both read the whole fleet, so doing them per shard would mean N
+# processes racing to rewrite the same rows and to create the same alerts.
+# None when there is a single collector - then there is nothing to coordinate
+# with, and no reason to let a lease stand between the fleet and its alerts.
+fleet_lease = Lease(FLEET_LEASE, SHARD.name, LEASE_TTL) if SHARD.enabled else None
+
+# "This shard is running", so whoever holds the lease above can notice that
+# one of the configured shards is not.
+heartbeat = member_lease(SHARD, LEASE_TTL) if SHARD.enabled else None
+coverage = Coverage(SHARD) if SHARD.enabled else None
 
 # Which neighbours are already known, and which ones cannot be turned into a
 # device. Re-seeded from the database at the start of every cycle, so the two
@@ -250,20 +288,62 @@ def _match_interface(
     return by_name.get((neighbor.local_port or "").strip().lower())
 
 
+_was_holder = False
+
+
+async def _own_fleet_phase() -> bool:
+    """
+    Whether this process runs the merge and the alert checks this cycle.
+
+    True with a single collector: there is nobody else, so there is nothing to
+    coordinate and no reason for a lease to be able to stand between the fleet
+    and its alerts. With several shards it is whoever holds the lease, which
+    is a lease rather than "shard 0 always does it" so that losing one process
+    does not stop alerting for the whole fleet (app/core/lease.py).
+    """
+    global _was_holder
+
+    if fleet_lease is None:
+        return True
+
+    held = await fleet_lease.acquire()
+    if held != _was_holder:
+        logger.info(
+            "This shard now runs the fleet-wide phase"
+            if held else
+            "Another shard runs the fleet-wide phase; this one polls its "
+            "own devices only"
+        )
+        _was_holder = held
+
+    if held and coverage is not None:
+        await coverage.check()
+    return held
+
+
 async def poll_all_devices():
     """Poll all managed devices"""
     cycle_started = time.monotonic()
 
     async with async_session_maker() as db:
-        # Get all managed devices
-        result = await db.execute(
-            select(Device).where(Device.status != DeviceStatus.EXCLUDED)
+        # Get the managed devices this process is responsible for. The filter
+        # is in the WHERE clause rather than applied afterwards, so a shard
+        # does not read the whole fleet to discard most of it.
+        statement = SHARD.scope(
+            select(Device).where(Device.status != DeviceStatus.EXCLUDED),
+            Device.id
         )
+        result = await db.execute(statement)
         devices = result.scalars().all()
 
         # Refresh what auto-discovery already knows. Every device is listed,
         # excluded ones included - otherwise an excluded device gets
         # rediscovered and re-added on the next cycle.
+        #
+        # Deliberately not sharded: this answers "does this neighbour already
+        # exist?", and a neighbour that belongs to another shard exists just
+        # as much. Sharding this query would have every shard re-adding the
+        # other shards' devices under new ids every cycle.
         known = await db.execute(select(Device.hostname, Device.ip_address))
         discovery_cache.seed(known.all())
 
@@ -272,7 +352,7 @@ async def poll_all_devices():
         # SELECT before its UPDATE - at 500 devices that was ~10,000 queries
         # per cycle on their own.
         link_index = RawLinkIndex()
-        indexed_links = await link_index.load(db)
+        indexed_links = await link_index.load(db, shard=SHARD)
 
     # Forget devices that no longer exist so the backoff state cannot grow
     offline_backoff.prune(device.id for device in devices)
@@ -352,13 +432,16 @@ async def poll_all_devices():
     devices_seconds = time.monotonic() - devices_started
 
     merge_seconds = alert_seconds = 0.0
+    merged_here = False
 
     # Merging and alerting belong to whichever loop runs most often: an alert
     # can only ever be as fresh as the loop that evaluates it, and utilisation
     # is read off merged_links. With the fast loop running they are its job,
     # and doing them here as well would only add a slower copy of the same
-    # work - see docs/PERFORMANCE.md section 20.
-    if not FAST_LOOP_ENABLED:
+    # work - see docs/PERFORMANCE.md section 20. When this loop is the one
+    # that does them, it is still only one shard's job, not every shard's.
+    if not FAST_LOOP_ENABLED and await _own_fleet_phase():
+        merged_here = True
         async with async_session_maker() as db:
             logger.info("Updating merged links...")
             merge_started = time.monotonic()
@@ -376,10 +459,17 @@ async def poll_all_devices():
             alert_seconds = time.monotonic() - alert_started
 
     total = time.monotonic() - cycle_started
+    # Only report the fleet-wide phase when this cycle actually ran it:
+    # "merge 0.0s" on a cycle that never merged reads like the merge being
+    # free rather than being somebody else's job.
+    fleet = (
+        f", merge {merge_seconds:.1f}s, alerts {alert_seconds:.1f}s"
+        if merged_here else ""
+    )
     logger.info(
         f"Inventory cycle completed in {total:.1f}s "
-        f"(devices {devices_seconds:.1f}s, merge {merge_seconds:.1f}s, "
-        f"alerts {alert_seconds:.1f}s, {indexed_links} links indexed), "
+        f"(devices {devices_seconds:.1f}s{fleet}, "
+        f"{indexed_links} links indexed), "
         f"{inventory_pool.stats()}, discovery cache: {discovery_cache.stats()}"
     )
     return total
@@ -591,6 +681,36 @@ async def _fixed_cadence(name: str, interval: float, body, overrun_hint: str):
         await asyncio.sleep(delay)
 
 
+async def _wait_for_signal() -> None:
+    """
+    Wait for SIGTERM or SIGINT, so that stopping the collector is orderly.
+
+    Without a handler, SIGTERM - which is what `docker stop` and systemd send
+    first - kills the interpreter where it stands: the trap port is not
+    closed, the engine pools are not closed, and the leases this process holds
+    are left to expire on their own. The fleet-wide phase would then be
+    nobody's job for up to one TTL even though another shard was ready to take
+    it over immediately.
+    """
+    loop = asyncio.get_running_loop()
+    stopping = asyncio.Event()
+    installed = []
+    for name in ("SIGTERM", "SIGINT"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            loop.add_signal_handler(number, stopping.set)
+            installed.append(number)
+        except (NotImplementedError, RuntimeError):  # pragma: no cover
+            pass  # not a Unix event loop; the default handling applies
+    try:
+        await stopping.wait()
+    finally:
+        for number in installed:
+            loop.remove_signal_handler(number)
+
+
 async def main():
     """
     Main collector loop.
@@ -611,8 +731,16 @@ async def main():
     logger.info(
         f"SNMP Collector starting (inventory interval: {interval}s, "
         + (f"fast interval: {fast_interval}s" if FAST_LOOP_ENABLED
-           else "fast loop off") + ")"
+           else "fast loop off")
+        + (f", {SHARD.label()}, lease TTL {LEASE_TTL:.0f}s"
+           if SHARD.enabled else "") + ")"
     )
+    if SHARD.enabled:
+        logger.info(
+            f"Polling the devices whose id mod {SHARD.count} is "
+            f"{SHARD.index}. Every shard from 0 to {SHARD.count - 1} has to "
+            f"be running or those devices are polled by nobody."
+        )
     if FAST_LOOP_ENABLED and fast_interval >= interval:
         logger.warning(
             f"COLLECTOR_FAST_INTERVAL={fast_interval}s is not shorter than "
@@ -635,10 +763,19 @@ async def main():
             logger.warning(
                 "Continuing without trap reception: link state will be "
                 "established by the fast loop only"
+                + (". Only one process on a host can hold the trap port, so "
+                   "with sharding this is expected on all but one of them - "
+                   "the one that has it applies traps for the whole fleet, "
+                   "not just for its own devices."
+                   if SHARD.enabled else "")
             )
             trap_receiver = None
 
     async def inventory_cycle():
+        if heartbeat is not None and not FAST_LOOP_ENABLED:
+            # Whichever loop runs most often renews the heartbeat, because the
+            # TTL is derived from that loop's interval
+            await heartbeat.acquire()
         await poll_all_devices()
         # Engines whose credential nothing uses any more
         await inventory_pool.prune()
@@ -648,31 +785,58 @@ async def main():
 
     tasks = [asyncio.create_task(_fixed_cadence(
         "Inventory", interval, inventory_cycle,
-        "either raise COLLECTOR_INTERVAL or shard the collector "
-        "(docs/PERFORMANCE.md section 18)."
+        "either raise COLLECTOR_INTERVAL or run more shards "
+        "(COLLECTOR_SHARDS, docs/PERFORMANCE.md section 24)."
     ), name="inventory")]
 
     if FAST_LOOP_ENABLED:
         poller = FastPoller(
             pool=fast_pool,
             concurrent=settings.collector_concurrent,
-            backoff=fast_backoff
+            backoff=fast_backoff,
+            shard=SHARD,
+            fleet_lease=fleet_lease,
+            coverage=coverage
         )
+
+        async def fast_cycle():
+            if heartbeat is not None:
+                await heartbeat.acquire()
+            await poller.run_cycle()
+
         tasks.append(asyncio.create_task(_fixed_cadence(
-            "Fast", fast_interval, poller.run_cycle,
-            "either raise COLLECTOR_FAST_INTERVAL or shard the collector "
-            "(docs/PERFORMANCE.md section 20)."
+            "Fast", fast_interval, fast_cycle,
+            "either raise COLLECTOR_FAST_INTERVAL or run more shards "
+            "(COLLECTOR_SHARDS, docs/PERFORMANCE.md section 24)."
         ), name="fast"))
 
+    watched = set(tasks)
     try:
         # Neither loop ever returns, so this waits until one of them raises
-        # something it could not handle, or the process is stopped.
-        await asyncio.gather(*tasks)
+        # something it could not handle, or the process is asked to stop.
+        stopped = asyncio.create_task(_wait_for_signal(), name="shutdown")
+        watched = set(tasks) | {stopped}
+        done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+        if stopped in done:
+            logger.info("Stopping on signal")
+        else:
+            for task in done:
+                task.result()  # re-raise whatever took a loop down
     finally:
-        for task in tasks:
+        for task in watched:
             task.cancel()
+        # Retrieve the cancellations, or the event loop reports each of them
+        # as an exception nobody looked at while the process is shutting down
+        await asyncio.gather(*watched, return_exceptions=True)
         if trap_receiver is not None:
             await trap_receiver.stop()
+        # Expire both leases on the way out so another shard picks the
+        # fleet-wide phase up immediately instead of after a TTL, and so a
+        # planned restart is not reported as a missing shard.
+        if fleet_lease is not None:
+            await fleet_lease.release()
+        if heartbeat is not None:
+            await heartbeat.release()
         await inventory_pool.aclose()
         await fast_pool.aclose()
 

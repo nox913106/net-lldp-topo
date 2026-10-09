@@ -40,6 +40,13 @@ services:
       # 而且這個容器需要能綁 udp/162（host 網路 + root 時沒問題）
       - COLLECTOR_TRAP_ENABLED=false
       - COLLECTOR_TRAP_PORT=162
+      # 分片：一個行程負責 devices.id % COLLECTOR_SHARDS == COLLECTOR_SHARD_ID
+      # 的設備。1 就是單一行程、完全不做分片協調（見 docs/PERFORMANCE.md
+      # 第 24 節）。要加第二片的話，下面 collector-2 取消註解，**並且**把
+      # 這裡的 COLLECTOR_SHARDS 一起改成 2 —— 兩邊的數字必須一致，否則
+      # 會有設備被漏掉或被兩個行程重複輪詢。
+      - COLLECTOR_SHARDS=1
+      - COLLECTOR_SHARD_ID=0
     depends_on:
       db:
         condition: service_healthy
@@ -54,6 +61,42 @@ services:
       - "db:127.0.0.1"
       - "redis:127.0.0.1"
     restart: unless-stopped
+
+  # 第二個分片。要用的時候取消註解，並把上面 collector 的
+  # COLLECTOR_SHARDS 也改成 2。
+  #
+  # 三件事要注意：
+  #   * COLLECTOR_TRAP_ENABLED 只能有一個行程是 true：udp/162 一台主機只有
+  #     一個行程綁得到。綁到的那一個會處理整個機群的 trap，不只自己那一片。
+  #   * 合併線路與告警檢查由「拿到 fleet-wide lease」的那一個行程做，不是
+  #     每一片都做。誰拿到是搶的，所以掛掉的那一個會被接手。
+  #   * 資料庫連線數會跟著行程數成長：實測一片 20 條、兩片 28 條、四片 81
+  #     條（COLLECTOR_CONCURRENT=20）。PostgreSQL 預設 max_connections=100，
+  #     四片以上要調大，或把 COLLECTOR_CONCURRENT 調小。
+  #
+  # collector-2:
+  #   build: .
+  #   environment:
+  #     - DATABASE_URL=postgresql+asyncpg://topomon:topomon@localhost:5432/topomon
+  #     - REDIS_URL=redis://localhost:6379
+  #     - TZ=Asia/Taipei
+  #     - COLLECTOR_INTERVAL=300
+  #     - COLLECTOR_FAST_INTERVAL=60
+  #     - COLLECTOR_TRAP_ENABLED=false
+  #     - COLLECTOR_SHARDS=2
+  #     - COLLECTOR_SHARD_ID=1
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   volumes:
+  #     - .:/app
+  #     - /etc/localtime:/etc/localtime:ro
+  #   command: python -m app.collector
+  #   network_mode: host
+  #   extra_hosts:
+  #     - "db:127.0.0.1"
+  #     - "redis:127.0.0.1"
+  #   restart: unless-stopped
 
   # PostgreSQL Database
   db:

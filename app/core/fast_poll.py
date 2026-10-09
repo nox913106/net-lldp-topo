@@ -111,10 +111,28 @@ class FastPoller:
     exercise pointless.
     """
 
-    def __init__(self, pool, concurrent: int, backoff):
+    def __init__(
+        self,
+        pool,
+        concurrent: int,
+        backoff,
+        shard=None,
+        fleet_lease=None,
+        coverage=None
+    ):
         self.pool = pool
         self.concurrent = max(1, int(concurrent))
         self.backoff = backoff
+        # This process's slice of the fleet, or None for all of it
+        # (app/core/sharding.py)
+        self.shard = shard
+        # Held by exactly one shard. The device sampling above needs no
+        # coordination - a device has one owner - but the merge and the alert
+        # cycle read the whole fleet and must happen once per interval rather
+        # than once per shard (app/core/lease.py).
+        self.fleet_lease = fleet_lease
+        self.coverage = coverage
+        self._was_holder = False
 
     # -- one device -------------------------------------------------------
 
@@ -179,6 +197,37 @@ class FastPoller:
 
         return outcome
 
+    # -- the fleet-wide phase ---------------------------------------------
+
+    async def _own_fleet_phase(self) -> bool:
+        """
+        Whether this process does the merge and the alert checks this cycle.
+
+        Always true when there is no lease, which is the unsharded case: one
+        process, nothing to coordinate with, and no new way for the alert
+        checks to be skipped.
+        """
+        if self.fleet_lease is None:
+            return True
+
+        held = await self.fleet_lease.acquire()
+        if held != self._was_holder:
+            if held:
+                logger.info(
+                    "This shard now runs the fleet-wide phase "
+                    "(merged links and alert checks)"
+                )
+            else:
+                logger.info(
+                    "Another shard is running the fleet-wide phase; this one "
+                    "polls its own devices only"
+                )
+            self._was_holder = held
+
+        if held and self.coverage is not None:
+            await self.coverage.check()
+        return held
+
     # -- one cycle --------------------------------------------------------
 
     async def run_cycle(self) -> float:
@@ -186,11 +235,12 @@ class FastPoller:
         started = time.monotonic()
 
         async with async_session_maker() as db:
-            devices = (await db.execute(
-                select(Device).where(Device.status != DeviceStatus.EXCLUDED)
-            )).scalars().all()
+            statement = select(Device).where(Device.status != DeviceStatus.EXCLUDED)
+            if self.shard is not None:
+                statement = self.shard.scope(statement, Device.id)
+            devices = (await db.execute(statement)).scalars().all()
             # The work list: every cable whose ifIndex is known, in one query
-            ports_by_device = await load_cabled_ports(db)
+            ports_by_device = await load_cabled_ports(db, shard=self.shard)
 
         self.backoff.prune(device.id for device in devices)
         due = [d for d in devices if self.backoff.should_poll(d.id)]
@@ -245,6 +295,7 @@ class FastPoller:
 
         written = changes = 0
         merge_seconds = alert_seconds = 0.0
+        fleet_phase = True
         async with async_session_maker() as db:
             try:
                 written, changes = await links.flush(db)
@@ -257,31 +308,42 @@ class FastPoller:
             # Utilisation lives on merged_links, and an alert can only be as
             # fresh as the number it reads, so the merge belongs to whichever
             # loop the alert checks run on.
-            merge_started = time.monotonic()
-            try:
-                await TopologyEngine(db).update_merged_links_in_db()
-            except SQLAlchemyError as e:
-                await db.rollback()
-                logger.error(f"Refreshing merged links failed: {e}")
-            merge_seconds = time.monotonic() - merge_started
+            #
+            # Both read the whole fleet, so in a sharded deployment they are
+            # one shard's job, not every shard's. Which one is decided by a
+            # lease rather than by configuration ("shard 0 does it") so that
+            # losing that process does not stop alerting altogether.
+            fleet_phase = await self._own_fleet_phase()
+            if fleet_phase:
+                merge_started = time.monotonic()
+                try:
+                    await TopologyEngine(db).update_merged_links_in_db()
+                except SQLAlchemyError as e:
+                    await db.rollback()
+                    logger.error(f"Refreshing merged links failed: {e}")
+                merge_seconds = time.monotonic() - merge_started
 
-            alert_started = time.monotonic()
-            try:
-                await AlertEngine(db).run_check_cycle()
-            except Exception as e:
-                # run_check_cycle() has no internal guard, and a failure here
-                # used to take the whole cycle down (PERFORMANCE.md 18.5)
-                await db.rollback()
-                logger.error(f"Alert checks failed: {e}")
-            alert_seconds = time.monotonic() - alert_started
+                alert_started = time.monotonic()
+                try:
+                    await AlertEngine(db).run_check_cycle()
+                except Exception as e:
+                    # run_check_cycle() has no internal guard, and a failure
+                    # here used to take the whole cycle down (18.5 of
+                    # docs/PERFORMANCE.md)
+                    await db.rollback()
+                    logger.error(f"Alert checks failed: {e}")
+                alert_seconds = time.monotonic() - alert_started
 
         total = time.monotonic() - started
+        tail = (
+            f", merge {merge_seconds:.1f}s, alerts {alert_seconds:.1f}s"
+            if fleet_phase else ", fleet-wide phase held by another shard"
+        )
         logger.info(
             f"Fast cycle: {len(due)} devices, {cables} cables in "
-            f"{total:.1f}s (snmp {snmp_seconds:.1f}s, merge {merge_seconds:.1f}s, "
-            f"alerts {alert_seconds:.1f}s), {written} cables written "
-            f"({changes} state changes), {unreachable} not answering, "
-            f"{self.pool.stats()}"
+            f"{total:.1f}s (snmp {snmp_seconds:.1f}s{tail}), "
+            f"{written} cables written ({changes} state changes), "
+            f"{unreachable} not answering, {self.pool.stats()}"
         )
         return total
 

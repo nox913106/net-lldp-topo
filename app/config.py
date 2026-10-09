@@ -73,6 +73,24 @@ class Settings(BaseSettings):
     # means "the same as snmp_default_community".
     collector_trap_communities: str = ""
 
+    # Split the fleet across several collector processes. A cycle is CPU
+    # bound on SNMP decoding and the GIL means threads do not help, so this
+    # is how the collector scales past one core: start COLLECTOR_SHARDS
+    # processes, each with its own COLLECTOR_SHARD_ID, and each polls the
+    # devices whose id modulo the count is its own id.
+    #
+    # Every shard must agree on the count, and every id from 0 to count-1
+    # must be running: with COLLECTOR_SHARDS=4 and three processes started,
+    # a quarter of the fleet is never polled. The process holding the
+    # fleet-wide lease warns about exactly that (app/core/lease.py), but the
+    # warning is a safety net, not a substitute for starting them all.
+    #
+    # 1 (the default) is a single collector and behaves exactly as before:
+    # no shard filter on any query, and no coordination with anybody.
+    # PERFORMANCE.md section 24 has the measured scaling.
+    collector_shards: int = 1
+    collector_shard_id: int = 0
+
     # Back off devices that do not answer SNMP instead of probing them every
     # cycle: after n consecutive failures the next attempt waits
     # collector_interval * 2 ** (n - 1), capped at the value below.

@@ -74,20 +74,29 @@ class RawLinkIndex:
     def __init__(self) -> None:
         self._by_key: Dict[LinkKey, LinkSnapshot] = {}
 
-    async def load(self, db) -> int:
-        """Replace the index with the current contents of raw_links"""
-        result = await db.execute(
-            select(
-                RawLink.id,
-                RawLink.local_device_id,
-                RawLink.local_port,
-                RawLink.remote_hostname,
-                RawLink.bandwidth_mbps,
-                RawLink.in_octets,
-                RawLink.out_octets,
-                RawLink.sampled_at,
-            )
+    async def load(self, db, shard=None) -> int:
+        """
+        Replace the index with the current contents of raw_links.
+
+        ``shard`` limits it to the cables of the devices this process polls
+        (app/core/sharding.py). It is the devices that are sharded, so the
+        filter is on the cable's local device - that way a shard's cables and
+        its devices are always the same slice, and a cycle never holds the
+        other shards' 10,000 rows in memory to throw them away.
+        """
+        statement = select(
+            RawLink.id,
+            RawLink.local_device_id,
+            RawLink.local_port,
+            RawLink.remote_hostname,
+            RawLink.bandwidth_mbps,
+            RawLink.in_octets,
+            RawLink.out_octets,
+            RawLink.sampled_at,
         )
+        if shard is not None:
+            statement = shard.scope(statement, RawLink.local_device_id)
+        result = await db.execute(statement)
         by_key: Dict[LinkKey, LinkSnapshot] = {}
         for row in result:
             by_key[(row.local_device_id, row.local_port, row.remote_hostname)] = (
@@ -231,15 +240,16 @@ class CabledPort(NamedTuple):
     oper_status: Optional[int]
 
 
-async def load_cabled_ports(db) -> Dict[int, List[CabledPort]]:
+async def load_cabled_ports(db, shard=None) -> Dict[int, List[CabledPort]]:
     """
     Every cable with a resolved ifIndex, grouped by device.
 
-    One statement for the whole fleet. Cables whose ifIndex could not be
-    resolved are left out: there is nothing to GET for them, and the
-    inventory poll keeps trying to resolve them every cycle.
+    One statement for the whole fleet, or for this shard's slice of it when
+    ``shard`` is given. Cables whose ifIndex could not be resolved are left
+    out: there is nothing to GET for them, and the inventory poll keeps trying
+    to resolve them every cycle.
     """
-    result = await db.execute(
+    statement = (
         select(
             RawLink.id,
             RawLink.local_device_id,
@@ -253,6 +263,9 @@ async def load_cabled_ports(db) -> Dict[int, List[CabledPort]]:
             RawLink.oper_status,
         ).where(RawLink.local_port_index.isnot(None))
     )
+    if shard is not None:
+        statement = shard.scope(statement, RawLink.local_device_id)
+    result = await db.execute(statement)
 
     by_device: Dict[int, List[CabledPort]] = {}
     for row in result:
