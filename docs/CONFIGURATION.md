@@ -28,7 +28,15 @@ SNMP_TIMEOUT=5
 SNMP_RETRIES=2
 
 # Collector 設定
+# 輪詢間隔。這同時決定三件事，調整前請看 docs/PERFORMANCE.md 第 18 節：
+#   1. 告警最快能有多快（斷線平均約 0.6×、使用率平均約 1.2× 這個值）
+#   2. 使用率是這個區間的「平均值」，所以能觸發 70% 門檻的最短事件
+#      ＝ 0.70 × 間隔（300 秒 → 210 秒的滿線速流量；更短的爆量看不到）
+#   3. CPU 佔用。一輪的成本和間隔無關（500 台約 50 秒），所以間隔減半就是
+#      佔用加倍。500 台單一行程的下限約 120 秒
 COLLECTOR_INTERVAL=300
+# 同時有幾台設備在等 SNMP 回應。這已經只是 SNMP 的旋鈕 ——
+# 資料庫那半邊從批次化之後幾乎不受它影響（PERFORMANCE.md 17.4）
 COLLECTOR_CONCURRENT=20
 # 連續無回應的設備改用指數退避，不要每輪都等滿 timeout
 COLLECTOR_OFFLINE_BACKOFF=true

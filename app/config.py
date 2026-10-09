@@ -27,7 +27,19 @@ class Settings(BaseSettings):
     snmp_retries: int = 2
     
     # Collector Settings
+    #
+    # The poll interval is also the alert latency and the averaging window of
+    # every traffic rate, which is why it is not just a load knob:
+    #   * a utilisation figure is the mean over one interval, so the shortest
+    #     event that can cross a 70% threshold is 0.70 * interval - at 300 s
+    #     that is 210 s of line rate traffic, and shorter bursts are invisible
+    #   * a cycle costs the same whatever the interval (~50 s at 500 devices),
+    #     so halving the interval doubles the CPU share
+    # docs/PERFORMANCE.md section 18 has the measured budget.
     collector_interval: int = 300  # 5 minutes
+    # How many devices wait on SNMP at once. This is an SNMP knob only: the
+    # database half of a cycle is two statements per device since the writes
+    # were batched, so it barely responds to this (PERFORMANCE.md 17.4).
     collector_concurrent: int = 20
 
     # Back off devices that do not answer SNMP instead of probing them every

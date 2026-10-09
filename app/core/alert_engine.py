@@ -188,11 +188,22 @@ class AlertEngine:
         thresholds = await self.get_device_thresholds(device)
         link_thresh = thresholds.get("link_utilization", self.DEFAULT_THRESHOLDS["link_utilization"])
         
-        # Use max of in/out utilization
-        max_util = max(
-            link.utilization_in_percent or 0,
-            link.utilization_out_percent or 0
-        )
+        # Use max of in/out utilization.
+        #
+        # Either direction is None when it has not been measured: the first
+        # cycle after the collector restarts, a counter that was reset, a port
+        # whose interface could not be matched. "Not measured" is not "0%" -
+        # folding it to 0 would resolve an active high-utilisation alert as if
+        # the link had gone quiet, so a link with nothing measured is left
+        # exactly as it is until there is a real sample again.
+        measured = [
+            value for value in (
+                link.utilization_in_percent, link.utilization_out_percent
+            ) if value is not None
+        ]
+        if not measured:
+            return events
+        max_util = max(measured)
         
         # Check threshold
         link_events = await self._check_metric(
@@ -334,17 +345,34 @@ class AlertEngine:
             
             logger.info(f"New alert: {event.alert_type.value} - {event.message}")
     
+    # Which alert a recovery event closes. Spelled out rather than derived
+    # from the name: "link_utilization_normal".replace("_normal", "_high")
+    # gives "link_utilization_high", which is not a member of AlertType, so
+    # resolving a link utilisation alert raised ValueError and took the whole
+    # alert phase of the cycle down with it. It was unreachable while
+    # utilisation was permanently 0 (section 9 of docs/PERFORMANCE.md); real
+    # utilisation made it reachable.
+    RECOVERY_CLOSES = {
+        AlertType.DEVICE_ONLINE: AlertType.DEVICE_OFFLINE,
+        AlertType.LINK_UTILIZATION_NORMAL: AlertType.LINK_HIGH_UTILIZATION,
+        AlertType.CPU_NORMAL: AlertType.CPU_HIGH,
+        AlertType.MEMORY_NORMAL: AlertType.MEMORY_HIGH,
+    }
+
     async def _resolve_alert(self, event: AlertEvent):
         """Resolve an existing alert"""
-        # Find the corresponding high alert type
-        high_type = event.alert_type.value.replace("_normal", "_high")
-        if event.alert_type == AlertType.DEVICE_ONLINE:
-            high_type = AlertType.DEVICE_OFFLINE.value
-        
+        high_type = self.RECOVERY_CLOSES.get(event.alert_type)
+        if high_type is None:
+            logger.error(
+                f"No alert type for {event.alert_type.value} to resolve - "
+                f"add it to AlertEngine.RECOVERY_CLOSES"
+            )
+            return
+
         existing = await self._get_active_alert(
             device_id=event.device_id,
             link_id=event.link_id,
-            alert_type=AlertType(high_type)
+            alert_type=high_type
         )
         
         if existing:

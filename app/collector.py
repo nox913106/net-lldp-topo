@@ -6,6 +6,7 @@ Integrates with Alert Engine and Topology Engine
 import asyncio
 import logging
 import socket
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -19,10 +20,10 @@ from app.core.poll_scheduler import OfflineBackoff
 from app.core.topology_engine import TopologyEngine
 from app.core.alert_engine import AlertEngine
 from app.core.discovery_cache import DiscoveryCache
-from app.core.traffic import counter_rate
+from app.core.link_index import LinkWriteBuffer, RawLinkIndex
+from app.core.traffic import sample_values
 from app.core.log_exporter import get_log_exporter, LogLevel
 from app.models.device import Device, DeviceStatus
-from app.models.link import RawLink
 
 logging.basicConfig(
     level=logging.INFO,
@@ -201,48 +202,10 @@ def _match_interface(
     return by_name.get((neighbor.local_port or "").strip().lower())
 
 
-def _apply_traffic(
-    raw_link: RawLink,
-    stat: Optional[InterfaceStats],
-    sampled_at: datetime
-) -> None:
-    """
-    Record the port's real capacity and traffic rate on the link row.
-
-    bandwidth_mbps is ifHighSpeed as the device reports it, which replaces
-    guessing the speed from the port name. in_bps/out_bps are derived from this
-    sample and the one stored on the row by the previous cycle, so they stay
-    None until a second sample exists.
-    """
-    if stat is None:
-        return
-
-    if stat.speed_mbps > 0:
-        raw_link.bandwidth_mbps = stat.speed_mbps
-
-    if stat.in_octets is None and stat.out_octets is None:
-        # Traffic collection is off. Drop the rates rather than leave the last
-        # ones frozen in place - a rate from an unknown time ago is not a
-        # measurement. The counter samples are kept, so switching collection
-        # back on resumes from them instead of inventing a rate across the gap
-        # (counter_rate rejects a gap that long anyway).
-        raw_link.in_bps = None
-        raw_link.out_bps = None
-        return
-
-    raw_link.in_bps = counter_rate(
-        raw_link.in_octets, raw_link.sampled_at, stat.in_octets, sampled_at
-    )
-    raw_link.out_bps = counter_rate(
-        raw_link.out_octets, raw_link.sampled_at, stat.out_octets, sampled_at
-    )
-    raw_link.in_octets = stat.in_octets
-    raw_link.out_octets = stat.out_octets
-    raw_link.sampled_at = sampled_at
-
-
 async def poll_all_devices():
     """Poll all managed devices"""
+    cycle_started = time.monotonic()
+
     async with async_session_maker() as db:
         # Get all managed devices
         result = await db.execute(
@@ -255,6 +218,13 @@ async def poll_all_devices():
         # rediscovered and re-added on the next cycle.
         known = await db.execute(select(Device.hostname, Device.ip_address))
         discovery_cache.seed(known.all())
+
+        # The cable lookup table, read in one statement and answered from
+        # memory for the rest of the cycle. Without it every cable costs a
+        # SELECT before its UPDATE - at 500 devices that was ~10,000 queries
+        # per cycle on their own.
+        link_index = RawLinkIndex()
+        indexed_links = await link_index.load(db)
 
     # Forget devices that no longer exist so the backoff state cannot grow
     offline_backoff.prune(device.id for device in devices)
@@ -317,7 +287,7 @@ async def poll_all_devices():
                         return None  # removed between listing and polling
 
                     reachable = await store_poll_result(
-                        collector, tracked, result, db
+                        collector, tracked, result, db, link_index
                     )
                     try:
                         await db.commit()
@@ -336,25 +306,40 @@ async def poll_all_devices():
                 )
             return reachable
 
+    devices_started = time.monotonic()
     tasks = [poll_with_semaphore(d) for d in due]
     # One device blowing up must not abandon the rest of the cycle
     outcomes = await asyncio.gather(*tasks, return_exceptions=True)
     for device, outcome in zip(due, outcomes):
         if isinstance(outcome, BaseException):
             logger.error(f"Polling {device.hostname} raised: {outcome}")
+    devices_seconds = time.monotonic() - devices_started
 
     async with async_session_maker() as db:
         # Update merged links
         logger.info("Updating merged links...")
+        merge_started = time.monotonic()
         topology_engine = TopologyEngine(db)
         await topology_engine.update_merged_links_in_db()
+        merge_seconds = time.monotonic() - merge_started
 
-        # Run alert checks
+        # Run alert checks. Nothing in the cycle can raise an alert before
+        # this point, so the cycle time below is also the floor on how late
+        # an alert can be - see docs/PERFORMANCE.md section 18.
         logger.info("Running alert checks...")
+        alert_started = time.monotonic()
         alert_engine = AlertEngine(db)
         await alert_engine.run_check_cycle()
+        alert_seconds = time.monotonic() - alert_started
 
-    logger.info(f"Poll cycle completed, discovery cache: {discovery_cache.stats()}")
+    total = time.monotonic() - cycle_started
+    logger.info(
+        f"Poll cycle completed in {total:.1f}s "
+        f"(devices {devices_seconds:.1f}s, merge {merge_seconds:.1f}s, "
+        f"alerts {alert_seconds:.1f}s, {indexed_links} links indexed), "
+        f"discovery cache: {discovery_cache.stats()}"
+    )
+    return total
 
 
 async def fetch_device_state(
@@ -377,13 +362,16 @@ async def store_poll_result(
     collector: SNMPCollector,
     device: Device,
     result: Optional[Dict],
-    db
+    db,
+    link_index: RawLinkIndex
 ) -> bool:
     """
     The database half of a poll: write what SNMP returned.
 
-    `device` must belong to `db`. Returns True when the device answered SNMP,
-    so the caller can keep the offline backoff up to date.
+    `device` must belong to `db`. `link_index` is the cycle's snapshot of
+    raw_links, which is what makes this a batched write rather than two
+    statements per cable. Returns True when the device answered SNMP, so the
+    caller can keep the offline backoff up to date.
     """
     log_exporter = get_log_exporter()
 
@@ -418,54 +406,51 @@ async def store_poll_result(
             sampled_at = datetime.utcnow()
             matched = 0
 
-            # Update raw links
+            # One buffer per device: the cables are written as two statements
+            # at the end instead of a SELECT and an UPDATE each.
+            writes = LinkWriteBuffer()
+            new_keys = set()
+
             for neighbor in result["lldp_neighbors"] + result["cdp_neighbors"]:
-                # Check if link already exists
-                existing = await db.execute(
-                    select(RawLink).where(
-                        RawLink.local_device_id == device.id,
-                        RawLink.local_port == neighbor.local_port,
-                        RawLink.remote_hostname == neighbor.remote_hostname
-                    )
-                )
-                raw_link = existing.scalar_one_or_none()
-
-                if raw_link:
-                    # Refresh the details, they can change (and older versions
-                    # of the collector stored unusable values here)
-                    raw_link.local_port_index = neighbor.local_port_index
-                    raw_link.remote_port = neighbor.remote_port
-                    raw_link.remote_chassis_id = neighbor.remote_chassis_id
-                    raw_link.protocol = neighbor.protocol
-                    raw_link.last_seen = datetime.utcnow()
-                else:
-                    raw_link = RawLink(
-                        local_device_id=device.id,
-                        local_port=neighbor.local_port,
-                        local_port_index=neighbor.local_port_index,
-                        remote_hostname=neighbor.remote_hostname,
-                        remote_port=neighbor.remote_port,
-                        remote_chassis_id=neighbor.remote_chassis_id,
-                        protocol=neighbor.protocol
-                    )
-                    db.add(raw_link)
-
-                    # Log new link discovery
-                    await log_exporter.log_discovery(
-                        event_type="new_link",
-                        device_hostname=device.hostname,
-                        device_ip=device.ip_address,
-                        extra={
-                            "local_port": neighbor.local_port,
-                            "remote_hostname": neighbor.remote_hostname,
-                            "remote_port": neighbor.remote_port
-                        }
-                    )
+                # Which raw_links row is this cable? Answered from the index
+                # the cycle loaded in one statement, not with a query per
+                # cable - see app/core/link_index.py.
+                key = (device.id, neighbor.local_port, neighbor.remote_hostname)
+                previous = link_index.get(*key)
 
                 stat = _match_interface(neighbor, by_index, by_name)
                 if stat is not None:
                     matched += 1
-                _apply_traffic(raw_link, stat, sampled_at)
+
+                values = {
+                    # These can change on an existing cable, and older versions
+                    # of the collector stored unusable values in some of them
+                    "local_port_index": neighbor.local_port_index,
+                    "remote_port": neighbor.remote_port,
+                    "remote_chassis_id": neighbor.remote_chassis_id,
+                    "protocol": neighbor.protocol,
+                    "last_seen": sampled_at,
+                }
+                values.update(sample_values(previous, stat, sampled_at))
+
+                if previous is not None:
+                    writes.update(previous.id, values)
+                else:
+                    first_time = key not in new_keys
+                    new_keys.add(key)
+                    writes.insert(key, values)
+
+                    if first_time:
+                        await log_exporter.log_discovery(
+                            event_type="new_link",
+                            device_hostname=device.hostname,
+                            device_ip=device.ip_address,
+                            extra={
+                                "local_port": neighbor.local_port,
+                                "remote_hostname": neighbor.remote_hostname,
+                                "remote_port": neighbor.remote_port
+                            }
+                        )
 
                 # Auto-discover neighbor devices if enabled
                 if device.auto_discover:
@@ -473,13 +458,16 @@ async def store_poll_result(
                         device.id, device.hostname, neighbor, collector, log_exporter
                     )
 
+            updated, inserted = await writes.flush(db)
+
             neighbor_count = len(result["lldp_neighbors"]) + len(result["cdp_neighbors"])
             logger.info(
                 f"Polled {device.hostname} ({device.ip_address}): "
                 f"{len(result['lldp_neighbors'])} LLDP + "
                 f"{len(result['cdp_neighbors'])} CDP neighbors, "
                 f"{len(result['interface_stats'])} interfaces, "
-                f"{matched}/{neighbor_count} links matched to an interface"
+                f"{matched}/{neighbor_count} links matched to an interface, "
+                f"{updated} links updated, {inserted} added"
             )
             return True
         else:
@@ -521,21 +509,47 @@ async def _prepare_database() -> None:
     logger.error("Could not verify the database schema, continuing anyway")
 
 
+# Breathing room after a cycle that overran COLLECTOR_INTERVAL completely. It
+# stops a fleet the collector cannot keep up with from turning into a hot loop
+# against both the database and every switch in it.
+OVERRUN_GAP_SECONDS = 5.0
+
+
 async def main():
     """Main collector loop"""
-    logger.info(f"SNMP Collector starting (interval: {settings.collector_interval}s)")
+    interval = settings.collector_interval
+    logger.info(f"SNMP Collector starting (interval: {interval}s)")
 
     # Initial wait for database to be ready
     await asyncio.sleep(5)
     await _prepare_database()
 
     while True:
+        started = time.monotonic()
         try:
             await poll_all_devices()
         except Exception as e:
             logger.error(f"Poll cycle error: {e}")
 
-        await asyncio.sleep(settings.collector_interval)
+        # Sleep the remainder of the interval, not the whole interval.
+        # Sleeping the whole thing made the real sampling period
+        # COLLECTOR_INTERVAL plus the cycle time - about 350 s instead of 300
+        # at 500 devices - and that period is the denominator of every rate
+        # derived from the counters, as well as the floor on how late an alert
+        # can be. It also moved with the fleet's size and health, so the
+        # configured number told an operator very little.
+        elapsed = time.monotonic() - started
+        delay = interval - elapsed
+        if delay <= 0:
+            logger.warning(
+                f"Poll cycle took {elapsed:.1f}s, longer than "
+                f"COLLECTOR_INTERVAL={interval}s. The real sampling interval "
+                f"is the cycle time, not the configured one - either raise "
+                f"COLLECTOR_INTERVAL or shard the collector "
+                f"(docs/PERFORMANCE.md section 18)."
+            )
+            delay = OVERRUN_GAP_SECONDS
+        await asyncio.sleep(delay)
 
 
 if __name__ == "__main__":

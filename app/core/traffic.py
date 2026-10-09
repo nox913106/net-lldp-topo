@@ -72,3 +72,64 @@ def utilization_percent(bps: Optional[int], bandwidth_mbps: Optional[int]) -> Op
     if bps is None or not bandwidth_mbps or bandwidth_mbps <= 0:
         return None
     return (bps / (bandwidth_mbps * 1_000_000)) * 100
+
+
+
+def sample_values(previous, stat, sampled_at: datetime) -> dict:
+    """
+    The capacity and traffic columns a raw_links row should carry after this
+    poll, as a plain dict so the write can be batched.
+
+    `previous` is what the row holds now - anything carrying bandwidth_mbps,
+    in_octets, out_octets and sampled_at, or None for a cable seen for the
+    first time. `stat` is the interface this cable was matched to, or None when
+    it could not be matched to one.
+
+    The capacity and the counter samples are kept whenever there is nothing
+    better; the rates are not. A stored rate is only valid for the interval it
+    was measured over, so anything that interrupts measurement - the interface
+    not being found, traffic collection being switched off - clears it rather
+    than leaving the last one frozen in place. None means "not measured", and
+    that has to stay distinguishable from an idle link.
+    """
+    previous_bandwidth = previous.bandwidth_mbps if previous is not None else None
+    previous_in = previous.in_octets if previous is not None else None
+    previous_out = previous.out_octets if previous is not None else None
+    previous_at = previous.sampled_at if previous is not None else None
+
+    def unmeasured(bandwidth):
+        return {
+            "bandwidth_mbps": bandwidth,
+            "in_octets": previous_in,
+            "out_octets": previous_out,
+            "in_bps": None,
+            "out_bps": None,
+            "sampled_at": previous_at,
+        }
+
+    if stat is None:
+        # The cable is still there; we just could not find the interface it
+        # lands on. Nothing was measured this cycle.
+        return unmeasured(previous_bandwidth)
+
+    bandwidth = previous_bandwidth
+    if stat.speed_mbps and stat.speed_mbps > 0:
+        # ifHighSpeed answered: the device's own number, which replaces any
+        # earlier guess from the port name.
+        bandwidth = stat.speed_mbps
+
+    if stat.in_octets is None and stat.out_octets is None:
+        # Traffic collection is off (COLLECTOR_TRAFFIC_STATS=false). The real
+        # port speed and the cabling inventory are still being collected; the
+        # counter samples stay as a valid starting point if it is switched back
+        # on - counter_rate rejects a gap that long on its own anyway.
+        return unmeasured(bandwidth)
+
+    return {
+        "bandwidth_mbps": bandwidth,
+        "in_octets": stat.in_octets,
+        "out_octets": stat.out_octets,
+        "in_bps": counter_rate(previous_in, previous_at, stat.in_octets, sampled_at),
+        "out_bps": counter_rate(previous_out, previous_at, stat.out_octets, sampled_at),
+        "sampled_at": sampled_at,
+    }
