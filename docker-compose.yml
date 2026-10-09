@@ -47,6 +47,15 @@ services:
       # 會有設備被漏掉或被兩個行程重複輪詢。
       - COLLECTOR_SHARDS=1
       - COLLECTOR_SHARD_ID=0
+      # 告警抑制。預設值＝原本的行為（第一次沒回應就判離線、不做 flap
+      # 抑制、trap 立刻告警）。要用「晚一點但確定」換掉「掉包一次就叫人
+      # 起床」就調這三個，見 docs/PERFORMANCE.md 第 28 節。
+      # 分片時每台設備只有一個主人、告警檢查只有一個行程在做，所以這些
+      # 狀態留在行程內就夠，不需要每片設成一樣（但設成一樣比較好懂）。
+      - ALERT_OFFLINE_CONFIRM_CYCLES=1
+      - ALERT_LINK_FLAP_TRANSITIONS=0
+      - ALERT_LINK_FLAP_WINDOW=600
+      - ALERT_TRAP_REQUIRES_POLL=false
     depends_on:
       db:
         condition: service_healthy
@@ -85,6 +94,10 @@ services:
   #     - COLLECTOR_TRAP_ENABLED=false
   #     - COLLECTOR_SHARDS=2
   #     - COLLECTOR_SHARD_ID=1
+  #     - ALERT_OFFLINE_CONFIRM_CYCLES=1
+  #     - ALERT_LINK_FLAP_TRANSITIONS=0
+  #     - ALERT_LINK_FLAP_WINDOW=600
+  #     - ALERT_TRAP_REQUIRES_POLL=false
   #   depends_on:
   #     db:
   #       condition: service_healthy

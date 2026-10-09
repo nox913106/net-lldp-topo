@@ -93,6 +93,37 @@ COLLECTOR_TRAP_PORT=162
 # 接受的 community，逗號分隔。留空＝沿用 SNMP_DEFAULT_COMMUNITY
 COLLECTOR_TRAP_COMMUNITIES=
 
+# -- 告警抑制（avoid false alerts）------------------------------------------
+# 這個專案的每一個告警都來自一次 UDP 交握，所以掉一個封包、或收到一個偽造的
+# 封包，都可能變成一個告警。SNMP_RETRIES 是第一道（每個請求打三次），
+# 下面三個是第二道。預設值都維持加入它們之前的行為，所以要不要用
+# 「晚一點但確定」換「立刻但可能誤報」，是一個明確的選擇。
+
+# 連續幾次沒回應才把設備判為離線。1 ＝ 第一次就判（原本的行為）。
+# 3 配 60 秒的快迴圈 ＝ 設備要安靜大約 3 分鐘，所以一次把三個 SNMP 重試
+# 全部吃掉的壅塞不會再叫人起床。
+# 實測（快迴圈 20 秒）：設備真的死掉之後，1 是 24 秒發告警，3 是 99 秒。
+# 兩個迴圈共用同一個計數器；離線退避也知道這個數字，所以用來確認的那幾次
+# 輪詢維持正常間隔，不會被退避曲線拉長（詳見 PERFORMANCE.md 第 28 節）
+ALERT_OFFLINE_CONFIRM_CYCLES=1
+
+# 一條線在 ALERT_LINK_FLAP_WINDOW 秒內變化這麼多次就算 flapping：
+# 它的 link_down 告警會在「又 up 了」的時候被按住不解除，而不是每抖一次
+# 就一組告警＋恢復，並且在訊息裡說明它在 flapping。
+# 第一次 down 永遠不延遲。0 ＝ 關閉（每抖一次一組告警＋恢復，原本的行為）
+ALERT_LINK_FLAP_TRANSITIONS=0
+ALERT_LINK_FLAP_WINDOW=600
+
+# linkDown/linkUp trap 要不要等下一次快迴圈同意之後才發告警。
+# false（預設）就是 trap 的本意：收到通知就在毫秒內發告警。
+# true 保留狀態寫入（拓樸和介面立刻是最新的），但把「要不要告警」交給輪詢，
+# 代價是最多一個快迴圈的延遲，換來的是遺失、過期或偽造的 trap 永遠叫不醒人。
+# 可以在告警設定檔（alert profile）裡按設備覆寫：
+#   {"trap": {"requires_poll": true}}
+# 它需要快迴圈：COLLECTOR_FAST_INTERVAL=0 時沒有任何東西在輪詢每條線的狀態，
+# 也就沒有東西可以佐證 trap，這時 collector 會警告一次並維持立刻告警。
+ALERT_TRAP_REQUIRES_POLL=false
+
 # Log 輸出 (可選)
 LOG_EXPORT_ENABLED=false
 LOG_EXPORT_TYPE=elasticsearch

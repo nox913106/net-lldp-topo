@@ -97,6 +97,55 @@ class Settings(BaseSettings):
     collector_offline_backoff: bool = True
     collector_offline_backoff_max: int = 1800  # 30 minutes
 
+    # -- Alert damping ----------------------------------------------------
+    #
+    # Every alert in this project is raised from a UDP exchange, so every one
+    # of them can be raised by a lost or forged datagram rather than by a
+    # fault. SNMP_RETRIES is the first line of defence (three attempts per
+    # request), but all three datagrams take the same path, so a congested
+    # uplink can swallow the lot and make a healthy device look dead for one
+    # cycle. These three knobs are the second line. Every default below
+    # reproduces the behaviour that existed before they were added.
+    # app/core/damping.py has the reasoning; PERFORMANCE.md section 28 has the
+    # measured latencies each one costs.
+
+    # Consecutive unanswered polls before a device is called offline. 1 is the
+    # original behaviour: the first unanswered poll writes status=offline and
+    # the alert cycle raises device_offline from it. 3 with the default fast
+    # interval means a device has to be silent for about 3 minutes, and a
+    # momentary loss costs nothing. The price is paid only by a device that
+    # really has gone: its alert is (n-1) fast intervals later.
+    #
+    # Both loops share the counter, so whichever asks next does the
+    # confirming, and the offline backoff is told the same number so that the
+    # confirming polls are not themselves backed off.
+    alert_offline_confirm_cycles: int = 1
+
+    # Flap damping for per-cable link_down alerts. A cable that changes state
+    # this many times inside ALERT_LINK_FLAP_WINDOW seconds is flapping, and
+    # its alert is then held open through the ups instead of being resolved
+    # and re-raised once per flap. The first down is never delayed.
+    # 0 (or 1) switches this off, which is the original behaviour: one alert
+    # and one recovery per flap.
+    alert_link_flap_transitions: int = 0
+    alert_link_flap_window: int = 600  # 10 minutes
+
+    # Whether a linkDown/linkUp trap waits for the next fast cycle to agree
+    # with it before an alert is raised. False (the default) is what the trap
+    # receiver has always done - the notification itself raises the alert, in
+    # milliseconds, which is the whole reason to turn traps on. True keeps the
+    # state write (the topology and the UI are current immediately) and lets
+    # the poll decide about the alert, which costs up to one fast interval of
+    # latency and is the right trade for devices whose traps cross a network
+    # you do not control.
+    #
+    # Per device it is overridden in the alert profile's thresholds JSON:
+    #   {"trap": {"requires_poll": true}}
+    # It needs the fast loop: with COLLECTOR_FAST_INTERVAL=0 nothing ever
+    # polls per-cable state, so there is nothing to corroborate a trap with
+    # and the collector logs a warning and keeps alerting immediately.
+    alert_trap_requires_poll: bool = False
+
     # Read ifHCInOctets/ifHCOutOctets so links carry a real traffic rate.
     # Turning this off keeps the real per-port speed (ifHighSpeed) and the
     # cabling inventory, and drops two table walks per device per cycle.

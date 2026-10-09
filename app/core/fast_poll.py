@@ -118,11 +118,20 @@ class FastPoller:
         backoff,
         shard=None,
         fleet_lease=None,
-        coverage=None
+        coverage=None,
+        confirm=None,
+        damper=None
     ):
         self.pool = pool
         self.concurrent = max(1, int(concurrent))
         self.backoff = backoff
+        # How many unanswered cycles in a row before a device is called
+        # offline, shared with the inventory loop. None means the first one
+        # does it, which is what this loop used to do (app/core/damping.py).
+        self.confirm = confirm
+        # Flap damping for the per-cable link_down alerts, shared with the
+        # trap receiver so that a cable flapping across both is one cable.
+        self.damper = damper
         # This process's slice of the fleet, or None for all of it
         # (app/core/sharding.py)
         self.shard = shard
@@ -243,6 +252,8 @@ class FastPoller:
             ports_by_device = await load_cabled_ports(db, shard=self.shard)
 
         self.backoff.prune(device.id for device in devices)
+        if self.confirm is not None:
+            self.confirm.prune(device.id for device in devices)
         due = [d for d in devices if self.backoff.should_poll(d.id)]
         cables = sum(len(ports_by_device.get(d.id, ())) for d in due)
 
@@ -263,6 +274,12 @@ class FastPoller:
         links = LinkSampleBuffer()
         device_writes = BulkUpdate(Device)
         unreachable = 0
+        unconfirmed = 0
+        # Devices that did not answer but are not being called offline yet.
+        # Reported as one line rather than one per device: a real outage
+        # takes out dozens at once, and the per-device detail is already in
+        # the failure log from the SNMP layer.
+        pending: List[str] = []
         transitions: List[str] = []
 
         for device, outcome in zip(due, outcomes):
@@ -273,6 +290,8 @@ class FastPoller:
 
             if outcome.reachable:
                 self.backoff.record_success(outcome.device_id)
+                if self.confirm is not None:
+                    self.confirm.record_success(outcome.device_id)
                 device_writes.add(outcome.device_id, {
                     # .value, not the enum member: this goes straight into a
                     # bound parameter rather than through the ORM's type
@@ -282,9 +301,21 @@ class FastPoller:
             else:
                 unreachable += 1
                 self.backoff.record_failure(outcome.device_id)
-                device_writes.add(
-                    outcome.device_id, {"status": DeviceStatus.OFFLINE.value}
+                verdict = (
+                    self.confirm.record_failure(outcome.device_id)
+                    if self.confirm is not None else None
                 )
+                if verdict is not None and not verdict.confirmed:
+                    # One unanswered cycle is not an outage. Nothing is
+                    # written: the device keeps the status it had, so no
+                    # alert is raised and none is resolved either
+                    # (app/core/damping.py).
+                    unconfirmed += 1
+                    pending.append(f"{device.hostname} ({verdict.describe()})")
+                else:
+                    device_writes.add(
+                        outcome.device_id, {"status": DeviceStatus.OFFLINE.value}
+                    )
 
             for link_id, values, changed in outcome.samples:
                 links.set(link_id, values, state_changed=changed)
@@ -292,6 +323,13 @@ class FastPoller:
 
         for line in transitions:
             logger.info(f"Link state: {line}")
+
+        if pending:
+            logger.info(
+                "Not answering, not called offline yet: "
+                + ", ".join(pending[:5])
+                + (f" and {len(pending) - 5} more" if len(pending) > 5 else "")
+            )
 
         written = changes = 0
         merge_seconds = alert_seconds = 0.0
@@ -325,7 +363,7 @@ class FastPoller:
 
                 alert_started = time.monotonic()
                 try:
-                    await AlertEngine(db).run_check_cycle()
+                    await AlertEngine(db, damper=self.damper).run_check_cycle()
                 except Exception as e:
                     # run_check_cycle() has no internal guard, and a failure
                     # here used to take the whole cycle down (18.5 of
@@ -343,7 +381,9 @@ class FastPoller:
             f"Fast cycle: {len(due)} devices, {cables} cables in "
             f"{total:.1f}s (snmp {snmp_seconds:.1f}s{tail}), "
             f"{written} cables written ({changes} state changes), "
-            f"{unreachable} not answering, {self.pool.stats()}"
+            f"{unreachable} not answering"
+            + (f" ({unconfirmed} not yet called offline)" if unconfirmed else "")
+            + f", {self.pool.stats()}"
         )
         return total
 

@@ -105,6 +105,21 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 無回應的設備會依連續失敗次數退避（兩個迴圈各自算），不再每輪都等滿
 `SNMP_TIMEOUT × (SNMP_RETRIES + 1)`。
 
+### 告警抑制（避免掉包就誤報）
+
+每個告警都來自一次 UDP 交握，所以三個旋鈕可以用「晚一點但確定」換掉
+「掉包一次就叫人起床」。預設值都維持原本的行為。
+
+| 設定 | 預設 | 作用 |
+|---|---|---|
+| `ALERT_OFFLINE_CONFIRM_CYCLES` | 1 | 連續 n 次沒回應才判離線。3 配 60 秒快迴圈 ≈ 3 分鐘；實測（20 秒快迴圈）1 是 24 s、3 是 99 s |
+| `ALERT_LINK_FLAP_TRANSITIONS` / `_WINDOW` | 0 / 600 | 一條線在窗內變化 n 次就按住它的告警並標記 flapping，而不是每抖一次一組告警＋恢復（實測 8 次抖動 → 2 列告警） |
+| `ALERT_TRAP_REQUIRES_POLL` | false | trap 照寫狀態（毫秒），但把告警交給下一次快迴圈確認。可在 alert profile 裡按設備覆寫 |
+
+`SNMP_RETRIES`（預設 2 ＝ 每個請求打三次）仍然是第一道防線：掉一個封包
+本來就不會變成告警。第一次 down、以及輪詢讀到的 down 都不延遲 —— 埠狀態
+跟「設備活著」是同一個 GET 回來的，所以那是設備自己說的，不是掉包推論的。
+
 ## 分片（多個 collector 行程）
 
 一輪的瓶頸是 SNMP 解碼的 CPU，而 GIL 讓多執行緒幫不上忙，所以要跨過單核

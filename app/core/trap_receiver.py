@@ -34,17 +34,19 @@ import asyncio
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.alert_engine import AlertEngine
+from app.core.damping import trap_requires_poll
 from app.core.snmp_oids import (
     COLD_START_TRAP, IF_ADMIN_STATUS, IF_INDEX, IF_OPER_STATUS,
     LINK_DOWN_TRAP, LINK_UP_TRAP, SNMP_TRAP_OID, WARM_START_TRAP
 )
 from app.db.database import async_session_maker
+from app.models.alert import AlertProfile
 from app.models.device import Device
 from app.models.link import RawLink
 
@@ -73,6 +75,16 @@ _STATUS_FROM_TRAP = {
     LINK_DOWN_TRAP: 2,  # down
     LINK_UP_TRAP: 1,    # up
 }
+
+
+class ManagedDevice(NamedTuple):
+    """A device a trap can be about, as the source address map holds it"""
+
+    id: int
+    hostname: str
+    # Which alert profile decides whether a trap about this device's cables
+    # alerts immediately or waits for a poll to agree (app/core/damping.py)
+    alert_profile_id: Optional[int]
 
 
 class TrapEvent:
@@ -174,18 +186,35 @@ class TrapReceiver:
         self,
         bind_host: str = "0.0.0.0",
         port: int = 162,
-        communities: Optional[List[str]] = None
+        communities: Optional[List[str]] = None,
+        damper=None,
+        requires_poll: bool = False,
+        poll_confirms_state: bool = True
     ):
         self.bind_host = bind_host
         self.port = port
         self.communities = [c for c in (communities or []) if c] or ["public"]
+        # Shared with the fast loop so that a cable flapping across a trap and
+        # a poll is one flapping cable (app/core/damping.py)
+        self.damper = damper
+        # ALERT_TRAP_REQUIRES_POLL: whether a trap's alert waits for the next
+        # fast cycle to agree with it. Per device the alert profile overrides
+        # it. The state write never waits - only the alert does.
+        self.requires_poll = bool(requires_poll)
+        # Whether anything ever polls per-cable state. With
+        # COLLECTOR_FAST_INTERVAL=0 nothing does, so there is nothing for a
+        # trap to be confirmed by and "wait for a poll" would mean "never
+        # alert". Then every trap alerts immediately, and says so once.
+        self.poll_confirms_state = bool(poll_confirms_state)
+        self._warned_no_poll = False
 
         self._engine = None
         self._receiver = None
         self._queue: "asyncio.Queue[TrapEvent]" = asyncio.Queue(maxsize=MAX_QUEUE)
         self._worker: Optional[asyncio.Task] = None
 
-        self._devices: Dict[str, Tuple[int, str]] = {}
+        self._devices: Dict[str, ManagedDevice] = {}
+        self._profiles: Dict[int, bool] = {}
         self._devices_loaded = 0.0
         self._unknown_sources: Set[str] = set()
 
@@ -193,6 +222,7 @@ class TrapReceiver:
         self.dropped = 0
         self.acted_on = 0
         self.ignored = 0
+        self.deferred = 0
 
     # -- lifecycle --------------------------------------------------------
 
@@ -384,6 +414,7 @@ class TrapReceiver:
             devices = await self._device_map(db, {ip for ip, _ in latest})
 
             wanted: Dict[Tuple[int, int], TrapEvent] = {}
+            by_device: Dict[int, ManagedDevice] = {}
             for (source_ip, if_index), event in latest.items():
                 device = devices.get(source_ip)
                 if device is None:
@@ -395,7 +426,8 @@ class TrapReceiver:
                             f"device (it is matched on its management address)"
                         )
                     continue
-                wanted[(device[0], if_index)] = event
+                wanted[(device.id, if_index)] = event
+                by_device[device.id] = device
 
             if not wanted:
                 return
@@ -410,6 +442,7 @@ class TrapReceiver:
             now = datetime.utcnow()
             updates: List[Dict[str, Any]] = []
             touched: List[int] = []
+            deferred: List[int] = []
             for row in rows:
                 event = wanted.get((row.local_device_id, row.local_port_index))
                 if event is None:
@@ -422,7 +455,15 @@ class TrapReceiver:
                     "oper_status": status,
                     "oper_status_at": now,
                 })
-                touched.append(row.id)
+                # The state is written either way - the topology and the UI
+                # are current within milliseconds whatever the policy is.
+                # What the policy decides is whether the *alert* is raised
+                # from the notification or from the next poll that agrees
+                # with it (app/core/damping.py).
+                if self._requires_poll(by_device.get(row.local_device_id)):
+                    deferred.append(row.id)
+                else:
+                    touched.append(row.id)
 
             if not updates:
                 self.ignored += len(wanted)
@@ -437,32 +478,72 @@ class TrapReceiver:
                 # this table, so a trap storm cannot deadlock against a cycle
                 updates.sort(key=lambda row: row["id"])
                 await db.execute(update(RawLink), updates)
-                engine = AlertEngine(db)
-                events = await engine.check_link_states(raw_link_ids=touched)
-                await engine.process_events(events)
+                events = []
+                if touched:
+                    engine = AlertEngine(db, damper=self.damper)
+                    events = await engine.check_link_states(raw_link_ids=touched)
+                    await engine.process_events(events)
+                else:
+                    # Nothing to alert on, but the state write still has to
+                    # be committed - process_events is what commits in the
+                    # branch above.
+                    await db.commit()
             except SQLAlchemyError as e:
                 await db.rollback()
                 logger.error(f"Storing link traps failed: {e}")
                 return
 
             self.acted_on += len(updates)
+            self.deferred += len(deferred)
             latency = max(
                 (time.monotonic() - event.received_at for event in batch),
                 default=0.0
             )
             logger.info(
                 f"Link traps: {len(updates)} cable(s) updated from "
-                f"{len(batch)} trap(s), {len(events)} alert event(s), "
-                f"{latency * 1000:.0f} ms from receipt"
+                f"{len(batch)} trap(s), {len(events)} alert event(s)"
+                + (f", {len(deferred)} waiting for a poll to confirm"
+                   if deferred else "")
+                + f", {latency * 1000:.0f} ms from receipt"
             )
 
-    async def _device_map(self, db, sources: Set[str]) -> Dict[str, Tuple[int, str]]:
+    def _requires_poll(self, device: Optional[ManagedDevice]) -> bool:
         """
-        {management address: (device id, hostname)}, cached.
+        Whether a trap about this device's cables waits for a poll to agree.
+
+        The profile decides, falling back to ALERT_TRAP_REQUIRES_POLL. With
+        the fast loop switched off nothing ever polls per-cable state, so
+        waiting would mean never alerting: that configuration alerts
+        immediately and says so once rather than silently swallowing traps.
+        """
+        if device is None:
+            return False
+        wanted = self.requires_poll
+        if device.alert_profile_id is not None:
+            wanted = self._profiles.get(device.alert_profile_id, wanted)
+        if wanted and not self.poll_confirms_state:
+            if not self._warned_no_poll:
+                self._warned_no_poll = True
+                logger.warning(
+                    "A trap is set to wait for a poll to confirm it, but "
+                    "COLLECTOR_FAST_INTERVAL=0 means per-cable link state is "
+                    "never polled - there is nothing to confirm it with. "
+                    "Traps will alert immediately."
+                )
+            return False
+        return wanted
+
+    async def _device_map(self, db, sources: Set[str]) -> Dict[str, ManagedDevice]:
+        """
+        {management address: ManagedDevice}, cached.
 
         Re-read when it is stale, and - no more often than the cooldown - when
         a trap arrives from an address that is not in it, so a device added a
         moment ago does not have to wait out the TTL.
+
+        The alert profiles are read in the same pass: there are a handful of
+        them, they decide one boolean per device, and reading them per trap
+        would be a query per datagram during a storm.
         """
         now = time.monotonic()
         age = now - self._devices_loaded
@@ -473,10 +554,19 @@ class TrapReceiver:
         ):
             return self._devices
 
-        rows = (await db.execute(select(Device.id, Device.hostname, Device.ip_address))).all()
+        rows = (await db.execute(select(
+            Device.id, Device.hostname, Device.ip_address, Device.alert_profile_id
+        ))).all()
         self._devices = {
-            ip_address: (device_id, hostname)
-            for device_id, hostname, ip_address in rows if ip_address
+            ip_address: ManagedDevice(device_id, hostname, profile_id)
+            for device_id, hostname, ip_address, profile_id in rows if ip_address
+        }
+        profiles = (await db.execute(
+            select(AlertProfile.id, AlertProfile.thresholds)
+        )).all()
+        self._profiles = {
+            profile_id: trap_requires_poll(thresholds, self.requires_poll)
+            for profile_id, thresholds in profiles
         }
         self._devices_loaded = now
         # An address that has since been added as a device is no longer
@@ -489,4 +579,6 @@ class TrapReceiver:
         return (
             f"{self.received} received, {self.acted_on} applied, "
             f"{self.ignored} ignored, {self.dropped} dropped"
+            + (f", {self.deferred} left to a poll to alert on"
+               if self.deferred else "")
         )

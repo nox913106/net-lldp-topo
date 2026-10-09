@@ -33,13 +33,20 @@ class OfflineBackoff:
     Exponential backoff for devices that do not answer SNMP.
 
     After ``n`` consecutive failures the next attempt is allowed
-    ``base_interval * 2 ** (n - 1)`` seconds after the last one, capped at
-    ``max_interval``. With the defaults (base 300s, cap 1800s) that is
-    300s, 600s, 1200s, 1800s, 1800s, ...
+    ``base_interval * 2 ** (n - confirm_after)`` seconds after the last one,
+    capped at ``max_interval``. With the defaults (base 300s, cap 1800s,
+    confirm_after 1) that is 300s, 600s, 1200s, 1800s, 1800s, ...
 
     A single failure therefore never delays anything: the first retry happens
     at the normal poll interval, so a one-off timeout costs nothing. Only a
     device that keeps failing is backed off.
+
+    ``confirm_after`` is ALERT_OFFLINE_CONFIRM_CYCLES: while a device's
+    failures are still only *deciding* whether it is offline, every retry
+    happens at the normal interval. Otherwise confirming three failures on a
+    60 s loop would take 60 + 120 + 240 = 7 minutes instead of 3, and the
+    confirmation window would silently become a function of the backoff
+    curve.
 
     Times come from ``time.monotonic`` so the schedule is immune to wall-clock
     changes (NTP steps, DST) on the collector host.
@@ -50,23 +57,30 @@ class OfflineBackoff:
         base_interval: int,
         max_interval: int,
         enabled: bool = True,
-        clock=time.monotonic
+        clock=time.monotonic,
+        confirm_after: int = 1
     ):
         self.base_interval = max(1, int(base_interval))
         self.max_interval = max(self.base_interval, int(max_interval))
         self.enabled = enabled
         self._clock = clock
+        # Failures that are still deciding whether the device is offline at
+        # all (ALERT_OFFLINE_CONFIRM_CYCLES) are polled at the normal
+        # interval, not backed off: a confirmation that waits for the backoff
+        # is not a confirmation, it is a delay. With the default of 1 the
+        # schedule below is unchanged.
+        self.confirm_after = max(1, int(confirm_after))
         self._states: Dict[Hashable, BackoffState] = {}
 
     # -- schedule ---------------------------------------------------------
 
     def delay_for(self, failures: int) -> float:
         """Seconds that have to pass after ``failures`` consecutive failures"""
-        if failures <= 1:
+        if failures <= self.confirm_after:
             return float(self.base_interval)
         # Cap the exponent as well, otherwise 2 ** failures overflows into a
         # huge int for a device that has been down for months
-        exponent = min(failures - 1, 32)
+        exponent = min(failures - self.confirm_after, 32)
         return float(min(self.base_interval * (2 ** exponent), self.max_interval))
 
     def should_poll(self, key: Hashable) -> bool:

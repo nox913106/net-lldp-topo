@@ -9,6 +9,7 @@ from enum import Enum
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
+from app.core.damping import TRAP_KEY
 from app.models.device import Device
 from app.models.link import MergedLink, RawLink
 from app.models.alert import Alert, AlertHistory, AlertProfile
@@ -58,6 +59,9 @@ class AlertEvent:
     current_value: Optional[float] = None
     threshold_value: Optional[float] = None
     message: str = ""
+    # Merged into the alert's details JSON. Used by the flap damper to record
+    # on the alert itself why it is being held open.
+    details: Optional[Dict[str, Any]] = None
 
 
 class AlertEngine:
@@ -87,8 +91,14 @@ class AlertEngine:
         "memory": ThresholdConfig(warning=85, critical=95, recovery_buffer=10),
     }
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, damper=None):
         self.db = db
+        # Flap damping for per-cable link_down alerts, or None for the
+        # original behaviour (one alert and one recovery per flap). It is
+        # passed in rather than created here because an engine lives for one
+        # cycle and the damper has to remember across them, and because the
+        # fast loop and the trap receiver must share one (app/core/damping.py).
+        self.damper = damper
         self._profile_cache: Dict[int, Dict] = {}
         # Every active alert, indexed in memory for the duration of one check
         # cycle. None means "not loaded", and then every lookup is a query -
@@ -120,6 +130,13 @@ class AlertEngine:
             if profile and profile.thresholds:
                 thresholds = {}
                 for key, values in profile.thresholds.items():
+                    if key == TRAP_KEY:
+                        # Not a metric: {"trap": {"requires_poll": true}} is
+                        # the per-device trap policy the trap receiver reads
+                        # (app/core/damping.py), and reading it as a threshold
+                        # would invent a warning=70 for a metric called
+                        # "trap".
+                        continue
                     if isinstance(values, dict):
                         thresholds[key] = ThresholdConfig(
                             warning=values.get("warning", 70),
@@ -318,8 +335,18 @@ class AlertEngine:
 
         for row in by_link_id.values():
             alert = active_by_link_id.get(row.id)
+            is_down = row.oper_status in self.LINK_DOWN_STATUSES
+            is_up = row.oper_status in self.LINK_UP_STATUSES
 
-            if row.oper_status in self.LINK_DOWN_STATUSES:
+            # Only a real change counts as a flap: a cable seen down on ten
+            # consecutive cycles is one event, not ten. Statuses that mean
+            # "not known" are not observed at all, so a device going
+            # unreachable cannot look like every one of its cables flapping.
+            changed = False
+            if self.damper is not None and (is_down or is_up):
+                changed = self.damper.observe(row.id, down=is_down)
+
+            if is_down:
                 if alert is None:
                     events.append(AlertEvent(
                         alert_type=AlertType.LINK_DOWN,
@@ -329,7 +356,40 @@ class AlertEngine:
                         current_value=float(row.oper_status),
                         message=f"Link down: {describe(row)}"
                     ))
-            elif alert is not None and row.oper_status in self.LINK_UP_STATUSES:
+            elif alert is not None and is_up:
+                if self.damper is not None and self.damper.flapping(row.id):
+                    if not changed:
+                        # Still up, still inside the flap window: the alert
+                        # is already held and already says so. Re-emitting it
+                        # every cycle would write a history row a minute for
+                        # a cable that is doing nothing right now.
+                        continue
+                    # The cable is up again, but it has been up and down too
+                    # often to believe this one. Resolving here would raise
+                    # the same alert again on the next down - one page per
+                    # flap for the cable that most needs reading. The alert
+                    # is kept open and told why instead, and it resolves on
+                    # the first up after the cable has been steady for
+                    # ALERT_LINK_FLAP_WINDOW.
+                    changes = self.damper.count(row.id)
+                    events.append(AlertEvent(
+                        alert_type=AlertType.LINK_DOWN,
+                        severity=AlertSeverity.CRITICAL,
+                        device_id=row.local_device_id,
+                        raw_link_id=row.id,
+                        message=(
+                            f"Link flapping: {describe(row)} - {changes} state "
+                            f"changes in the last "
+                            f"{self.damper.window / 60:.0f} min, holding the "
+                            f"alert open until it settles"
+                        ),
+                        details={
+                            "flapping": True,
+                            "transitions": changes,
+                            "window_seconds": self.damper.window,
+                        }
+                    ))
+                    continue
                 events.append(AlertEvent(
                     alert_type=AlertType.LINK_UP,
                     severity=AlertSeverity.INFO,
@@ -467,10 +527,16 @@ class AlertEngine:
         )
         
         if existing:
-            # Update existing alert
-            existing.current_value = event.current_value
+            # Update existing alert. current_value only when the event
+            # carries one: an event that is about the alert rather than about
+            # a new reading (a flapping cable that is up at this instant)
+            # must not overwrite the reading that raised it.
+            if event.current_value is not None:
+                existing.current_value = event.current_value
             existing.severity = event.severity.value
             existing.message = event.message
+            if event.details:
+                existing.details = {**(existing.details or {}), **event.details}
             
             # Add to history
             history = AlertHistory(
@@ -490,6 +556,7 @@ class AlertEngine:
                 message=event.message,
                 current_value=event.current_value,
                 threshold_value=event.threshold_value,
+                details=event.details,
                 is_active=True
             )
             self.db.add(alert)
@@ -669,6 +736,12 @@ class AlertEngine:
         # of four cables with one of them dead is not a link at 0%, and the
         # port that died is the thing an operator has to go and look at.
         all_events.extend(await self.check_link_states())
+
+        # Forget cables that are up and have not changed state inside the
+        # flap window, so the damper's memory tracks the cables that are
+        # misbehaving rather than every cable that ever has.
+        if self.damper is not None:
+            self.damper.prune()
         
         # Process all events
         await self.process_events(all_events)

@@ -689,6 +689,21 @@
                             <input type="number" id="link-critical" value="90" min="1" max="100">
                         </div>
                     </div>
+                    <h4 style="margin: 1rem 0 0.5rem; color: var(--text-secondary); font-size: 0.875rem;">SNMP
+                        Traps</h4>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: 0.5rem;">
+                            <input type="checkbox" id="trap-requires-poll" style="width: auto;">
+                            Wait for a poll to confirm a linkDown/linkUp trap
+                        </label>
+                        <small style="color: var(--text-secondary);">
+                            A trap always writes the port's state immediately. With this on, the
+                            alert waits for the next fast cycle to agree with it - a lost, stale or
+                            forged trap then cannot page anybody, at the cost of up to one
+                            COLLECTOR_FAST_INTERVAL. Leave it off for the devices whose linkDown is
+                            the reason traps are enabled at all.
+                        </small>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn-secondary" onclick="closeProfileModal()">Cancel</button>
@@ -778,6 +793,8 @@
                 document.getElementById('mem-critical').value = profile?.thresholds?.memory?.critical || 95;
                 document.getElementById('link-warning').value = profile?.thresholds?.link_utilization?.warning || 70;
                 document.getElementById('link-critical').value = profile?.thresholds?.link_utilization?.critical || 90;
+                document.getElementById('trap-requires-poll').checked =
+                    profile?.thresholds?.trap?.requires_poll === true;
             } else {
                 title.textContent = 'New Alert Profile';
                 document.getElementById('profile-name').value = '';
@@ -788,6 +805,7 @@
                 document.getElementById('mem-critical').value = 95;
                 document.getElementById('link-warning').value = 70;
                 document.getElementById('link-critical').value = 90;
+                document.getElementById('trap-requires-poll').checked = false;
             }
 
             modal.style.display = 'flex';
@@ -803,10 +821,21 @@
         }
 
         async function saveProfile() {
+            // Start from whatever the profile already holds, so a key this
+            // form does not know about (the collector reads its own) is not
+            // silently dropped by an edit.
+            const existing = editingProfileId
+                ? (profiles.find(p => p.id === editingProfileId)?.thresholds || {})
+                : {};
             const data = {
                 name: document.getElementById('profile-name').value,
                 description: document.getElementById('profile-desc').value,
                 thresholds: {
+                    ...existing,
+                    trap: {
+                        ...(existing.trap || {}),
+                        requires_poll: document.getElementById('trap-requires-poll').checked
+                    },
                     cpu: {
                         warning: parseInt(document.getElementById('cpu-warning').value),
                         critical: parseInt(document.getElementById('cpu-critical').value),

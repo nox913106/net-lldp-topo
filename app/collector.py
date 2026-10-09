@@ -18,6 +18,7 @@ from app.config import get_settings
 from app.db.database import async_session_maker, init_db
 from app.core.snmp_collector import SNMPCollector, InterfaceStats
 from app.core.snmp_pool import CollectorPool
+from app.core.damping import FlapDamper, OfflineConfirm, Verdict
 from app.core.poll_scheduler import OfflineBackoff
 from app.core.fast_poll import FastPoller
 from app.core.trap_receiver import TrapReceiver
@@ -75,13 +76,30 @@ INVENTORY_TRAFFIC = settings.collector_traffic_stats and not FAST_LOOP_ENABLED
 offline_backoff = OfflineBackoff(
     base_interval=settings.collector_interval,
     max_interval=settings.collector_offline_backoff_max,
-    enabled=settings.collector_offline_backoff
+    enabled=settings.collector_offline_backoff,
+    confirm_after=settings.alert_offline_confirm_cycles
 )
 
 fast_backoff = OfflineBackoff(
     base_interval=max(1, settings.collector_fast_interval),
     max_interval=settings.collector_offline_backoff_max,
-    enabled=settings.collector_offline_backoff
+    enabled=settings.collector_offline_backoff,
+    confirm_after=settings.alert_offline_confirm_cycles
+)
+
+# How many consecutive unanswered polls make a device offline. One instance
+# for the whole process, not one per loop: the two loops ask the same question
+# about the same device, so a failure seen by either one counts, and the fast
+# loop is normally the one that confirms (app/core/damping.py).
+offline_confirm = OfflineConfirm(cycles=settings.alert_offline_confirm_cycles)
+
+# Flap damping for per-cable link_down alerts. Lives here rather than inside
+# AlertEngine because an engine lives for one cycle: both the fast loop and
+# the trap receiver hand this same instance to the engine they build, so a
+# cable that flaps between a trap and a poll is still one cable flapping.
+flap_damper = FlapDamper(
+    transitions=settings.alert_link_flap_transitions,
+    window_seconds=settings.alert_link_flap_window
 )
 
 # SNMP engines, reused across devices instead of built per device per cycle.
@@ -356,6 +374,7 @@ async def poll_all_devices():
 
     # Forget devices that no longer exist so the backoff state cannot grow
     offline_backoff.prune(device.id for device in devices)
+    offline_confirm.prune(device.id for device in devices)
 
     due = [d for d in devices if offline_backoff.should_poll(d.id)]
     due_ids = {d.id for d in due}
@@ -392,6 +411,20 @@ async def poll_all_devices():
                 # COLLECTOR_CONCURRENT connections for the whole SNMP phase.
                 result = await fetch_device_state(collector, device)
 
+                # Whether this device is *called* offline is a separate
+                # question from whether it answered: with
+                # ALERT_OFFLINE_CONFIRM_CYCLES above 1 it takes that many
+                # unanswered polls in a row, so that one lost exchange cannot
+                # raise a critical alert (app/core/damping.py). Decided here
+                # rather than inside store_poll_result because only what SNMP
+                # returned is evidence about the device - a database error
+                # while storing a successful poll is not.
+                if result and result.get("success"):
+                    offline_confirm.record_success(device.id)
+                    verdict = None
+                else:
+                    verdict = offline_confirm.record_failure(device.id)
+
                 # One session per device, taken only for the write. An
                 # AsyncSession serialises everything issued through it without
                 # complaining, so passing one shared session to every
@@ -403,7 +436,7 @@ async def poll_all_devices():
                         return None  # removed between listing and polling
 
                     reachable = await store_poll_result(
-                        collector, tracked, result, db, link_index
+                        collector, tracked, result, db, link_index, verdict=verdict
                     )
                     try:
                         await db.commit()
@@ -454,7 +487,7 @@ async def poll_all_devices():
             # docs/PERFORMANCE.md section 18.
             logger.info("Running alert checks...")
             alert_started = time.monotonic()
-            alert_engine = AlertEngine(db)
+            alert_engine = AlertEngine(db, damper=flap_damper)
             await alert_engine.run_check_cycle()
             alert_seconds = time.monotonic() - alert_started
 
@@ -496,7 +529,8 @@ async def store_poll_result(
     device: Device,
     result: Optional[Dict],
     db,
-    link_index: RawLinkIndex
+    link_index: RawLinkIndex,
+    verdict: Optional[Verdict] = None
 ) -> bool:
     """
     The database half of a poll: write what SNMP returned.
@@ -505,6 +539,12 @@ async def store_poll_result(
     raw_links, which is what makes this a batched write rather than two
     statements per cable. Returns True when the device answered SNMP, so the
     caller can keep the offline backoff up to date.
+
+    `verdict` is the caller's OfflineConfirm decision about a device that did
+    not answer. None means "call it offline", which is both the default and
+    what ALERT_OFFLINE_CONFIRM_CYCLES=1 produces; a verdict that is not yet
+    confirmed leaves the device's status alone, so a single lost exchange
+    writes nothing and alerts nothing.
     """
     log_exporter = get_log_exporter()
 
@@ -605,6 +645,15 @@ async def store_poll_result(
             )
             return True
         else:
+            if verdict is not None and not verdict.confirmed:
+                # Not enough failures in a row to call it offline yet. The
+                # status, and therefore the alert, is left exactly as it was.
+                logger.warning(
+                    f"Polled {device.hostname}: FAILED "
+                    f"({verdict.describe()}, not calling it offline yet)"
+                )
+                return False
+
             # Mark device as potentially offline
             if device.status != DeviceStatus.OFFLINE:
                 await log_exporter.log(
@@ -619,8 +668,11 @@ async def store_poll_result(
             return False
 
     except Exception as e:
+        # A failure in here is a failure of *this code*, not evidence about
+        # the device: the SNMP exchange has already happened by now. Writing
+        # status=offline on a database error made the collector raise a
+        # critical alert about a healthy device every time a write failed.
         logger.error(f"Error storing poll result for {device.hostname}: {e}")
-        device.status = DeviceStatus.OFFLINE
         return False
 
 
@@ -741,6 +793,29 @@ async def main():
             f"{SHARD.index}. Every shard from 0 to {SHARD.count - 1} has to "
             f"be running or those devices are polled by nobody."
         )
+    # Alert damping, when any of it is on. An operator reading "device_offline
+    # three minutes after the device died" has to be able to see from the log
+    # that this is configured and not broken.
+    damping = []
+    if offline_confirm.enabled:
+        damping.append(
+            f"a device is called offline after {offline_confirm.cycles} "
+            f"unanswered polls in a row (about "
+            f"{offline_confirm.cycles * (fast_interval if FAST_LOOP_ENABLED else interval)}s)"
+        )
+    if flap_damper.enabled:
+        damping.append(
+            f"a cable that changes state {flap_damper.transitions} times in "
+            f"{flap_damper.window:.0f}s keeps one alert instead of one per flap"
+        )
+    if settings.alert_trap_requires_poll:
+        damping.append(
+            "a trap writes the state immediately but leaves the alert to the "
+            "next fast cycle (per device in the alert profile)"
+        )
+    for line in damping:
+        logger.info(f"Alert damping: {line}")
+
     if FAST_LOOP_ENABLED and fast_interval >= interval:
         logger.warning(
             f"COLLECTOR_FAST_INTERVAL={fast_interval}s is not shorter than "
@@ -757,7 +832,12 @@ async def main():
         trap_receiver = TrapReceiver(
             bind_host=settings.collector_trap_bind,
             port=settings.collector_trap_port,
-            communities=settings.trap_community_list()
+            communities=settings.trap_community_list(),
+            damper=flap_damper,
+            requires_poll=settings.alert_trap_requires_poll,
+            # Only the fast loop polls per-cable state, so it is also the
+            # only thing that can confirm a trap (app/core/damping.py).
+            poll_confirms_state=FAST_LOOP_ENABLED
         )
         if not await trap_receiver.start():
             logger.warning(
@@ -796,7 +876,9 @@ async def main():
             backoff=fast_backoff,
             shard=SHARD,
             fleet_lease=fleet_lease,
-            coverage=coverage
+            coverage=coverage,
+            confirm=offline_confirm,
+            damper=flap_damper
         )
 
         async def fast_cycle():
