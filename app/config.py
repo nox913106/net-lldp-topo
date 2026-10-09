@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     # collector_interval * 2 ** (n - 1), capped at the value below.
     collector_offline_backoff: bool = True
     collector_offline_backoff_max: int = 1800  # 30 minutes
+
+    # Read ifHCInOctets/ifHCOutOctets so links carry a real traffic rate.
+    # Turning this off keeps the real per-port speed (ifHighSpeed) and the
+    # cabling inventory, and drops two table walks per device per cycle.
+    collector_traffic_stats: bool = True
+
+    # How long a neighbour that could not be turned into a device (no
+    # management address, no DNS record, no SNMP answer) is left alone before
+    # it is probed again.
+    collector_discovery_cache_ttl: int = 3600  # 1 hour
     
     # Discovery Settings
     discovery_enabled: bool = True

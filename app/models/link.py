@@ -1,7 +1,10 @@
 """
 Link models - Raw and merged link information
 """
-from sqlalchemy import Column, Integer, String, Float, BigInteger, Boolean, DateTime, ForeignKey, JSON
+from sqlalchemy import (
+    Column, Integer, String, Float, BigInteger, Boolean, DateTime,
+    ForeignKey, JSON, Index
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.database import Base
@@ -10,7 +13,7 @@ from app.db.database import Base
 class RawLink(Base):
     """Raw LLDP/CDP link information (before merging)"""
     __tablename__ = "raw_links"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     local_device_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
     local_port = Column(String(100))
@@ -19,13 +22,39 @@ class RawLink(Base):
     remote_port = Column(String(100))
     remote_chassis_id = Column(String(255))
     protocol = Column(String(10))  # lldp, cdp
-    
+
+    # Real per-cable capacity and traffic.
+    #
+    # bandwidth_mbps comes from ifHighSpeed on the local port - the device's
+    # own answer, not a guess from the port name. in_bps/out_bps are derived
+    # from the difference between two ifHCIn/OutOctets samples, which is why
+    # the raw counters and their timestamp are kept here: the collector needs
+    # the previous sample to turn counters into a rate, and this row is read
+    # and written once per cycle anyway.
+    bandwidth_mbps = Column(Integer)
+    in_octets = Column(BigInteger)
+    out_octets = Column(BigInteger)
+    in_bps = Column(BigInteger)
+    out_bps = Column(BigInteger)
+    sampled_at = Column(DateTime(timezone=True))
+
     discovered_at = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now())
-    
+
     # Relationships
     local_device = relationship("Device", back_populates="raw_links")
-    
+
+    # The collector looks a link up by exactly these three columns once per
+    # neighbour per cycle. Without this index every lookup is a full scan of a
+    # table whose size grows with the fleet, so the cost of a cycle grows
+    # quadratically - see docs/PERFORMANCE.md section 8.
+    __table_args__ = (
+        Index(
+            "ix_raw_links_lookup",
+            "local_device_id", "local_port", "remote_hostname"
+        ),
+    )
+
     def __repr__(self):
         return f"<RawLink(local={self.local_port}, remote_host='{self.remote_hostname}')>"
 
@@ -33,30 +62,35 @@ class RawLink(Base):
 class MergedLink(Base):
     """Merged link between two devices (aggregated from multiple raw links)"""
     __tablename__ = "merged_links"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     device_a_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
     device_b_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
-    
+
     # Bandwidth and utilization
     total_bandwidth_mbps = Column(Integer)
     current_in_bps = Column(BigInteger)
     current_out_bps = Column(BigInteger)
     utilization_in_percent = Column(Float)
     utilization_out_percent = Column(Float)
-    
+
     # Port details as JSON array
     # [{local_port, remote_port, bandwidth_mbps, in_bps, out_bps}, ...]
     port_pairs = Column(JSON)  # Changed from port_details, use JSON for SQLite compat
-    
+
     is_excluded = Column(Boolean, default=False)
     last_updated = Column(DateTime(timezone=True), server_default=func.now())
-    
+
     # Relationships
     device_a = relationship("Device", foreign_keys=[device_a_id])
     device_b = relationship("Device", foreign_keys=[device_b_id])
     alerts = relationship("Alert", back_populates="link", cascade="all, delete-orphan")
-    
+
+    # One lookup per merged link per cycle in update_merged_links_in_db()
+    __table_args__ = (
+        Index("ix_merged_links_pair", "device_a_id", "device_b_id"),
+    )
+
     def __repr__(self):
         return f"<MergedLink(a={self.device_a_id}, b={self.device_b_id}, bw={self.total_bandwidth_mbps}Mbps)>"
 
@@ -64,7 +98,7 @@ class MergedLink(Base):
 class ExcludeRule(Base):
     """Rules for excluding links from topology"""
     __tablename__ = "exclude_rules"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     rule_type = Column(String(50))  # hostname_pattern, port_pattern, device_pair
     pattern = Column(String(255))

@@ -384,11 +384,11 @@ class App {
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">In Utilization</span>
-                    <span class="detail-value">${link.utilization_in_percent?.toFixed(1) || 0}%</span>
+                    <span class="detail-value">${this.formatUtilization(link.utilization_in_percent)}</span>
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">Out Utilization</span>
-                    <span class="detail-value">${link.utilization_out_percent?.toFixed(1) || 0}%</span>
+                    <span class="detail-value">${this.formatUtilization(link.utilization_out_percent)}</span>
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">Status</span>
@@ -451,6 +451,15 @@ class App {
         }
         const date = new Date(ts);
         return date.toLocaleTimeString();
+    }
+
+    // null means the collector has not got two counter samples for this
+    // link yet. Showing 0% would read as "idle", which is a different
+    // statement from "not measured".
+    formatUtilization(value) {
+        return (value === null || value === undefined)
+            ? '&mdash;'
+            : `${value.toFixed(1)}%`;
     }
 
     formatBandwidth(mbps) {

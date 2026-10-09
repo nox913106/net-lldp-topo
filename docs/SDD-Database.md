@@ -95,12 +95,28 @@ CREATE TABLE raw_links (
     local_port_index INTEGER,
     remote_hostname VARCHAR(255),
     remote_port VARCHAR(100),
+    remote_chassis_id VARCHAR(255),
     protocol VARCHAR(10),  -- lldp, cdp
+    -- 每條線路的真實容量與流量
+    bandwidth_mbps INTEGER,      -- 本端埠的 ifHighSpeed（不是從埠名猜的）
+    in_octets BIGINT,            -- 上一次 ifHCInOctets 讀值
+    out_octets BIGINT,           -- 上一次 ifHCOutOctets 讀值
+    in_bps BIGINT,               -- 由兩次取樣算出的速率，未量到時為 NULL
+    out_bps BIGINT,
+    sampled_at TIMESTAMP,        -- 上一次取樣時間
     discovered_at TIMESTAMP DEFAULT NOW(),
-    last_seen TIMESTAMP DEFAULT NOW(),
-    UNIQUE(local_device_id, local_port, remote_hostname, remote_port)
+    last_seen TIMESTAMP DEFAULT NOW()
 );
+
+-- collector 每個鄰居每輪就查這三欄一次；沒有這個索引會退化成全表掃描，
+-- 而掃描次數隨機隊成長 → 每輪成本變成平方級（見 docs/PERFORMANCE.md 第 8 節）
+CREATE INDEX ix_raw_links_lookup
+    ON raw_links (local_device_id, local_port, remote_hostname);
 ```
+
+> 註：本節原本寫的 `UNIQUE(local_device_id, local_port, remote_hostname,
+> remote_port)` 在實作中並不存在（`app/models/link.py` 沒有這個約束），
+> 去重是由 collector 的查詢負責的。這裡改為照實記錄。
 
 ### 2.4 merged_links
 
@@ -112,20 +128,28 @@ CREATE TABLE merged_links (
     total_bandwidth_mbps INTEGER,
     current_in_bps BIGINT,
     current_out_bps BIGINT,
-    utilization_in_percent FLOAT,
+    utilization_in_percent FLOAT,   -- 未量到時為 NULL，不是 0
     utilization_out_percent FLOAT,
-    port_details JSONB,
+    port_pairs JSON,                -- 欄位名是 port_pairs，不是 port_details
     is_excluded BOOLEAN DEFAULT FALSE,
-    last_updated TIMESTAMP DEFAULT NOW(),
-    UNIQUE(device_a_id, device_b_id)
+    last_updated TIMESTAMP DEFAULT NOW()
 );
+
+-- update_merged_links_in_db() 以及多個 API 查詢都用這個設備對
+CREATE INDEX ix_merged_links_pair ON merged_links (device_a_id, device_b_id);
 ```
 
-**port_details JSONB 範例：**
+> 註：同上，`UNIQUE(device_a_id, device_b_id)` 在實作中不存在。
+
+**port_pairs JSON 範例：**
 ```json
 [
-  {"local_port": "Gi0/1", "remote_port": "Gi0/24", "bandwidth_mbps": 1000, "in_bps": 450000000},
-  {"local_port": "Gi0/2", "remote_port": "Gi0/25", "bandwidth_mbps": 1000, "in_bps": 320000000}
+  {"local_port": "Gi0/1", "remote_port": "Gi0/24", "bandwidth_mbps": 1000,
+   "in_bps": 450000000, "out_bps": 120000000, "utilization_percent": 45.0,
+   "speed_source": "ifHighSpeed"},
+  {"local_port": "Gi0/2", "remote_port": "Gi0/25", "bandwidth_mbps": 1000,
+   "in_bps": 320000000, "out_bps": 90000000, "utilization_percent": 32.0,
+   "speed_source": "ifHighSpeed"}
 ]
 ```
 

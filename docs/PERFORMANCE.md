@@ -323,6 +323,9 @@ log 會顯示跳過幾台，DEBUG log 會顯示每一台還要等多久。
 
 ## 8. 真正先撞牆的是資料庫，不是 Python
 
+> **這一節描述的是改動前的狀態。索引、每台一個 session 與發現快取已經
+> 做掉了（第 13 節），改前/改後的實測數字在第 14 節。**
+
 `poll_single_device()` 對**每個鄰居每一輪**都發一次查詢：
 
 ```python
@@ -378,6 +381,11 @@ SQLAlchemy 的 `AsyncSession` 不支援併發操作，它會在內部序列化�
 
 ## 9. 有一段 CPU 是純浪費
 
+> **已修正（第 13.3 節）。** 那 9.8 s/輪不再是浪費：`ifHighSpeed` 現在
+> 真的接到每條線路的頻寬上，`ifHCIn/OutOctets` 算成真實的 bps 與使用率。
+> 只要接線盤點、不要流量的部署可以用 `COLLECTOR_TRAFFIC_STATS=false`
+> 關掉那兩張表的走訪，而仍然保留真實埠速。
+
 `get_interface_stats()` 每輪在每台設備上走訪 `ifDescr`、`ifHighSpeed`、
 `ifHCInOctets`、`ifHCOutOctets`，**而它的回傳值沒有任何人使用** ——
 `app/collector.py:291` 只拿它的 `len()` 印一行 log。全專案沒有其他地方讀它
@@ -428,14 +436,14 @@ API、topology engine、alert engine 留在 Python。
 
 ## 11. 依投資報酬率排序的下一步
 
-| # | 動作 | 效果 | 風險 |
-|---|---|---|---|
-| 1 | `raw_links(local_device_id, local_port, remote_hostname)` 與 `merged_links(device_a_id, device_b_id)` 加索引 | 500 台少 10 s/輪，解決平方成長 | 低 |
-| 2 | 每台一個 DB session | 併發開始對 DB 有效，再少 6 s/輪 | 低 |
-| 3 | 把 `ifHighSpeed` 真的接到 merged link（取代字串猜測），`ifHCIn/OutOctets` 改成可關閉 | 準確度提升；關掉時少 10 s/輪 | 低 |
-| 4 | `auto_discover_neighbor` 只對沒見過的 hostname 做（加一層行程內快取） | 省掉每輪 2 × 鄰居數 次查詢與重複 DNS 查詢 | 低 |
-| 5 | collector 行程分片（compose 起 N 個，各管 1/N） | SNMP 那一段線性擴展 | 中 |
-| 6 | 鎖定依賴（pip-compile + hash）、pyright 進 CI | 防止下一次 LLDP 事故 | 低 |
+| # | 動作 | 效果 | 風險 | 狀態 |
+|---|---|---|---|---|
+| 1 | `raw_links(local_device_id, local_port, remote_hostname)` 與 `merged_links(device_a_id, device_b_id)` 加索引 | 500 台少 10 s/輪，解決平方成長 | 低 | **已完成**（13.1） |
+| 2 | 每台一個 DB session | 併發開始對 DB 有效，再少 6 s/輪 | 低 | **已完成**（13.2） |
+| 3 | 把 `ifHighSpeed` 真的接到 merged link（取代字串猜測），`ifHCIn/OutOctets` 改成可關閉 | 準確度提升；關掉時少 10 s/輪 | 低 | **已完成**（13.3） |
+| 4 | `auto_discover_neighbor` 只對沒見過的 hostname 做（加一層行程內快取） | 省掉每輪 2 × 鄰居數 次查詢與重複 DNS 查詢 | 低 | **已完成**（13.4） |
+| 5 | collector 行程分片（compose 起 N 個，各管 1/N） | SNMP 那一段線性擴展 | 中 | 未做 |
+| 6 | 鎖定依賴（pip-compile + hash）、pyright 進 CI | 防止下一次 LLDP 事故 | 低 | 未做 |
 
 ### 索引有一個部署上的陷阱
 
@@ -450,6 +458,9 @@ API、topology engine、alert engine 留在 Python。
 **不能只改模型**，否則你現有的部署升級後會繼續用全表掃描而且毫無徵兆。必須在
 啟動時發明確的 `CREATE INDEX IF NOT EXISTS` DDL。
 
+> 這一點已經做掉了，而且範圍比索引更大 —— 新增的欄位也有同樣的問題。
+> 做法與升級路徑實測見第 13.1 節。
+
 ## 12. 這次量測的侷限
 
 - 全部在 loopback 上對 snmpsim 模擬器量測，沒有真實網路延遲。這對 CPU 數字沒有
@@ -457,3 +468,214 @@ API、topology engine、alert engine 留在 Python。
 - 本沙箱的 UDP/161 被過濾，模擬器跑在 1161。應用程式碼未因此改動。
 - 500 台的機隊組成是估計值（1 核心 + 8 匯聚 + 491 接取，20 鄰居/台）。
   如果你的實際鄰居數差很多，用第 6 節的公式重算即可。
+
+---
+
+# 第二輪：把第 11 節的 1～4 項做掉，並接上真實流量
+
+> 這一段是實作紀錄與改前/改後的實測。量測方式和前面不同：這次不是模擬查詢，
+> 而是**把真實的 `poll_all_devices()` 跑在真實 PostgreSQL 16 上**，只把 SNMP
+> 那一層換成不送封包的替身，所以量到的就是「一輪裡面資料庫那半邊」。
+> 兩個版本（改前 `eb5bae1` 與改後）用的是同一支驅動程式與同一個機隊，
+> 數字可以直接相比。
+
+## 13. 這次改了什麼
+
+### 13.1 兩個索引，以及既有資料庫怎麼真的拿到它
+
+模型上加了：
+
+```python
+# raw_links —— poll_single_device() 每個鄰居每輪就查這三欄一次
+Index("ix_raw_links_lookup", "local_device_id", "local_port", "remote_hostname")
+# merged_links
+Index("ix_merged_links_pair", "device_a_id", "device_b_id")
+```
+
+但第 11 節講的陷阱是真的：`create_all(checkfirst=True)` 看到表已存在就整張跳過。
+所以 `init_db()` 之後多跑一段 `_sync_upgrade_schema()`，用 SQLAlchemy inspector
+比對「模型上有、資料庫裡沒有」的欄位與索引，然後只做兩種能安全就地套用的動作：
+
+- 新的**可為 NULL 欄位** → `ALTER TABLE ... ADD COLUMN`
+- 新的**索引** → `CREATE INDEX IF NOT EXISTS`（PostgreSQL ≥ 9.5、SQLite ≥ 3.8 都支援）
+
+其他的（刪欄位、改型別、對已有資料的表加 NOT NULL 欄位）只記一行 warning 就不動，
+那種需要真正的 migration。
+
+用「前一版建立的資料庫 + 一列真實資料」實測升級路徑：
+
+```
+== raw_links ==
+  新增欄位： ['bandwidth_mbps', 'in_bps', 'in_octets', 'out_bps', 'out_octets', 'sampled_at']
+  索引 before: ['ix_raw_links_id']
+  索引 after : ['ix_raw_links_id', 'ix_raw_links_lookup']
+== merged_links ==
+  索引 before: ['ix_merged_links_id']
+  索引 after : ['ix_merged_links_id', 'ix_merged_links_pair']
+
+既有資料列保留： 1
+升級後的查詢計畫： SEARCH raw_links USING INDEX ix_raw_links_lookup
+                   (local_device_id=? AND local_port=? AND remote_hostname=?)
+```
+
+最後一行是重點：升級前這句是全表掃描，升級後走索引。**升級不需要人工介入，
+也不會動到既有資料。** collector 容器自己也會跑這段（`_prepare_database()`，
+失敗重試三次），因為它可能比 app 容器先起來，而索引正是讓它不退化成全表掃描的東西。
+
+### 13.2 每台設備一個 DB session
+
+改前：`poll_all_devices()` 把**同一個 `db`** 傳給所有併發的 `poll_single_device()`。
+`AsyncSession` 不支援併發，但它不報錯 —— 它內部序列化。所以 `COLLECTOR_CONCURRENT`
+對資料庫那半邊完全沒有作用（第 8.1 節）。
+
+改後：每台設備在自己的 session 裡取得、更新、commit。相關的連帶修正：
+
+- 連線池大小改成 `max(10, COLLECTOR_CONCURRENT + 5)`。否則併發上限只是變成
+  在連線池上排隊。
+- 自動發現的 insert 走**另一個**短命 session，並且用一個大小 4 的 semaphore
+  限流。新鄰居的 insert 不應該因為撞到 hostname 唯一鍵就讓那台設備整輪的
+  連線資料一起 rollback；而第一輪全機隊都是新設備時，也不該要求兩倍連線數。
+- 那個 insert 的 `IntegrityError` 單獨接住：多行程分片時兩個行程會同時發現
+  同一台新設備，先到的贏，後到的把它記進快取就好。
+
+### 13.3 真實頻寬與真實流量
+
+資料存在 `raw_links` 上，而不是新開一張表 —— 因為 `raw_links` 的每一列就是
+**一條實體線路的一端**，而它每輪本來就會被讀一次寫一次，所以多存這幾欄不增加
+任何查詢：
+
+```python
+bandwidth_mbps    # ifHighSpeed，設備自己報的埠速
+in_octets/out_octets   # 上一次的計數器讀值
+in_bps/out_bps         # 由兩次取樣算出來的速率
+sampled_at             # 上一次取樣的時間
+```
+
+`ifHCInOctets` 是**累計計數器不是速率**，速率只存在於兩次取樣之間。
+`app/core/traffic.py` 的 `counter_rate()` 負責這件事，而且在算不出來的時候
+回傳 `None` 而不是 `0` —— 「還沒量到」和「沒有流量」是兩件不同的事：
+
+| 情況 | 回傳 |
+|---|---|
+| 正常：300 s 內 +37.5 MB | `1,000,000` bps |
+| 這個埠的第一次取樣 | `None` |
+| 計數器倒退（設備重開/清計數器） | `None` |
+| 閒置埠，兩次讀值相同 | `0` |
+| 兩次取樣間隔 > 4 小時 | `None` |
+| 兩次取樣間隔 < 1 秒 | `None` |
+| 上一筆時間戳帶時區（PostgreSQL）、這一筆不帶（naive） | 正常計算 |
+| 10G 埠跑滿線速 | `10,000,000,000` bps |
+
+計數器倒退一律當成重置，不當成繞回：64 位元 octet 計數器在 100 Gbps 下要
+約 46 年才繞一圈。時區那一列是必要的 —— 同一個欄位從 SQLite 讀回來是 naive，
+從 PostgreSQL 的 `timestamptz` 讀回來帶時區，兩者相減會直接 `TypeError`。
+
+鄰居對應到介面：**先用 ifIndex**（LLDP 收集階段已經解析出來，不會有歧義），
+名稱只是備援（有些設備的 `lldpLocPortTable` 對不回 ifIndex）。`ifName` 和
+`ifDescr` 兩種拼法都收（`Gi1/0/1` 與 `GigabitEthernet1/0/1`），而這兩張表
+本來就在 per-poll 快取裡，所以這一步沒有多走訪任何東西。
+
+成本面：`ifDescr`/`ifName` 來自快取，所以這一段真正的成本只有 `ifHighSpeed`
+加上（開啟流量時）兩張 octet 表。`COLLECTOR_TRAFFIC_STATS=false` 會關掉那兩張，
+**但仍然保留真實的 `ifHighSpeed`** —— 只要接線盤點、不要流量的部署，準確度不打折。
+
+### 13.4 auto-discover 快取
+
+改前每個鄰居每輪固定兩次 `devices` 查詢（hostname、ip_address），500 台約
+兩萬次，而答案在輪與輪之間幾乎不變。改後在每輪開始時用**一次**
+`SELECT hostname, ip_address FROM devices` 把整個機隊載進記憶體（含 excluded
+的設備，否則被排除的設備會立刻被重新發現再加回來）。
+
+`DiscoveryCache` 同時記住「轉不成設備的鄰居」（沒有管理位址、DNS 查不到、
+SNMP 不回應 —— IP 話機、印表機、關掉 SNMP 的 AP），預設一小時內不再探測，
+過期後會再試，所以後來才變得可達的設備不會被永久忽略。它的 `claim()` 也兼作
+鎖：兩台設備在同一輪看到同一個新鄰居時，只有一個會去解析、探測、insert。
+
+兩輪的實測（`sw1`/`sw2` 加上一個 AP 與一個對不到的 `Po1` 鄰居）：
+
+```
+第 1 輪 DNS 查詢： ['ap-lobby', 'sw9']
+第 2 輪 DNS 查詢： []            <- 快取回答，沒有碰網路
+```
+
+### 13.5 順手修掉的兩個準確度問題
+
+**一、頻寬被算成兩倍。** 兩端都納管時，同一條線會被兩邊各報一次，而
+`merge_links()` 把群組裡所有 raw link 的頻寬相加 —— 於是兩條 1G 線被算成
+4000 Mbps，而所有由它推導出來的使用率都只有真值的一半。改成只採信一端
+（看到比較多條線的那一端；用埠名去配對兩端的報告不可靠，一端叫 `Gi1/0/1`
+另一端叫 `GigabitEthernet1/0/1`）。兩輪端對端實測：
+
+```
+兩條 1G 線、兩端都有回報 -> total_bandwidth_mbps=2000（不是 4000）
+in=1,995,650 bps（預期 2,000,000）  out=3,991,302（預期 4,000,000）
+util_in=0.0998%  util_out=0.1996%
+```
+
+差的 0.2% 不是誤差而是正確行為：速率是用**兩次取樣的實際間隔**除的，
+這個測試的兩輪相距 300.5 秒而不是 300.0 秒。
+
+**二、「0%」不等於「沒量到」。** 使用率現在可以是 `null`，API 照實傳，
+前端顯示 `—` 而不是 `0%`。重開 collector 後的第一輪必然沒有速率
+（速率需要兩次取樣），那時候畫 0% 就是在報一個它不知道的數字。
+`port_details` 另外多了 `speed_source`（`ifHighSpeed` 或 `port_name`），
+所以看得出哪些埠的速度是真讀的、哪些是猜的。
+
+順帶的效果：`alert_engine.check_link_utilization()` 本來就存在，但因為使用率
+永遠是 0，**線路使用率告警從來沒有可能觸發過**。現在它有真實輸入了。
+
+HTTP 層實測（`GET /api/v1/topology/?view=full`）：
+
+```json
+{
+  "total_bandwidth_mbps": 2000,
+  "utilization_in_percent": 0.0997825,
+  "port_details": [
+    {"local_port": "Gi1/0/1", "remote_port": "GigabitEthernet1/0/24",
+     "bandwidth_mbps": 1000, "in_bps": 997825, "out_bps": 1995651,
+     "utilization_percent": 0.1995651, "speed_source": "ifHighSpeed"}
+  ]
+}
+```
+
+## 14. 500 台實測：改前 vs 改後
+
+機隊：1 核心（96 埠 / 8 鄰居）+ 8 匯聚（96 埠 / 62 鄰居）+ 491 接取
+（48 埠 / 20 鄰居，1 條上行 + 19 個端點設備）= 10,324 條 raw link。
+PostgreSQL 16.13，SNMP 層換成不送封包的替身，所以表格裡的時間就是
+**一輪裡資料庫那半邊的 wall time**。取第 2、3 輪的平均（穩定狀態）。
+
+### 14.1 併發掃描
+
+| `COLLECTOR_CONCURRENT` | 改前 | 改後 | 倍數 |
+|---|---|---|---|
+| 1 | 37.13 s | **18.61 s** | 2.00× |
+| 20 | 29.02 s | **13.18 s** | 2.20× |
+| 40 | 29.89 s | **13.60 s** | 2.20× |
+
+每輪發出的 SQL 敘述數：改前 27,561（併發 1 時 37,509），改後 **24,000**。
+
+兩件事要分開看：
+
+- **索引 + 發現快取**本身就給了 2.0×（併發 1：37.13 → 18.61 s）。這是完全
+  不依賴併發的那一半。
+- **每台一個 session** 讓併發開始有作用。改前從併發 1 開到 20 只快 1.28 倍
+  （37.13 → 29.02），改後是 1.41 倍（18.61 → 13.18）。幅度不大，但方向對了。
+
+**併發開到 40 在兩個版本都沒有再變快。** 剩下的序列化點是合併與告警那一段
+（它們跑在單一 session 裡），所以 `COLLECTOR_CONCURRENT` 調超過 20 對資料庫
+那半邊沒有幫助 —— 這點改完之後依然成立，不要以為調大就會更快。
+
+### 14.2 500 台的新帳
+
+| 項目 | 改前 | 改後 |
+|---|---|---|
+| SNMP 解碼（第 7 節） | 46 s | 46 s |
+| 其中沒人使用的走訪（第 9 節） | 9.8 s | 0 s（資料接上了，不再是浪費） |
+| 資料庫 | 29 s | 13 s |
+| 每輪合計 | 75 s | **59 s** |
+| 佔 300 秒週期 | 25% | **20%** |
+
+SNMP 那一段沒有變快 —— 本來就沒打算讓它變快，第 10 節已經說明理由
+（它是線性的，而且靠行程分片就能擴展）。真正的變化是：**那 9.8 s 現在換到了
+真實的埠速與真實的流量**，而原本會隨機隊平方成長的那一段不再那樣成長。

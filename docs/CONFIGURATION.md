@@ -33,6 +33,11 @@ COLLECTOR_CONCURRENT=20
 # 連續無回應的設備改用指數退避，不要每輪都等滿 timeout
 COLLECTOR_OFFLINE_BACKOFF=true
 COLLECTOR_OFFLINE_BACKOFF_MAX=1800
+# 讀取 ifHCIn/OutOctets，讓每條線路有真實 bps 與使用率。
+# 設為 false 仍會讀 ifHighSpeed（真實埠速），只是不量流量
+COLLECTOR_TRAFFIC_STATS=true
+# 轉不成設備的鄰居（IP 話機、印表機、SNMP 關閉的 AP）隔多久才再探測一次
+COLLECTOR_DISCOVERY_CACHE_TTL=3600
 
 # Log 輸出 (可選)
 LOG_EXPORT_ENABLED=false

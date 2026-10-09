@@ -155,7 +155,9 @@ async def get_topology(
                         remote_port=pd.get("b", pd.get("remote_port", "")),
                         bandwidth_mbps=pd.get("bandwidth_mbps", 0),
                         in_bps=pd.get("in_bps"),
-                        out_bps=pd.get("out_bps")
+                        out_bps=pd.get("out_bps"),
+                        utilization_percent=pd.get("utilization_percent"),
+                        speed_source=pd.get("speed_source")
                     ))
             
             max_util = max(
@@ -168,8 +170,8 @@ async def get_topology(
                 source=str(link.device_a_id),
                 target=str(link.device_b_id),
                 total_bandwidth_mbps=link.total_bandwidth_mbps or 0,
-                utilization_in_percent=link.utilization_in_percent or 0,
-                utilization_out_percent=link.utilization_out_percent or 0,
+                utilization_in_percent=link.utilization_in_percent,
+                utilization_out_percent=link.utilization_out_percent,
                 status=get_link_status(max_util),
                 port_details=port_details
             ))

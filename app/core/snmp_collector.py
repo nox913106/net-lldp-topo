@@ -191,12 +191,20 @@ class LLDPNeighbor:
 
 @dataclass
 class InterfaceStats:
-    """Interface statistics"""
+    """
+    Interface speed and traffic counters.
+
+    in_octets/out_octets are None when traffic collection is switched off, so
+    "not measured" stays distinguishable from "counter reads zero".
+    port_descr is kept alongside port_name because LLDP reports a local port
+    under either spelling (ifName "Gi1/0/1", ifDescr "GigabitEthernet1/0/1").
+    """
     port_name: str
     port_index: int
     speed_mbps: int
-    in_octets: int
-    out_octets: int
+    in_octets: Optional[int] = None
+    out_octets: Optional[int] = None
+    port_descr: str = ""
 
 
 @dataclass
@@ -221,7 +229,8 @@ class SNMPCollector:
         v3_priv_protocol: str = None,  # DES, 3DES, AES, AES192, AES256
         v3_priv_password: str = None,
         port: int = 161,
-        max_repetitions: int = 25
+        max_repetitions: int = 25,
+        collect_traffic: bool = True
     ):
         self.community = community
         self.timeout = timeout
@@ -234,6 +243,10 @@ class SNMPCollector:
         self.v3_priv_password = v3_priv_password
         self.port = port
         self.max_repetitions = max_repetitions
+        # Walking ifHCInOctets/ifHCOutOctets is the only reason to touch those
+        # two tables; a deployment that only wants the cabling inventory can
+        # switch them off and keep the real ifHighSpeed reading.
+        self.collect_traffic = collect_traffic
 
         # One SNMP engine is reused for every request this collector makes.
         # Building an SnmpEngine costs ~25 ms of CPU and ~630 KiB of RSS
@@ -768,15 +781,27 @@ class SNMPCollector:
         return neighbors
 
     async def get_interface_stats(self, ip: str) -> List[InterfaceStats]:
-        """Get interface traffic statistics"""
+        """
+        Get per-interface speed and, unless disabled, traffic counters.
+
+        ifDescr and ifName are served from the per-poll walk cache (the LLDP
+        port mapping already walked them), so the cost of this step is
+        ifHighSpeed plus - when collect_traffic is on - the two octet tables.
+        """
         stats = []
 
         if_descrs = await self._snmp_walk(ip, IF_DESCR)
+        if_names = await self._snmp_walk(ip, IF_NAME)
         if_speeds = await self._snmp_walk(ip, IF_HIGH_SPEED)
-        in_octets = await self._snmp_walk(ip, IF_HC_IN_OCTETS)
-        out_octets = await self._snmp_walk(ip, IF_HC_OUT_OCTETS)
 
-        for index, descr in if_descrs.items():
+        if self.collect_traffic:
+            in_octets = await self._snmp_walk(ip, IF_HC_IN_OCTETS)
+            out_octets = await self._snmp_walk(ip, IF_HC_OUT_OCTETS)
+        else:
+            in_octets = {}
+            out_octets = {}
+
+        for index in set(if_descrs) | set(if_names):
             if not index.isdigit():
                 continue
 
@@ -786,12 +811,22 @@ class SNMPCollector:
             if speed <= 0:
                 continue
 
+            descr = snmp_value_to_text(if_descrs.get(index))
+            name = snmp_value_to_text(if_names.get(index)) or descr
+
             stats.append(InterfaceStats(
-                port_name=snmp_value_to_text(descr),
+                port_name=name,
+                port_descr=descr,
                 port_index=int(index),
                 speed_mbps=speed,
-                in_octets=snmp_value_to_int(in_octets.get(index)),
-                out_octets=snmp_value_to_int(out_octets.get(index))
+                in_octets=(
+                    snmp_value_to_int(in_octets[index])
+                    if index in in_octets else None
+                ),
+                out_octets=(
+                    snmp_value_to_int(out_octets[index])
+                    if index in out_octets else None
+                )
             ))
 
         return stats

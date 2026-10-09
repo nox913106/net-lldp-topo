@@ -7,12 +7,23 @@ from datetime import datetime
 
 
 class PortDetail(BaseModel):
-    """Port detail in a merged link"""
+    """
+    One physical cable inside a merged link.
+
+    in_bps/out_bps and utilization_percent are None until the collector has
+    two counter samples for the port, so the first cycle after a restart
+    reports "not measured" rather than "idle". speed_source says whether
+    bandwidth_mbps is the port's own ifHighSpeed reading or a guess from its
+    name, which is the fallback for ports that could not be matched to an
+    interface.
+    """
     local_port: str
     remote_port: str
     bandwidth_mbps: int
     in_bps: Optional[int] = None
     out_bps: Optional[int] = None
+    utilization_percent: Optional[float] = None
+    speed_source: Optional[str] = None
 
 
 class TopologyNode(BaseModel):
@@ -37,8 +48,9 @@ class TopologyLink(BaseModel):
     source: str  # device_a id
     target: str  # device_b id
     total_bandwidth_mbps: int
-    utilization_in_percent: float
-    utilization_out_percent: float
+    # None while no traffic measurement exists yet for any of the link's ports
+    utilization_in_percent: Optional[float] = None
+    utilization_out_percent: Optional[float] = None
     status: str  # normal, warning, critical
     port_details: List[PortDetail]
 
