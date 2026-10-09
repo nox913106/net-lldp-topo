@@ -28,15 +28,23 @@ SNMP_TIMEOUT=5
 SNMP_RETRIES=2
 
 # Collector 設定
-# 輪詢間隔。這同時決定三件事，調整前請看 docs/PERFORMANCE.md 第 18 節：
-#   1. 告警最快能有多快（斷線平均約 0.6×、使用率平均約 1.2× 這個值）
-#   2. 使用率是這個區間的「平均值」，所以能觸發 70% 門檻的最短事件
-#      ＝ 0.70 × 間隔（300 秒 → 210 秒的滿線速流量；更短的爆量看不到）
-#   3. CPU 佔用。一輪的成本和間隔無關（500 台約 50 秒），所以間隔減半就是
-#      佔用加倍。500 台單一行程的下限約 120 秒
+#
+# 兩個迴圈，兩個間隔。下面這個是「盤點」的間隔 —— 誰接到誰、埠速多少、
+# 有沒有新設備。這件事只有在有人動線才會變，所以它可以慢。
 COLLECTOR_INTERVAL=300
-# 同時有幾台設備在等 SNMP 回應。這已經只是 SNMP 的旋鈕 ——
-# 資料庫那半邊從批次化之後幾乎不受它影響（PERFORMANCE.md 17.4）
+#
+# 這個是「快迴圈」的間隔 —— 設備有沒有回應、每條線的埠是不是 up、
+# 流量多少，以及**告警檢查**。它只讀每條線 3 個值（不走訪整張表），
+# 所以一輪的成本大約是盤點那一輪的 1/8。它同時決定：
+#   1. 告警最慢多久（約 0.5 × 這個值，加上那次交握本身）
+#   2. 每個 bps 的平均窗，也就是能觸發 70% 門檻的最短事件＝ 0.70 × 這個值
+#      （60 秒 → 42 秒的滿線速流量）
+# 設 0 就關掉快迴圈，所有事情回到盤點迴圈上（和舊版行為一致），
+# 但那樣每條線的 up/down 就只能靠 trap。詳見 docs/PERFORMANCE.md 第 20 節
+COLLECTOR_FAST_INTERVAL=60
+# 同時有幾台設備在等 SNMP 回應。兩個迴圈共用這個值。
+# 這已經只是 SNMP 的旋鈕 —— 資料庫那半邊從批次化之後幾乎不受它影響
+# （PERFORMANCE.md 17.4）
 COLLECTOR_CONCURRENT=20
 # 連續無回應的設備改用指數退避，不要每輪都等滿 timeout
 COLLECTOR_OFFLINE_BACKOFF=true
@@ -46,6 +54,20 @@ COLLECTOR_OFFLINE_BACKOFF_MAX=1800
 COLLECTOR_TRAFFIC_STATS=true
 # 轉不成設備的鄰居（IP 話機、印表機、SNMP 關閉的 AP）隔多久才再探測一次
 COLLECTOR_DISCOVERY_CACHE_TTL=3600
+
+# 收 SNMP trap（udp/162）。開了之後 linkDown/linkUp 會在毫秒內更新那條線
+# 的狀態並發告警，而不是等到下一次快迴圈。預設關閉：它會開一個監聽埠、
+# 需要能綁 1024 以下的埠（root 或 CAP_NET_BIND_SERVICE），而且在設備端
+# 設好 trap 目的地之前不會收到任何東西。
+#
+# trap 永遠不是唯一的事實來源 —— 一個 UDP 封包可能遺失、重複、延遲或偽造，
+# 所以快迴圈還是會把狀態重新確認一次。只接受來源位址是受管設備、
+# community 正確、而且那個埠上確實有線的 trap；v3 notification 不支援。
+COLLECTOR_TRAP_ENABLED=false
+COLLECTOR_TRAP_BIND=0.0.0.0
+COLLECTOR_TRAP_PORT=162
+# 接受的 community，逗號分隔。留空＝沿用 SNMP_DEFAULT_COMMUNITY
+COLLECTOR_TRAP_COMMUNITIES=
 
 # Log 輸出 (可選)
 LOG_EXPORT_ENABLED=false

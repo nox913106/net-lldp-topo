@@ -348,7 +348,8 @@ class App {
             'device_offline': 'Device Offline',
             'cpu_high': 'High CPU',
             'memory_high': 'High Memory',
-            'link_high_utilization': 'Link High Utilization'
+            'link_high_utilization': 'Link High Utilization',
+            'link_down': 'Link Down'
         };
         return types[type] || type;
     }

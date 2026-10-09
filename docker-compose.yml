@@ -23,12 +23,23 @@ services:
     restart: unless-stopped
 
   # SNMP Collector Service - 使用 host 網路以訪問外部 SNMP 設備
+  #
+  # network_mode: host 也是 trap 接收能用的前提：收 trap 要綁 udp/162，
+  # 而且來源位址必須是設備的管理位址才會被採用 —— 經過 NAT 的 bridge 網路
+  # 會把來源位址換掉，那樣每一個 trap 都會被當成「不是受管設備」丟掉。
   collector:
     build: .
     environment:
       - DATABASE_URL=postgresql+asyncpg://topomon:topomon@localhost:5432/topomon
       - REDIS_URL=redis://localhost:6379
       - TZ=Asia/Taipei
+      # 盤點間隔與快迴圈間隔，見 docs/PERFORMANCE.md 第 20 節
+      - COLLECTOR_INTERVAL=300
+      - COLLECTOR_FAST_INTERVAL=60
+      # 收 linkDown/linkUp。要用的話設備端也要把 trap 目的地指到這台，
+      # 而且這個容器需要能綁 udp/162（host 網路 + root 時沒問題）
+      - COLLECTOR_TRAP_ENABLED=false
+      - COLLECTOR_TRAP_PORT=162
     depends_on:
       db:
         condition: service_healthy

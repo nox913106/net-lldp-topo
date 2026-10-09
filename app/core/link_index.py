@@ -1,5 +1,14 @@
 """
-Per-cycle raw_links index and batched writer.
+Per-cycle raw_links index and batched writers, for both of the collector's
+loops.
+
+The columns of a raw_links row have two owners. The inventory loop owns what
+is cabled where and how fast the port is; the fast loop owns the counter
+sample, the rate derived from it and the port's link state. They run at
+different intervals and at the same time, so each writes its own columns and
+leaves the other's alone - otherwise the inventory loop's five-minute-old
+traffic numbers would periodically overwrite the fast loop's fresh ones. The
+column groups below are where that split is defined.
 
 A poll cycle touches every cable in the fleet exactly once, and it already
 knows which ones it is going to touch. Doing that one row at a time costs two
@@ -14,11 +23,11 @@ per cycle. Both halves are avoidable:
     statements (one executemany UPDATE, one executemany INSERT) instead of two
     per cable.
 
-See docs/PERFORMANCE.md section 17.
+See docs/PERFORMANCE.md sections 17 and 20.
 """
 import logging
 from datetime import datetime
-from typing import Any, Dict, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from sqlalchemy import insert, select, update
 
@@ -107,13 +116,27 @@ class RawLinkIndex:
 
 # Every row in one executemany must carry the same keys, so these are written
 # on every update whether or not the new sample changed them.
-_UPDATE_COLUMNS = (
+#
+# The columns are grouped by which loop owns them, because the two loops run
+# on different intervals and must not undo each other's work:
+#
+#   * inventory  - what is cabled where, and how fast the port is. Changes
+#                  when somebody moves a cable. Written by the inventory poll.
+#   * traffic    - the counter sample and the rate derived from it. Written by
+#                  whichever loop is sampling counters: the fast loop when it
+#                  is running, the inventory poll when it is not.
+#   * state      - ifOperStatus. Written by the fast loop and by the trap
+#                  receiver, never by the inventory poll.
+_INVENTORY_COLUMNS = (
     "local_port_index",
     "remote_port",
     "remote_chassis_id",
     "protocol",
     "last_seen",
     "bandwidth_mbps",
+)
+
+_TRAFFIC_COLUMNS = (
     "in_octets",
     "out_octets",
     "in_bps",
@@ -121,32 +144,51 @@ _UPDATE_COLUMNS = (
     "sampled_at",
 )
 
+_STATE_COLUMNS = (
+    "oper_status",
+    "oper_status_at",
+)
+
 _INSERT_COLUMNS = (
     "local_device_id",
     "local_port",
     "remote_hostname",
-) + _UPDATE_COLUMNS
+) + _INVENTORY_COLUMNS + _TRAFFIC_COLUMNS
 
 
 class LinkWriteBuffer:
     """
-    One device's raw_links writes, sent as two statements.
+    One device's raw_links writes from an inventory poll, sent as two
+    statements.
 
     Keyed rather than appended: a device that advertises the same neighbour
     twice on the same port used to end up with one row (the second pass found
     the first write and overwrote it), and that stays true here.
+
+    ``write_traffic`` is off while the fast loop is running. The counter
+    sample and the rate on a row then belong to the fast loop, and an
+    inventory poll that wrote its own - five minutes stale, and computed
+    against whatever the fast loop had already stored - would overwrite a
+    fresher measurement with a worse one, and clear in_bps/out_bps every time
+    traffic collection is off on this half of the collector.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, write_traffic: bool = True) -> None:
+        self._update_columns = _INVENTORY_COLUMNS + (
+            _TRAFFIC_COLUMNS if write_traffic else ()
+        )
         self._updates: Dict[int, Dict[str, Any]] = {}
         self._inserts: Dict[LinkKey, Dict[str, Any]] = {}
 
     def update(self, link_id: int, values: Dict[str, Any]) -> None:
-        row = {column: values.get(column) for column in _UPDATE_COLUMNS}
+        row = {column: values.get(column) for column in self._update_columns}
         row["id"] = link_id
         self._updates[link_id] = row
 
     def insert(self, key: LinkKey, values: Dict[str, Any]) -> None:
+        # A brand new row carries the traffic columns either way: there is no
+        # fresher value to protect, and leaving them out of the INSERT would
+        # mean one row shape for the first cycle and another afterwards.
         row = {column: values.get(column) for column in _INSERT_COLUMNS}
         row["local_device_id"], row["local_port"], row["remote_hostname"] = key
         self._inserts[key] = row
@@ -159,9 +201,133 @@ class LinkWriteBuffer:
         """Write the buffer. Returns (updated, inserted)."""
         updated, inserted = self.pending
         if self._updates:
-            await db.execute(update(RawLink), list(self._updates.values()))
+            await db.execute(
+                update(RawLink),
+                sorted(self._updates.values(), key=lambda row: row["id"])
+            )
         if self._inserts:
             await db.execute(insert(RawLink), list(self._inserts.values()))
         self._updates.clear()
         self._inserts.clear()
         return updated, inserted
+
+
+class CabledPort(NamedTuple):
+    """
+    A port the inventory poll has seen a neighbour on.
+
+    This is the fast loop's work list. ``port_index`` is the ifIndex the
+    inventory poll resolved for the cable, which is exactly what makes a fast
+    cycle a handful of GETs instead of a walk of the interface tables.
+    """
+    link_id: int
+    local_port: Optional[str]
+    port_index: int
+    remote_hostname: Optional[str]
+    bandwidth_mbps: Optional[int]
+    in_octets: Optional[int]
+    out_octets: Optional[int]
+    sampled_at: Optional[datetime]
+    oper_status: Optional[int]
+
+
+async def load_cabled_ports(db) -> Dict[int, List[CabledPort]]:
+    """
+    Every cable with a resolved ifIndex, grouped by device.
+
+    One statement for the whole fleet. Cables whose ifIndex could not be
+    resolved are left out: there is nothing to GET for them, and the
+    inventory poll keeps trying to resolve them every cycle.
+    """
+    result = await db.execute(
+        select(
+            RawLink.id,
+            RawLink.local_device_id,
+            RawLink.local_port,
+            RawLink.local_port_index,
+            RawLink.remote_hostname,
+            RawLink.bandwidth_mbps,
+            RawLink.in_octets,
+            RawLink.out_octets,
+            RawLink.sampled_at,
+            RawLink.oper_status,
+        ).where(RawLink.local_port_index.isnot(None))
+    )
+
+    by_device: Dict[int, List[CabledPort]] = {}
+    for row in result:
+        by_device.setdefault(row.local_device_id, []).append(
+            CabledPort(
+                link_id=row.id,
+                local_port=row.local_port,
+                port_index=row.local_port_index,
+                remote_hostname=row.remote_hostname,
+                bandwidth_mbps=row.bandwidth_mbps,
+                in_octets=row.in_octets,
+                out_octets=row.out_octets,
+                sampled_at=row.sampled_at,
+                oper_status=row.oper_status,
+            )
+        )
+    return by_device
+
+
+class LinkSampleBuffer:
+    """
+    The fast loop's raw_links writes, as at most two executemany UPDATEs for
+    the whole cycle.
+
+    One buffer per cycle rather than per device: a fast cycle writes five
+    numbers per cable and nothing else, so there is no reason to pay a round
+    trip per device for it.
+
+    Rows are split by whether the port's state changed, because every row in
+    one executemany has to carry the same columns and oper_status is the one
+    column here with an index on it. Writing it on all 10,000 cables every
+    cycle would churn that index continuously to store the value it already
+    had; a cable whose state did not change gets its traffic columns and
+    nothing else. That also makes oper_status_at mean "since when", not "as
+    of the last cycle".
+    """
+
+    _TRAFFIC_ONLY = _TRAFFIC_COLUMNS
+    _WITH_STATE = _TRAFFIC_COLUMNS + _STATE_COLUMNS
+
+    def __init__(self) -> None:
+        self._traffic: Dict[int, Dict[str, Any]] = {}
+        self._with_state: Dict[int, Dict[str, Any]] = {}
+
+    def set(
+        self, link_id: int, values: Dict[str, Any], state_changed: bool = False
+    ) -> None:
+        if state_changed:
+            target, other, columns = self._with_state, self._traffic, self._WITH_STATE
+        else:
+            target, other, columns = self._traffic, self._with_state, self._TRAFFIC_ONLY
+        row = {column: values.get(column) for column in columns}
+        row["id"] = link_id
+        target[link_id] = row
+        other.pop(link_id, None)
+
+    @property
+    def pending(self) -> Tuple[int, int]:
+        """(rows buffered, of which carry a state change)"""
+        return len(self._traffic) + len(self._with_state), len(self._with_state)
+
+    async def flush(self, db) -> Tuple[int, int]:
+        """Write the buffer. Returns (rows written, of which state changes)."""
+        written, changed = self.pending
+        for rows in (self._traffic, self._with_state):
+            if not rows:
+                continue
+            # Ascending primary key order: the inventory poll can be writing
+            # its own columns on some of these rows at the same time, and two
+            # transactions that take row locks in the same order cannot
+            # deadlock against each other.
+            await db.execute(
+                update(RawLink),
+                sorted(rows.values(), key=lambda row: row["id"])
+            )
+        self._traffic.clear()
+        self._with_state.clear()
+        return written, changed

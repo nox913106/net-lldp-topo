@@ -40,7 +40,38 @@ class Settings(BaseSettings):
     # How many devices wait on SNMP at once. This is an SNMP knob only: the
     # database half of a cycle is two statements per device since the writes
     # were batched, so it barely responds to this (PERFORMANCE.md 17.4).
+    # Both loops use it.
     collector_concurrent: int = 20
+
+    # The fast loop. collector_interval above is the *inventory* interval -
+    # what is cabled to what, which changes when somebody moves a cable. This
+    # is the interval for the things that change by the second: whether a
+    # device answers, whether each cable's port is up, and how much traffic it
+    # is carrying. It reads three values per cable instead of walking the
+    # interface tables, so it costs roughly an eighth of an inventory cycle
+    # per run (PERFORMANCE.md section 20).
+    #
+    # It is also the interval the alert checks run on, so it is what decides:
+    #   * how late an alert can be (about half of this, plus the exchange)
+    #   * the averaging window of every bps, and therefore the shortest event
+    #     that can cross a 70% threshold: 0.70 * this
+    # Set to 0 to switch it off and leave everything on the inventory loop,
+    # which is what the collector did before. Per-cable link state is then
+    # never polled - only traps can establish it.
+    collector_fast_interval: int = 60
+
+    # Receive SNMP linkDown/linkUp notifications (udp/162) and update the
+    # affected cable's state from them, in milliseconds rather than at the
+    # next fast cycle. Off by default: it opens a listening port, needs the
+    # privilege to bind one below 1024, and does nothing until the devices are
+    # configured to send traps here. A trap is never the only source of truth -
+    # see app/core/trap_receiver.py.
+    collector_trap_enabled: bool = False
+    collector_trap_bind: str = "0.0.0.0"
+    collector_trap_port: int = 162
+    # Community strings accepted on notifications, comma separated. Empty
+    # means "the same as snmp_default_community".
+    collector_trap_communities: str = ""
 
     # Back off devices that do not answer SNMP instead of probing them every
     # cycle: after n consecutive failures the next attempt waits
@@ -74,6 +105,17 @@ class Settings(BaseSettings):
     graylog_port: int = 12201
     graylog_protocol: str = "udp"
     
+    def trap_community_list(self) -> list:
+        """Communities accepted on notifications, defaulted and de-duplicated"""
+        raw = self.collector_trap_communities or self.snmp_default_community
+        seen = []
+        for community in raw.split(","):
+            community = community.strip()
+            if community and community not in seen:
+                seen.append(community)
+        return seen
+
+
     class Config:
         env_file = ".env"
         case_sensitive = False

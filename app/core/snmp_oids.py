@@ -47,6 +47,18 @@ IF_ADMIN_STATUS = "1.3.6.1.2.1.2.2.1.7"
 IF_NAME = "1.3.6.1.2.1.31.1.1.1.1"
 IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"
 
+# ifTable index column, which is what a link trap names the port with
+IF_INDEX = "1.3.6.1.2.1.2.2.1.1"
+
+# Notification OIDs (RFC 3418 / IF-MIB). snmpTrapOID.0 is the varbind every
+# v2c notification carries to say what it is about; the rest are the values it
+# can hold that this collector acts on.
+SNMP_TRAP_OID = "1.3.6.1.6.3.1.1.4.1.0"
+COLD_START_TRAP = "1.3.6.1.6.3.1.1.5.1"
+WARM_START_TRAP = "1.3.6.1.6.3.1.1.5.2"
+LINK_DOWN_TRAP = "1.3.6.1.6.3.1.1.5.3"
+LINK_UP_TRAP = "1.3.6.1.6.3.1.1.5.4"
+
 # System MIB OIDs
 SYS_NAME = "1.3.6.1.2.1.1.5.0"
 SYS_DESCR = "1.3.6.1.2.1.1.1.0"

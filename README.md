@@ -72,16 +72,40 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 
 詳細說明見 [docs/TROUBLESHOOTING_LLDP.md](docs/TROUBLESHOOTING_LLDP.md)。
 
-## 效能
+## 兩個輪詢迴圈
 
-一次輪詢原本會為每個 SNMP 請求重建一個 SNMP engine（一台設備 20 幾個），
-光重新編譯 MIB 就佔掉 74% 的 CPU。現在每台設備共用一個 engine，實測單台
-設備的輪詢 CPU 時間下降 15 倍（1758ms → 116ms）。
+收集器把兩件週期完全不同的事分開跑：
 
-無回應的設備會依連續失敗次數退避（300s → 600s → 1200s → 1800s），不再每輪
-都等滿 `SNMP_TIMEOUT × (SNMP_RETRIES + 1)`。
+| 迴圈 | 間隔 | 做什麼 |
+|---|---|---|
+| 盤點 | `COLLECTOR_INTERVAL`（300s） | 誰接到誰、埠速、自動發現。走訪 LLDP/CDP 與介面表 |
+| 快迴圈 | `COLLECTOR_FAST_INTERVAL`（60s） | 設備存活、每條線的 up/down、流量，以及**告警檢查** |
 
-容量、記憶體量測結果與「要不要改用 Rust」的評估見
+快迴圈不走訪整張表 —— 盤點那一輪已經記下每條線的 ifIndex，所以它只問那幾
+個埠（每台約 61 個 varbind，而不是 500），一輪的成本約是盤點的 1/5。
+告警檢查跟著快迴圈走，因為告警不會比評估它的迴圈新。
+
+另外可以收 SNMP trap（`COLLECTOR_TRAP_ENABLED`，udp/162）：linkDown／linkUp
+會在**毫秒內**更新那條線的狀態並發告警，而不是等到下一次快迴圈。trap 永遠
+不是唯一的事實來源 —— 快迴圈還是會重新確認一次。
+
+### 500 台的實測
+
+| | 之前 | 現在 |
+|---|---|---|
+| 使用率告警平均延遲 | 6.4 分 | **1.3 分** |
+| 能觸發 70% 門檻的最短事件 | 210 s | **42 s** |
+| 設備斷線告警 | 平均 190 s | 平均 **45 s** |
+| 單一線路 up/down | 沒有這個告警 | **毫秒（trap）/ ≤60 s（輪詢）** |
+| CPU 佔用 | 39% | **24%** |
+
+佔用會下降是因為 SNMP engine 改成依憑證共用（每台省 162 ms 的 CPU），
+而且請求用的 OID 不再每輪重新對 MIB 解析一次。
+
+無回應的設備會依連續失敗次數退避（兩個迴圈各自算），不再每輪都等滿
+`SNMP_TIMEOUT × (SNMP_RETRIES + 1)`。
+
+完整的量測、容量評估與「要不要改用 Rust」的評估見
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。
 
 ## 授權

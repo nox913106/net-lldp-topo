@@ -16,7 +16,10 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.config import get_settings
 from app.db.database import async_session_maker, init_db
 from app.core.snmp_collector import SNMPCollector, InterfaceStats
+from app.core.snmp_pool import CollectorPool
 from app.core.poll_scheduler import OfflineBackoff
+from app.core.fast_poll import FastPoller
+from app.core.trap_receiver import TrapReceiver
 from app.core.topology_engine import TopologyEngine
 from app.core.alert_engine import AlertEngine
 from app.core.discovery_cache import DiscoveryCache
@@ -33,13 +36,58 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+# Is the fast loop running? It decides which half of the collector owns the
+# traffic columns of raw_links: whoever samples the counters writes them, and
+# the other half must leave them alone or it would overwrite a fresh
+# measurement with a stale one. See app/core/link_index.py.
+FAST_LOOP_ENABLED = settings.collector_fast_interval > 0
+
+# Counters are sampled by whichever loop is the fast one. With the fast loop
+# running, the inventory poll also stops asking for the two octet tables,
+# which is two of its seventeen table walks per device per cycle.
+INVENTORY_TRAFFIC = settings.collector_traffic_stats and not FAST_LOOP_ENABLED
+
 # Devices that do not answer SNMP are probed less and less often instead of
 # costing a full timeout on every OID of every cycle. The state lives in this
 # process only - see app/core/poll_scheduler.py for why.
+#
+# One per loop: a device that has been dark for an hour should not cost the
+# inventory poll a full set of timeouts, but the fast loop's judgement about
+# when to try again is on its own, much shorter, scale.
 offline_backoff = OfflineBackoff(
     base_interval=settings.collector_interval,
     max_interval=settings.collector_offline_backoff_max,
     enabled=settings.collector_offline_backoff
+)
+
+fast_backoff = OfflineBackoff(
+    base_interval=max(1, settings.collector_fast_interval),
+    max_interval=settings.collector_offline_backoff_max,
+    enabled=settings.collector_offline_backoff
+)
+
+# SNMP engines, reused across devices instead of built per device per cycle.
+# Measured: a device costs 227.5 ms of CPU to poll with its own engine and
+# 65.3 ms with a shared one, so at 500 devices the old per-device collector
+# spent 81 s of CPU per cycle on engines - see app/core/snmp_pool.py.
+#
+# One pool per loop, because they ask for different things: the fast loop
+# wants the octet counters, the inventory poll does not when the fast loop is
+# running.
+inventory_pool = CollectorPool(
+    default_community=settings.snmp_default_community,
+    timeout=settings.snmp_timeout,
+    retries=settings.snmp_retries,
+    collect_traffic=INVENTORY_TRAFFIC,
+    label="inventory"
+)
+
+fast_pool = CollectorPool(
+    default_community=settings.snmp_default_community,
+    timeout=settings.snmp_timeout,
+    retries=settings.snmp_retries,
+    collect_traffic=settings.collector_traffic_stats,
+    label="fast"
 )
 
 # Which neighbours are already known, and which ones cannot be turned into a
@@ -254,22 +302,10 @@ async def poll_all_devices():
 
     async def poll_with_semaphore(device: Device):
         async with semaphore:
-            # Use device-specific community, fallback to default
-            community = device.snmp_community or settings.snmp_default_community
-            # One collector - and therefore one SNMP engine and one UDP
-            # socket - per device, released as soon as the device is done
-            async with SNMPCollector(
-                community=community,
-                timeout=settings.snmp_timeout,
-                retries=settings.snmp_retries,
-                snmp_version=device.snmp_version or "v2c",
-                v3_username=device.snmpv3_username,
-                v3_auth_protocol=device.snmpv3_auth_protocol,
-                v3_auth_password=device.snmpv3_auth_password,
-                v3_priv_protocol=device.snmpv3_priv_protocol,
-                v3_priv_password=device.snmpv3_priv_password,
-                collect_traffic=settings.collector_traffic_stats
-            ) as collector:
+            # One collector per credential, shared by every device that uses
+            # it, rather than one per device: an SNMP engine is expensive to
+            # build and nothing on it is per-device (app/core/snmp_pool.py).
+            async with inventory_pool.collector_for(device) as collector:
                 # Talk to the device first, with no database connection held.
                 # An unreachable device costs several seconds of timeouts, and
                 # holding a connection across that would pin
@@ -315,29 +351,36 @@ async def poll_all_devices():
             logger.error(f"Polling {device.hostname} raised: {outcome}")
     devices_seconds = time.monotonic() - devices_started
 
-    async with async_session_maker() as db:
-        # Update merged links
-        logger.info("Updating merged links...")
-        merge_started = time.monotonic()
-        topology_engine = TopologyEngine(db)
-        await topology_engine.update_merged_links_in_db()
-        merge_seconds = time.monotonic() - merge_started
+    merge_seconds = alert_seconds = 0.0
 
-        # Run alert checks. Nothing in the cycle can raise an alert before
-        # this point, so the cycle time below is also the floor on how late
-        # an alert can be - see docs/PERFORMANCE.md section 18.
-        logger.info("Running alert checks...")
-        alert_started = time.monotonic()
-        alert_engine = AlertEngine(db)
-        await alert_engine.run_check_cycle()
-        alert_seconds = time.monotonic() - alert_started
+    # Merging and alerting belong to whichever loop runs most often: an alert
+    # can only ever be as fresh as the loop that evaluates it, and utilisation
+    # is read off merged_links. With the fast loop running they are its job,
+    # and doing them here as well would only add a slower copy of the same
+    # work - see docs/PERFORMANCE.md section 20.
+    if not FAST_LOOP_ENABLED:
+        async with async_session_maker() as db:
+            logger.info("Updating merged links...")
+            merge_started = time.monotonic()
+            topology_engine = TopologyEngine(db)
+            await topology_engine.update_merged_links_in_db()
+            merge_seconds = time.monotonic() - merge_started
+
+            # Nothing in the cycle can raise an alert before this point, so
+            # the cycle time is also the floor on how late an alert can be -
+            # docs/PERFORMANCE.md section 18.
+            logger.info("Running alert checks...")
+            alert_started = time.monotonic()
+            alert_engine = AlertEngine(db)
+            await alert_engine.run_check_cycle()
+            alert_seconds = time.monotonic() - alert_started
 
     total = time.monotonic() - cycle_started
     logger.info(
-        f"Poll cycle completed in {total:.1f}s "
+        f"Inventory cycle completed in {total:.1f}s "
         f"(devices {devices_seconds:.1f}s, merge {merge_seconds:.1f}s, "
         f"alerts {alert_seconds:.1f}s, {indexed_links} links indexed), "
-        f"discovery cache: {discovery_cache.stats()}"
+        f"{inventory_pool.stats()}, discovery cache: {discovery_cache.stats()}"
     )
     return total
 
@@ -407,8 +450,9 @@ async def store_poll_result(
             matched = 0
 
             # One buffer per device: the cables are written as two statements
-            # at the end instead of a SELECT and an UPDATE each.
-            writes = LinkWriteBuffer()
+            # at the end instead of a SELECT and an UPDATE each. The traffic
+            # columns are only ours to write when no fast loop is running.
+            writes = LinkWriteBuffer(write_traffic=INVENTORY_TRAFFIC)
             new_keys = set()
 
             for neighbor in result["lldp_neighbors"] + result["cdp_neighbors"]:
@@ -509,47 +553,128 @@ async def _prepare_database() -> None:
     logger.error("Could not verify the database schema, continuing anyway")
 
 
-# Breathing room after a cycle that overran COLLECTOR_INTERVAL completely. It
-# stops a fleet the collector cannot keep up with from turning into a hot loop
+# Breathing room after a cycle that overran its interval completely. It stops
+# a fleet the collector cannot keep up with from turning into a hot loop
 # against both the database and every switch in it.
 OVERRUN_GAP_SECONDS = 5.0
 
 
+async def _fixed_cadence(name: str, interval: float, body, overrun_hint: str):
+    """
+    Run ``body`` every ``interval`` seconds, measured between starts.
+
+    Sleeping the whole interval *after* the work made the real period
+    "interval plus however long the work took" - about 350 s instead of 300 at
+    500 devices - and that period is the denominator of every rate derived
+    from a counter, as well as the floor on how late an alert can be. It also
+    moved with the fleet's size and health, so the configured number told an
+    operator very little. See docs/PERFORMANCE.md section 18.1.
+    """
+    while True:
+        started = time.monotonic()
+        try:
+            await body()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"{name} cycle error: {e}")
+
+        elapsed = time.monotonic() - started
+        delay = interval - elapsed
+        if delay <= 0:
+            logger.warning(
+                f"{name} cycle took {elapsed:.1f}s, longer than its "
+                f"{interval:.0f}s interval. The real interval is the cycle "
+                f"time, not the configured one - {overrun_hint}"
+            )
+            delay = OVERRUN_GAP_SECONDS
+        await asyncio.sleep(delay)
+
+
 async def main():
-    """Main collector loop"""
+    """
+    Main collector loop.
+
+    Two loops, because the work has two natural frequencies:
+
+      * the inventory loop (COLLECTOR_INTERVAL, 300 s) works out what is
+        cabled to what, which changes when somebody moves a cable
+      * the fast loop (COLLECTOR_FAST_INTERVAL, 60 s) works out whether those
+        cables are up and how busy they are, and runs the alert checks
+
+    and optionally a trap receiver, which hears about a port going down as it
+    happens instead of at the next fast cycle.
+    """
     interval = settings.collector_interval
-    logger.info(f"SNMP Collector starting (interval: {interval}s)")
+    fast_interval = settings.collector_fast_interval
+
+    logger.info(
+        f"SNMP Collector starting (inventory interval: {interval}s, "
+        + (f"fast interval: {fast_interval}s" if FAST_LOOP_ENABLED
+           else "fast loop off") + ")"
+    )
+    if FAST_LOOP_ENABLED and fast_interval >= interval:
+        logger.warning(
+            f"COLLECTOR_FAST_INTERVAL={fast_interval}s is not shorter than "
+            f"COLLECTOR_INTERVAL={interval}s, so the fast loop buys no "
+            f"freshness and only costs a second pass over the fleet"
+        )
 
     # Initial wait for database to be ready
     await asyncio.sleep(5)
     await _prepare_database()
 
-    while True:
-        started = time.monotonic()
-        try:
-            await poll_all_devices()
-        except Exception as e:
-            logger.error(f"Poll cycle error: {e}")
-
-        # Sleep the remainder of the interval, not the whole interval.
-        # Sleeping the whole thing made the real sampling period
-        # COLLECTOR_INTERVAL plus the cycle time - about 350 s instead of 300
-        # at 500 devices - and that period is the denominator of every rate
-        # derived from the counters, as well as the floor on how late an alert
-        # can be. It also moved with the fleet's size and health, so the
-        # configured number told an operator very little.
-        elapsed = time.monotonic() - started
-        delay = interval - elapsed
-        if delay <= 0:
+    trap_receiver = None
+    if settings.collector_trap_enabled:
+        trap_receiver = TrapReceiver(
+            bind_host=settings.collector_trap_bind,
+            port=settings.collector_trap_port,
+            communities=settings.trap_community_list()
+        )
+        if not await trap_receiver.start():
             logger.warning(
-                f"Poll cycle took {elapsed:.1f}s, longer than "
-                f"COLLECTOR_INTERVAL={interval}s. The real sampling interval "
-                f"is the cycle time, not the configured one - either raise "
-                f"COLLECTOR_INTERVAL or shard the collector "
-                f"(docs/PERFORMANCE.md section 18)."
+                "Continuing without trap reception: link state will be "
+                "established by the fast loop only"
             )
-            delay = OVERRUN_GAP_SECONDS
-        await asyncio.sleep(delay)
+            trap_receiver = None
+
+    async def inventory_cycle():
+        await poll_all_devices()
+        # Engines whose credential nothing uses any more
+        await inventory_pool.prune()
+        await fast_pool.prune()
+        if trap_receiver is not None:
+            logger.info(f"Traps: {trap_receiver.stats()}")
+
+    tasks = [asyncio.create_task(_fixed_cadence(
+        "Inventory", interval, inventory_cycle,
+        "either raise COLLECTOR_INTERVAL or shard the collector "
+        "(docs/PERFORMANCE.md section 18)."
+    ), name="inventory")]
+
+    if FAST_LOOP_ENABLED:
+        poller = FastPoller(
+            pool=fast_pool,
+            concurrent=settings.collector_concurrent,
+            backoff=fast_backoff
+        )
+        tasks.append(asyncio.create_task(_fixed_cadence(
+            "Fast", fast_interval, poller.run_cycle,
+            "either raise COLLECTOR_FAST_INTERVAL or shard the collector "
+            "(docs/PERFORMANCE.md section 20)."
+        ), name="fast"))
+
+    try:
+        # Neither loop ever returns, so this waits until one of them raises
+        # something it could not handle, or the process is stopped.
+        await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        if trap_receiver is not None:
+            await trap_receiver.stop()
+        await inventory_pool.aclose()
+        await fast_pool.aclose()
 
 
 if __name__ == "__main__":

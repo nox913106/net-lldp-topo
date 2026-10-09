@@ -18,6 +18,7 @@ class AlertResponse(BaseModel):
     id: int
     device_id: Optional[int]
     link_id: Optional[int]
+    raw_link_id: Optional[int] = None   # the individual cable, for link_down
     alert_type: str
     severity: str
     message: Optional[str]

@@ -3,7 +3,7 @@ SNMP Collector - Collects LLDP/CDP and interface data from network devices
 """
 import asyncio
 import logging
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Sequence, Tuple
 from dataclasses import dataclass, field
 
 from pysnmp.hlapi.asyncio import (
@@ -34,6 +34,7 @@ from app.core.snmp_oids import (
     LLDP_PORT_SUBTYPE_MAC, LLDP_PORT_SUBTYPE_NET_ADDR,
     CDP_CACHE_DEVICE_ID, CDP_CACHE_DEVICE_PORT, CDP_CACHE_ADDRESS,
     IF_DESCR, IF_NAME, IF_HIGH_SPEED, IF_HC_IN_OCTETS, IF_HC_OUT_OCTETS,
+    IF_OPER_STATUS,
     SYS_NAME, SYS_DESCR, SYS_UPTIME,
     VENDOR_OIDS, detect_vendor
 )
@@ -54,8 +55,49 @@ _CACHEABLE_WALK_OIDS = frozenset({IF_DESCR, IF_NAME})
 _WALK_CACHE_MAX_ROWS = 2000
 
 # Transport targets are tiny, but a collector used for recursive discovery
-# touches many addresses, so the cache is bounded.
-_MAX_CACHED_TRANSPORTS = 256
+# touches many addresses, so the cache is bounded. One pooled collector now
+# serves the whole fleet (see app/core/snmp_pool.py), so the bound has to be
+# comfortably larger than the fleet or it would be cleared twice per cycle.
+_MAX_CACHED_TRANSPORTS = 4096
+
+# How many varbinds go into one GET. Keeps the request inside a single
+# datagram on any sane MTU and inside what a low-end switch agent will
+# answer in one PDU; an agent that still says tooBig is handled by halving.
+#
+# Measured on a 20 cable switch (61 varbinds): 3 requests cost 11.1 ms of CPU
+# per device and one 61 varbind request costs 9.4 ms, because the cost is
+# mostly per varbind rather than per request (~1 ms per extra request). Saving
+# that 1.7 ms is not worth asking an agent with a small maxMsgSize for a
+# response it will refuse as tooBig. See docs/PERFORMANCE.md section 20.
+_MAX_GET_VARBINDS = 24
+
+# Request varbinds, kept resolved. pysnmp resolves every OID of every request
+# against its bundled MIBs before sending it, which costs 0.17 ms per varbind
+# - 10.4 ms of the 21 ms a fast sample of a 20 cable switch used to cost, all
+# of it spent re-resolving the same OIDs the cycle before. An ObjectType that
+# has been resolved once says so, so pysnmp skips it the next time, and the
+# fast loop asks for exactly the same OIDs every cycle.
+#
+# Only numeric OIDs go in here, so there is nothing engine-specific in a
+# resolved entry and one cache can serve every collector in the process.
+_VARBIND_CACHE: Dict[str, Any] = {}
+
+# At 20 cables a device that is 61 entries, and the ifIndexes recur across
+# devices, so a homogeneous fleet needs a few hundred. The bound is for the
+# fleet that is not: dropped wholesale rather than one at a time, because the
+# entries are interchangeable and the next cycle re-fills what it needs.
+_VARBIND_CACHE_MAX = 50000
+
+
+def _cached_varbind(oid: str):
+    """An ObjectType for this OID, resolved once and reused"""
+    var_bind = _VARBIND_CACHE.get(oid)
+    if var_bind is None:
+        if len(_VARBIND_CACHE) >= _VARBIND_CACHE_MAX:
+            _VARBIND_CACHE.clear()
+        var_bind = ObjectType(ObjectIdentity(oid))
+        _VARBIND_CACHE[oid] = var_bind
+    return var_bind
 
 # Values that mean "nothing more to read here"
 _EXCEPTION_VALUES = (
@@ -114,6 +156,19 @@ def snmp_value_to_text(value: Any) -> str:
     if hasattr(value, "prettyPrint"):
         return str(value.prettyPrint()).strip()
     return str(value).strip()
+
+
+def snmp_value_to_int_or_none(value: Any) -> Optional[int]:
+    """
+    Like snmp_value_to_int, but keeps "the agent did not answer this one"
+    distinguishable from a counter that really reads zero.
+    """
+    if value is None or _is_exception_value(value):
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def snmp_value_to_int(value: Any, default: int = 0) -> int:
@@ -214,6 +269,22 @@ class DeviceMetrics:
     memory_percent: float
 
 
+@dataclass
+class PortSample:
+    """
+    One cabled port as the fast loop sees it.
+
+    Every field is Optional and None means "the agent did not answer this
+    one", never a zero: a port whose ifOperStatus is unknown must not look
+    like a port that is down, and a counter that was not returned must not
+    look like an idle link.
+    """
+    port_index: int
+    oper_status: Optional[int] = None
+    in_octets: Optional[int] = None
+    out_octets: Optional[int] = None
+
+
 class SNMPCollector:
     """SNMP data collector for network devices - supports v1, v2c and v3"""
 
@@ -257,8 +328,12 @@ class SNMPCollector:
         self._auth_data = None
         self._transports: Dict[str, Any] = {}
 
-        # Set to a dict for the duration of poll_device(), see _snmp_walk
+        # Tables cached for the duration of a poll_device() call, keyed
+        # "<ip>|<oid>" - one collector now serves several devices at once, so
+        # the entries are counted per address and dropped when that address is
+        # done rather than when any poll finishes. See _snmp_walk.
         self._walk_cache: Optional[Dict[str, Dict[str, Any]]] = None
+        self._walk_cache_users: Dict[str, int] = {}
 
     # -- engine lifecycle --------------------------------------------------
 
@@ -283,6 +358,7 @@ class SNMPCollector:
         engine, self._engine = self._engine, None
         self._transports.clear()
         self._walk_cache = None
+        self._walk_cache_users.clear()
         if engine is not None:
             self._close_engine(engine)
 
@@ -409,6 +485,33 @@ class SNMPCollector:
         except Exception as e:
             logger.error(f"SNMP GET failed for {ip}: {e}")
             return None
+
+    def _open_walk_cache(self, ip: str) -> None:
+        """Start caching this address's tables for the duration of a poll"""
+        if self._walk_cache is None:
+            self._walk_cache = {}
+        self._walk_cache_users[ip] = self._walk_cache_users.get(ip, 0) + 1
+
+    def _close_walk_cache(self, ip: str) -> None:
+        """
+        Drop this address's cached tables once nothing is polling it.
+
+        Only this address's entries go, because a pooled collector can be
+        halfway through another device at the same time - dropping the whole
+        cache there would make the other poll re-walk tables it already has.
+        """
+        remaining = self._walk_cache_users.get(ip, 0) - 1
+        if remaining > 0:
+            self._walk_cache_users[ip] = remaining
+            return
+
+        self._walk_cache_users.pop(ip, None)
+        if self._walk_cache is not None:
+            prefix = f"{ip}|"
+            for key in [k for k in self._walk_cache if k.startswith(prefix)]:
+                del self._walk_cache[key]
+            if not self._walk_cache_users:
+                self._walk_cache = None
 
     def _walk_cache_key(self, ip: str, oid: str, max_rows: int) -> Optional[str]:
         """
@@ -870,6 +973,131 @@ class SNMPCollector:
             logger.error(f"Failed to get metrics for {ip}: {e}")
             return None
 
+    async def _snmp_get_many(
+        self, ip: str, oids: List[str]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        GET several OIDs in one request. Returns {oid: value}.
+
+        None means the exchange itself failed - timeout, unreachable, wrong
+        credentials - so the caller can treat the device as not answering. A
+        dict that is missing some of the OIDs means the device answered and
+        does not have those instances, which is the normal answer for a port
+        that has been removed since the last inventory poll.
+
+        MIB lookup is off: the response OIDs are the keys, and resolving each
+        one against the bundled MIBs costs CPU for a name nothing reads.
+        """
+        if not oids:
+            return {}
+
+        try:
+            error_indication, error_status, error_index, var_binds = await getCmd(
+                self._get_engine(),
+                self._get_auth_data(),
+                self._transport(ip),
+                ContextData(),
+                *[_cached_varbind(oid) for oid in oids],
+                lookupMib=False
+            )
+        except Exception as e:
+            logger.error(f"SNMP GET ({len(oids)} OIDs) failed for {ip}: {e}")
+            return None
+
+        if error_indication:
+            # No answer at all. Splitting the request would only multiply the
+            # timeout, so this is reported as "the device did not answer".
+            logger.warning(f"SNMP GET on {ip} failed: {error_indication}")
+            return None
+
+        if error_status:
+            # The device answered but refused the request as a whole: tooBig
+            # from an agent with a small PDU limit, or - on SNMPv1, which has
+            # no per-varbind exception values - noSuchName because one of the
+            # ports no longer exists. Both are fixed by asking for less.
+            if len(oids) > 1:
+                half = len(oids) // 2
+                left = await self._snmp_get_many(ip, oids[:half])
+                right = await self._snmp_get_many(ip, oids[half:])
+                if left is None and right is None:
+                    return None
+                values = dict(left or {})
+                values.update(right or {})
+                return values
+            logger.debug(
+                f"SNMP GET {oids[0]} on {ip}: {error_status.prettyPrint()}"
+            )
+            return {}
+
+        values = {}
+        for var_bind in var_binds:
+            value = var_bind[1]
+            if _is_exception_value(value):
+                continue
+            values[str(var_bind[0])] = value
+        return values
+
+    async def get_port_samples(
+        self, ip: str, port_indexes: Sequence[int]
+    ) -> Optional[Dict[int, PortSample]]:
+        """
+        Read link state and traffic counters for named ports only.
+
+        This is the whole SNMP footprint of a fast cycle: GETs against the
+        ifIndexes the inventory poll already recorded on each cable, instead
+        of walking the interface tables. About 3 varbinds per cable, against
+        the ~500 a full inventory poll walks - see docs/PERFORMANCE.md
+        section 20.
+
+        Returns None when the device did not answer, which is how the caller
+        tells "unreachable" from "those ports are gone".
+        """
+        wanted = sorted({int(i) for i in port_indexes if i is not None})
+
+        # sysUptime rides along in the first request as the liveness probe, so
+        # a device with no cables recorded yet is still checked, and a device
+        # that answers nothing stays distinguishable from one whose ports have
+        # all been removed.
+        oids = [SYS_UPTIME]
+        for index in wanted:
+            oids.append(f"{IF_OPER_STATUS}.{index}")
+            if self.collect_traffic:
+                oids.append(f"{IF_HC_IN_OCTETS}.{index}")
+                oids.append(f"{IF_HC_OUT_OCTETS}.{index}")
+
+        values: Dict[str, Any] = {}
+        for start in range(0, len(oids), _MAX_GET_VARBINDS):
+            answered = await self._snmp_get_many(
+                ip, oids[start:start + _MAX_GET_VARBINDS]
+            )
+            if answered is None:
+                if start == 0:
+                    return None  # never answered: the device is unreachable
+                # Answered, then stopped. Keep what was measured rather than
+                # throwing the whole device away.
+                logger.warning(f"{ip}: stopped answering mid-sample")
+                break
+            values.update(answered)
+
+        if SYS_UPTIME not in values:
+            return None
+
+        return {
+            index: PortSample(
+                port_index=index,
+                oper_status=snmp_value_to_int_or_none(
+                    values.get(f"{IF_OPER_STATUS}.{index}")
+                ),
+                in_octets=snmp_value_to_int_or_none(
+                    values.get(f"{IF_HC_IN_OCTETS}.{index}")
+                ),
+                out_octets=snmp_value_to_int_or_none(
+                    values.get(f"{IF_HC_OUT_OCTETS}.{index}")
+                ),
+            )
+            for index in wanted
+        }
+
     async def poll_device(self, ip: str) -> Dict:
         """
         Poll a single device for all data.
@@ -878,12 +1106,12 @@ class SNMPCollector:
         the three steps that need them (LLDP port mapping, CDP and interface
         statistics) share one walk instead of walking them again each time.
         """
-        self._walk_cache = {}
+        self._open_walk_cache(ip)
         try:
             return await self._poll_device(ip)
         finally:
-            # Do not hold the tables between polls
-            self._walk_cache = None
+            # Do not hold this device's tables between polls
+            self._close_walk_cache(ip)
 
     async def _poll_device(self, ip: str) -> Dict:
         result = {

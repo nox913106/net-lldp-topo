@@ -38,6 +38,18 @@ class RawLink(Base):
     out_bps = Column(BigInteger)
     sampled_at = Column(DateTime(timezone=True))
 
+    # ifOperStatus of the local port (RFC 2863): 1 up, 2 down, 7 lowerLayerDown,
+    # and the rest mean the device is not telling us anything useful. NULL is
+    # "not known", which is not the same as down - it is what a cable carries
+    # before the fast loop has reached it, while its device is unreachable, and
+    # when the fast loop is switched off entirely.
+    #
+    # Written by the fast loop (app/core/fast_poll.py) and, within
+    # milliseconds of the event, by the trap receiver
+    # (app/core/trap_receiver.py). The inventory poll never touches it.
+    oper_status = Column(Integer)
+    oper_status_at = Column(DateTime(timezone=True))
+
     discovered_at = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -53,6 +65,11 @@ class RawLink(Base):
             "ix_raw_links_lookup",
             "local_device_id", "local_port", "remote_hostname"
         ),
+        # "which cables are down right now?", asked once per fast cycle. The
+        # answer is normally none, so this is the case an index is for - and
+        # the fast loop only writes oper_status on a cable whose state
+        # actually changed, so the index is not churned every cycle.
+        Index("ix_raw_links_oper_status", "oper_status"),
     )
 
     def __repr__(self):

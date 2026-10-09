@@ -37,6 +37,19 @@ class Alert(Base):
     id = Column(Integer, primary_key=True, index=True)
     device_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"))
     link_id = Column(Integer, ForeignKey("merged_links.id", ondelete="CASCADE"))
+
+    # The individual cable an alert is about, when it is about one. A merged
+    # link aggregates several cables between the same pair of devices, so
+    # link_id cannot say which one went down - and a device with two dead
+    # ports needs two alerts, not one.
+    #
+    # On a database that predates this column the in-place upgrade adds the
+    # column but not its foreign key (app/db/database.py), so deleting a cable
+    # there leaves the alert behind instead of cascading. AlertEngine resolves
+    # those on the next check cycle rather than relying on the constraint.
+    raw_link_id = Column(
+        Integer, ForeignKey("raw_links.id", ondelete="CASCADE"), index=True
+    )
     
     alert_type = Column(String(50), nullable=False)  # device_offline, link_high_utilization, cpu_high, etc.
     severity = Column(String(20), nullable=False)  # warning, critical, info
