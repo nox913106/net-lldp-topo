@@ -132,18 +132,18 @@ async def manual_discover(request: ManualDiscoveryRequest, db: AsyncSession = De
     and every neighbor that advertises a management IP (and answers SNMP with
     the same community) is added as well.
     """
+    from sqlalchemy import select
+    from app.models.device import Device
+    from datetime import datetime
+
+    settings = get_settings()
+    collector = SNMPCollector(
+        community=request.community,
+        timeout=settings.snmp_timeout,
+        retries=settings.snmp_retries
+    )
+
     try:
-        from sqlalchemy import select
-        from app.models.device import Device
-        from datetime import datetime
-
-        settings = get_settings()
-        collector = SNMPCollector(
-            community=request.community,
-            timeout=settings.snmp_timeout,
-            retries=settings.snmp_retries
-        )
-
         discovered_devices = []
         added_count = 0
 
@@ -240,3 +240,6 @@ async def manual_discover(request: ManualDiscoveryRequest, db: AsyncSession = De
             success=False,
             error=str(e)
         )
+    finally:
+        # Release the SNMP engine and its UDP socket
+        await collector.aclose()

@@ -40,6 +40,23 @@ from app.core.snmp_oids import (
 
 logger = logging.getLogger(__name__)
 
+# Default row cap for a single walk
+_DEFAULT_MAX_ROWS = 10000
+
+# Tables that more than one collection step needs inside a single poll.
+# Only these are cached, so the saving does not come at the price of pinning
+# every walked table in memory for the whole poll.
+_CACHEABLE_WALK_OIDS = frozenset({IF_DESCR, IF_NAME})
+
+# A walked row costs roughly 400-600 bytes once the index string and the
+# pysnmp value object are counted, so a large chassis is used once and then
+# dropped instead of being held until the poll finishes.
+_WALK_CACHE_MAX_ROWS = 2000
+
+# Transport targets are tiny, but a collector used for recursive discovery
+# touches many addresses, so the cache is bounded.
+_MAX_CACHED_TRANSPORTS = 256
+
 # Values that mean "nothing more to read here"
 _EXCEPTION_VALUES = (
     rfc1905.NoSuchObject,
@@ -218,7 +235,57 @@ class SNMPCollector:
         self.port = port
         self.max_repetitions = max_repetitions
 
+        # One SNMP engine is reused for every request this collector makes.
+        # Building an SnmpEngine costs ~25 ms of CPU and ~630 KiB of RSS
+        # because pysnmp re-reads and byte-compiles the bundled MIB modules
+        # for each one, and a single poll issues more than 20 requests - so
+        # creating an engine per request used to dominate the poll cycle.
+        self._engine = None
+        self._auth_data = None
+        self._transports: Dict[str, Any] = {}
+
+        # Set to a dict for the duration of poll_device(), see _snmp_walk
+        self._walk_cache: Optional[Dict[str, Dict[str, Any]]] = None
+
+    # -- engine lifecycle --------------------------------------------------
+
+    def _get_engine(self):
+        """
+        Return this collector's SNMP engine, building it on first use.
+
+        Created lazily rather than in __init__ so the engine binds to the
+        event loop that actually runs the requests.
+        """
+        if self._engine is None:
+            self._engine = SnmpEngine()
+        return self._engine
+
+    async def aclose(self) -> None:
+        """
+        Release the SNMP engine and the UDP socket it holds.
+
+        Idempotent. The collector stays usable afterwards and will build a
+        fresh engine on the next request.
+        """
+        engine, self._engine = self._engine, None
+        self._transports.clear()
+        self._walk_cache = None
+        if engine is not None:
+            self._close_engine(engine)
+
+    async def __aenter__(self) -> "SNMPCollector":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.aclose()
+
     def _get_auth_data(self):
+        """Authentication data for this collector, built once and reused"""
+        if self._auth_data is None:
+            self._auth_data = self._build_auth_data()
+        return self._auth_data
+
+    def _build_auth_data(self):
         """Get authentication data based on SNMP version"""
         if self.snmp_version == "v3" and self.v3_username:
             from pysnmp.hlapi.asyncio import (
@@ -285,9 +352,16 @@ class SNMPCollector:
         return CommunityData(self.community, mpModel=mp_model)
 
     def _transport(self, ip: str):
-        return UdpTransportTarget(
-            (ip, self.port), timeout=self.timeout, retries=self.retries
-        )
+        """Transport target for an address, cached per collector"""
+        transport = self._transports.get(ip)
+        if transport is None:
+            if len(self._transports) >= _MAX_CACHED_TRANSPORTS:
+                self._transports.clear()
+            transport = UdpTransportTarget(
+                (ip, self.port), timeout=self.timeout, retries=self.retries
+            )
+            self._transports[ip] = transport
+        return transport
 
     @staticmethod
     def _close_engine(engine) -> None:
@@ -299,10 +373,9 @@ class SNMPCollector:
 
     async def _snmp_get(self, ip: str, oid: str) -> Optional[Any]:
         """Perform SNMP GET operation"""
-        engine = SnmpEngine()
         try:
             error_indication, error_status, error_index, var_binds = await getCmd(
-                engine,
+                self._get_engine(),
                 self._get_auth_data(),
                 self._transport(ip),
                 ContextData(),
@@ -323,20 +396,42 @@ class SNMPCollector:
         except Exception as e:
             logger.error(f"SNMP GET failed for {ip}: {e}")
             return None
-        finally:
-            self._close_engine(engine)
 
-    async def _snmp_walk(self, ip: str, oid: str, max_rows: int = 10000) -> Dict[str, Any]:
+    def _walk_cache_key(self, ip: str, oid: str, max_rows: int) -> Optional[str]:
+        """
+        The cache key for a walk, or None when the result must not be cached.
+
+        Only the interface name tables are cached, and only when the caller
+        asked for the default row cap, so a truncated result can never be
+        served to a caller that wanted the full table. The address is part of
+        the key so one device's table can never be served for another.
+        """
+        if self._walk_cache is None:
+            return None
+        if max_rows != _DEFAULT_MAX_ROWS or oid not in _CACHEABLE_WALK_OIDS:
+            return None
+        return f"{ip}|{oid}"
+
+    async def _snmp_walk(
+        self, ip: str, oid: str, max_rows: int = _DEFAULT_MAX_ROWS
+    ) -> Dict[str, Any]:
         """
         Walk an OID subtree and return {index: value}.
 
         The index is the part of the response OID after the requested base OID,
         e.g. walking 1.3.6.1.2.1.2.2.1.2 returns {"10001": "GigabitEthernet1/0/1"}.
+
+        Callers must treat the result as read-only: during a poll some tables
+        are served from a shared per-poll cache.
         """
+        cache_key = self._walk_cache_key(ip, oid, max_rows)
+        if cache_key is not None and cache_key in self._walk_cache:
+            return self._walk_cache[cache_key]
+
         results: Dict[str, Any] = {}
         prefix = oid + "."
 
-        engine = SnmpEngine()
+        engine = self._get_engine()
         try:
             generator = None
             if bulkWalkCmd is not None and self.snmp_version != "v1":
@@ -392,12 +487,15 @@ class SNMPCollector:
 
         except Exception as e:
             logger.error(f"SNMP WALK {oid} failed for {ip}: {e}")
-        finally:
-            self._close_engine(engine)
+
+        if cache_key is not None and len(results) <= _WALK_CACHE_MAX_ROWS:
+            self._walk_cache[cache_key] = results
 
         return results
 
-    async def _snmp_walk_getnext(self, ip: str, oid: str, max_rows: int = 10000) -> Dict[str, Any]:
+    async def _snmp_walk_getnext(
+        self, ip: str, oid: str, max_rows: int = _DEFAULT_MAX_ROWS
+    ) -> Dict[str, Any]:
         """GETNEXT based walk, used when the installed pysnmp has no walk generator"""
         results: Dict[str, Any] = {}
         prefix = oid + "."
@@ -406,7 +504,7 @@ class SNMPCollector:
             logger.error("Installed pysnmp exposes neither walkCmd nor nextCmd")
             return results
 
-        engine = SnmpEngine()
+        engine = self._get_engine()
         try:
             current_oid = oid
 
@@ -448,8 +546,6 @@ class SNMPCollector:
 
         except Exception as e:
             logger.error(f"SNMP WALK (getnext) {oid} failed for {ip}: {e}")
-        finally:
-            self._close_engine(engine)
 
         return results
 
@@ -740,7 +836,21 @@ class SNMPCollector:
             return None
 
     async def poll_device(self, ip: str) -> Dict:
-        """Poll a single device for all data"""
+        """
+        Poll a single device for all data.
+
+        For the duration of the call the interface name tables are cached, so
+        the three steps that need them (LLDP port mapping, CDP and interface
+        statistics) share one walk instead of walking them again each time.
+        """
+        self._walk_cache = {}
+        try:
+            return await self._poll_device(ip)
+        finally:
+            # Do not hold the tables between polls
+            self._walk_cache = None
+
+    async def _poll_device(self, ip: str) -> Dict:
         result = {
             "ip": ip,
             "success": False,

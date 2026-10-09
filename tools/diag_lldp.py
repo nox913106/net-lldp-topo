@@ -28,7 +28,15 @@ def section(title: str) -> None:
 
 
 async def diagnose(args) -> int:
-    collector = SNMPCollector(
+    collector = _build_collector(args)
+    try:
+        return await _diagnose(collector, args)
+    finally:
+        await collector.aclose()
+
+
+def _build_collector(args) -> SNMPCollector:
+    return SNMPCollector(
         community=args.community,
         timeout=args.timeout,
         retries=args.retries,
@@ -41,6 +49,8 @@ async def diagnose(args) -> int:
         port=args.port
     )
 
+
+async def _diagnose(collector: SNMPCollector, args) -> int:
     section(f"1. SNMP 連線測試 {args.ip}:{args.port}")
     sys_name = await collector._snmp_get(args.ip, SYS_NAME)
     if sys_name is None:

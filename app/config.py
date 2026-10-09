@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     # Collector Settings
     collector_interval: int = 300  # 5 minutes
     collector_concurrent: int = 20
+
+    # Back off devices that do not answer SNMP instead of probing them every
+    # cycle: after n consecutive failures the next attempt waits
+    # collector_interval * 2 ** (n - 1), capped at the value below.
+    collector_offline_backoff: bool = True
+    collector_offline_backoff_max: int = 1800  # 30 minutes
     
     # Discovery Settings
     discovery_enabled: bool = True

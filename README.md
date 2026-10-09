@@ -60,6 +60,7 @@ sudo bash deploy.sh native   # Native 部署
 - [Ubuntu 部署指南](docs/DEPLOYMENT.md) ⭐ 新增
 - [設定說明](docs/CONFIGURATION.md)
 - [收不到 LLDP 排查指南](docs/TROUBLESHOOTING_LLDP.md) ⭐ 新增
+- [效能與記憶體評估](docs/PERFORMANCE.md) ⭐ 新增
 
 ## 疑難排解
 
@@ -70,6 +71,18 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 ```
 
 詳細說明見 [docs/TROUBLESHOOTING_LLDP.md](docs/TROUBLESHOOTING_LLDP.md)。
+
+## 效能
+
+一次輪詢原本會為每個 SNMP 請求重建一個 SNMP engine（一台設備 20 幾個），
+光重新編譯 MIB 就佔掉 74% 的 CPU。現在每台設備共用一個 engine，實測單台
+設備的輪詢 CPU 時間下降 15 倍（1758ms → 116ms）。
+
+無回應的設備會依連續失敗次數退避（300s → 600s → 1200s → 1800s），不再每輪
+都等滿 `SNMP_TIMEOUT × (SNMP_RETRIES + 1)`。
+
+容量、記憶體量測結果與「要不要改用 Rust」的評估見
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md)。
 
 ## 授權
 

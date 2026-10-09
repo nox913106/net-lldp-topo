@@ -11,6 +11,7 @@ from datetime import datetime
 from app.config import get_settings
 from app.db.database import async_session_maker
 from app.core.snmp_collector import SNMPCollector
+from app.core.poll_scheduler import OfflineBackoff
 from app.core.topology_engine import TopologyEngine
 from app.core.alert_engine import AlertEngine
 from app.core.log_exporter import get_log_exporter, LogLevel
@@ -25,6 +26,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
+
+# Devices that do not answer SNMP are probed less and less often instead of
+# costing a full timeout on every OID of every cycle. The state lives in this
+# process only - see app/core/poll_scheduler.py for why.
+offline_backoff = OfflineBackoff(
+    base_interval=settings.collector_interval,
+    max_interval=settings.collector_offline_backoff_max,
+    enabled=settings.collector_offline_backoff
+)
 
 
 async def resolve_hostname(hostname: str) -> str:
@@ -109,17 +119,40 @@ async def poll_all_devices():
             select(Device).where(Device.status != DeviceStatus.EXCLUDED)
         )
         devices = result.scalars().all()
-        
-        logger.info(f"Starting poll cycle for {len(devices)} devices")
-        
+
+        # Forget devices that no longer exist so the backoff state cannot grow
+        offline_backoff.prune(device.id for device in devices)
+
+        due = [d for d in devices if offline_backoff.should_poll(d.id)]
+        due_ids = {d.id for d in due}
+        skipped = len(devices) - len(due)
+
+        if skipped:
+            logger.info(
+                f"Starting poll cycle for {len(due)} devices "
+                f"({skipped} skipped, backing off after repeated failures)"
+            )
+            for device in devices:
+                if device.id not in due_ids:
+                    logger.debug(
+                        f"Skipping {device.hostname} ({device.ip_address}): "
+                        f"{offline_backoff.failure_count(device.id)} consecutive "
+                        f"failures, retry in "
+                        f"{offline_backoff.seconds_until_retry(device.id):.0f}s"
+                    )
+        else:
+            logger.info(f"Starting poll cycle for {len(due)} devices")
+
         # Poll devices concurrently with limit
         semaphore = asyncio.Semaphore(settings.collector_concurrent)
-        
+
         async def poll_with_semaphore(device):
             async with semaphore:
                 # Use device-specific community, fallback to default
                 community = device.snmp_community or settings.snmp_default_community
-                collector = SNMPCollector(
+                # One collector - and therefore one SNMP engine and one UDP
+                # socket - per device, released as soon as the device is done
+                async with SNMPCollector(
                     community=community,
                     timeout=settings.snmp_timeout,
                     retries=settings.snmp_retries,
@@ -129,11 +162,26 @@ async def poll_all_devices():
                     v3_auth_password=device.snmpv3_auth_password,
                     v3_priv_protocol=device.snmpv3_priv_protocol,
                     v3_priv_password=device.snmpv3_priv_password
-                )
-                return await poll_single_device(collector, device, db)
-        
-        tasks = [poll_with_semaphore(d) for d in devices]
-        await asyncio.gather(*tasks)
+                ) as collector:
+                    reachable = await poll_single_device(collector, device, db)
+
+                if reachable:
+                    offline_backoff.record_success(device.id)
+                else:
+                    failures = offline_backoff.record_failure(device.id)
+                    logger.debug(
+                        f"{device.hostname}: {failures} consecutive failures, "
+                        f"next attempt in "
+                        f"{offline_backoff.delay_for(failures):.0f}s"
+                    )
+                return reachable
+
+        tasks = [poll_with_semaphore(d) for d in due]
+        # One device blowing up must not abandon the rest of the cycle
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        for device, outcome in zip(due, outcomes):
+            if isinstance(outcome, BaseException):
+                logger.error(f"Polling {device.hostname} raised: {outcome}")
         
         await db.commit()
         
@@ -150,8 +198,13 @@ async def poll_all_devices():
         logger.info("Poll cycle completed")
 
 
-async def poll_single_device(collector: SNMPCollector, device: Device, db):
-    """Poll a single device and update database"""
+async def poll_single_device(collector: SNMPCollector, device: Device, db) -> bool:
+    """
+    Poll a single device and update database.
+
+    Returns True when the device answered SNMP, so the caller can keep the
+    offline backoff up to date.
+    """
     log_exporter = get_log_exporter()
     
     try:
@@ -237,6 +290,7 @@ async def poll_single_device(collector: SNMPCollector, device: Device, db):
                 f"{len(result['cdp_neighbors'])} CDP neighbors, "
                 f"{len(result['interface_stats'])} interfaces"
             )
+            return True
         else:
             # Mark device as potentially offline
             if device.status != DeviceStatus.OFFLINE:
@@ -249,10 +303,12 @@ async def poll_single_device(collector: SNMPCollector, device: Device, db):
                 )
             device.status = DeviceStatus.OFFLINE
             logger.warning(f"Polled {device.hostname}: FAILED")
-            
+            return False
+
     except Exception as e:
         logger.error(f"Error polling {device.hostname}: {e}")
         device.status = DeviceStatus.OFFLINE
+        return False
 
 
 async def main():
