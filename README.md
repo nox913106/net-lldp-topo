@@ -160,6 +160,43 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 完整的量測、容量評估與「要不要改用 Rust」的評估見
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。
 
+## 開發與 CI
+
+依賴是鎖定的：`requirements.in` 是人維護的那一份（直接依賴與版本範圍），
+`requirements.txt` 由 `pip-compile` 產生 —— 每個套件釘到確切版本並帶 hash，
+`Dockerfile` 與 `deploy.sh` 都用 `--require-hashes` 安裝。這個專案被依賴漂移
+咬過一次（pysnmp 的進入點換掉，LLDP 走訪變成安靜地回傳 0 筆），所以範圍不夠，
+要的是同一份原始碼每次裝出同一棵樹。
+
+```bash
+# 測試：純邏輯那幾組不需要任何東西
+pip install --require-hashes -r requirements-dev.txt
+pytest
+
+# 連「真的走一次 SNMP」那一組（模擬器刻意裝在另一個 venv，原因見
+# requirements-sim.in：它會拉 pysnmp 7.x，正是這裡鎖著不要的版本）
+python -m venv .venv-sim
+.venv-sim/bin/pip install --require-hashes -r requirements-sim.txt
+SNMPSIM_BIN=.venv-sim/bin/snmpsim-command-responder pytest
+
+# 型別檢查（規則集很窄，原因寫在 pyrightconfig.json 裡）
+npx pyright@1.1.414
+
+# 改了依賴之後重新產生 lock
+pip install pip-tools
+pip-compile --generate-hashes --strip-extras --no-header requirements.in
+```
+
+`.github/workflows/ci.yml` 跑三個工作：**tests**（照 lock 安裝，起一個 SNMP
+模擬器，跑 69 項測試）、**lock**（就地重編三份 lock 再 `git diff --exit-code`，
+抓「改了 `.in` 沒重編」和手改 `.txt`）、**typecheck**（pyright）。測試在沒有
+模擬器時會 skip 而不是 fail，但 CI 設 `REQUIRE_SNMPSIM=1` 把那個 skip 變成
+失敗 —— 否則 CI 會在什麼都沒測的情況下變綠。
+
+型別檢查抓不到當初那場事故（原因見 [docs/PERFORMANCE.md 第 32.2 節](docs/PERFORMANCE.md)），
+真正守住它的是 `tests/test_snmp_collector.py` —— 那幾項斷言的是**筆數**，
+不是型別。
+
 ## 授權
 
 MIT License

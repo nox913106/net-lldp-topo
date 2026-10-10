@@ -1,0 +1,28 @@
+{
+  // Narrow on purpose. At pyright's own "standard" level this codebase
+  // reports 177 errors, and not one of them is a bug: the models still use
+  // the legacy SQLAlchemy Column() declarative style, so every
+  // "alert.is_active = True" looks like assigning to a Column. A gate that
+  // is red from the first commit is a gate nobody reads, so the rules below
+  // are the ones that are clean today and that catch something real: a name
+  // or a module that no longer exists. Moving the models to Mapped[] /
+  // mapped_column() is what unlocks the rest - docs/PERFORMANCE.md s32.
+  "include": ["app", "tools", "tests"],
+  "exclude": ["**/__pycache__", "**/node_modules", "**/.venv*"],
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Linux",
+
+  "typeCheckingMode": "off",
+
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "error",
+  "reportUndefinedVariable": "error",
+  "reportSelfClsParameterName": "error",
+  "reportUnsupportedDunderAll": "error",
+  "reportRedeclaration": "error",
+  "reportNoOverloadImplementation": "error",
+  "reportInconsistentOverload": "error",
+  "reportAssertAlwaysTrue": "error",
+  "reportUnusedCoroutine": "error",
+  "reportUnusedExcept": "error"
+}

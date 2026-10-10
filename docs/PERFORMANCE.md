@@ -1952,3 +1952,148 @@ trap 立刻告警。`cycle4.py` 跑出來逐位不變（`raw_links=10324`、
 | 5 | 分片之後再看 `COLLECTOR_CONCURRENT` 的預設值 | 每片的設備變少，20 可能偏高，而連線數是乘上去的（24.9） | 不用 |
 | 6 | 確認次數也做 per-profile | 核心交換機要立刻告警、分公司要確認三次，是同一個機群裡的兩種判斷 | 不用 |
 | 7 | trap 比對設備**所有已知位址**，不只管理位址 | 省掉每台設備的 `trap-source` 設定，也就是既有環境裡唯一要碰設備的那一行（21.5） | 不用（多一張 `device_addresses`） |
+
+---
+
+## 32. 鎖定依賴、型別檢查與測試進 CI
+
+第 31 節第 2 項。動機是這個專案唯一一次真的部署事故：部署出去的 v1.x 在
+pysnmp 的 asyncio 進入點改掉之後，LLDP 走訪變成**回傳 0 筆、不丟任何錯誤**，
+從外面看就是拓撲圖空白。`requirements.txt` 當時寫的是範圍，所以同一份原始碼
+在兩天安裝出來的是兩棵不同的依賴樹，而失敗是安靜的。
+
+### 32.1 鎖定之後抓到的四個問題
+
+把直接依賴搬到 `requirements.in`、用 `pip-compile --generate-hashes` 產生
+`requirements.txt`（40 個套件、每個帶 hash），然後**只用那份 lock 建一個乾淨
+的 venv**。四件事當場浮出來：
+
+| 問題 | 症狀 | 處理 |
+|---|---|---|
+| `sqlalchemy>=2.0.0` 沒有 `[asyncio]` extra | 乾淨環境 import 就死：`The SQLAlchemy asyncio module requires that the Python 'greenlet' library is installed` | 改成 `sqlalchemy[asyncio]` |
+| `aiosqlite` 根本沒宣告 | `app/config.py` 的預設 `DATABASE_URL` 就是 `sqlite+aiosqlite://`，照文件走的人第一個查詢就失敗 | 加進 `requirements.in` |
+| `alembic`、`apscheduler`、`redis` 三個都沒有任何程式 import | 白裝、白佔映像檔、白增加更新面 | 從 `.in` 移除，並在檔案裡寫明什麼時候該放回來 |
+| `python-dotenv` 其實是 `pydantic-settings` 的傳遞依賴 | 不是錯，但它不該出現在「直接依賴」那一份 | 只留在 lock 裡 |
+
+前兩個是**真的會讓新部署起不來**的 bug，而且在這之前無法被任何測試發現 ——
+因為所有既有環境都已經間接裝到了 greenlet 和 aiosqlite。
+
+`Dockerfile` 與 `deploy.sh` 都改成 `pip install --require-hashes`：hash 已經
+在檔案裡了，明寫出來是為了讓「有人手改一行、少一個 hash」在建置時就失敗，而
+不是安靜地裝到當天 PyPI 上的任何版本。
+
+### 32.2 pyright 抓得到什麼，抓不到什麼
+
+誠實的結論：**它抓不到當初那場事故**。
+
+那次壞掉的是 `from pysnmp.hlapi.asyncio import bulkCmd` —— 一個不再存在的
+名字。實測在同一份 pysnmp 上寫這一行，pyright **不會報錯**，因為
+`pysnmp/hlapi/asyncio/__init__.py` 整個是 `from ... import *` 的再匯出，
+型別檢查器對那個模組的符號表本來就是不完整的；而且程式現在自己用
+try/except 包著兩個版本的進入點，所以就算檢查器看得懂也不該報。
+
+它抓得到的是**整個模組不見**和**名字沒定義**。驗證方式是直接製造一次迴歸：
+在 `app/core/traffic.py` 加上 `import redis`（剛剛從依賴移除的那個）與一個
+不存在的函式呼叫，pyright 立刻紅：
+
+```
+app/core/traffic.py:138:8 - error: Import "redis" could not be resolved (reportMissingImports)
+app/core/traffic.py:142:12 - error: "undefined_helper" is not defined (reportUndefinedVariable)
+```
+
+這正好是這一輪自己製造的風險：移掉三個沒人用的套件之後，如果真有誰在用，
+CI 會在合併前說。
+
+規則集刻意很窄（`pyrightconfig.json` 裡寫了原因）。pyright 預設的
+`standard` 等級在這份程式上報 **177 個錯誤，而且沒有一個是 bug**：
+
+| 規則 | 筆數 | 為什麼 |
+|---|---|---|
+| `reportArgumentType` | 84 | 同下 |
+| `reportAttributeAccessIssue` | 46 | 資料模型還是舊式的 `Column()` 宣告，所以 `alert.is_active = True` 在檢查器眼裡是「對一個 Column 賦值」 |
+| `reportGeneralTypeIssues` | 26 | 同上 |
+| 其他 | 21 | 多數是 Optional 收窄跨不過方法邊界（例如 `_walk_cache_key()` 保證 `_walk_cache` 非 None，但那個保證在另一個方法裡） |
+
+一個從第一天就是紅的關卡等於沒有關卡，所以先把能乾淨通過、又真的抓得到東西
+的規則打開。要解鎖剩下的，得把模型從 `Column()` 搬到 `Mapped[]` /
+`mapped_column()` —— 那是一次會碰到每個查詢的改動，列在第 34 節。
+
+順手修掉一個真的被它抓到的東西：`get_db()` 標成 `-> AsyncSession`，但它
+`yield`，所以型別應該是 `AsyncGenerator[AsyncSession, None]`。FastAPI 是靠
+檢視函式本身決定怎麼處理依賴，所以行為沒變，但那個標註本來就是假的。
+
+### 32.3 真正守住那場事故的是測試
+
+既然型別檢查抓不到「走訪回傳 0 筆」，那就得有東西去真的問一次。
+`tests/` 進了 repo（之前所有測試都只活在我的工作目錄裡）：
+
+| 檔案 | 需要什麼 | 斷言什麼 |
+|---|---|---|
+| `test_snmp_collector.py`（7 項） | 一個 snmpsim 代理 | **筆數**：`ifDescr` 48 筆、`lldpRemSysName` 3 筆、鄰居解析出 sysName 與管理位址、down 的埠讀到 2 而不是 None、不存在的設備回 None 而不是空 dict、計數器真的在動且推得出 bps |
+| `test_damping.py`（29 項） | 什麼都不用 | 確認次數、flap 窗、第一次只是基準不算變化、prune 留下還 down 的那條、trap 政策的解析 |
+| `test_sharding.py`（15 項） | 什麼都不用 | 每個 device id 恰好屬於一片、不可能的切片要 raise 而不是夾值 |
+| `test_config.py`（18 項） | 什麼都不用 | `APP_LOG_LEVEL` 真的有效、認不得的值退回 INFO、抑制的預設值就是文件寫的那些 |
+
+合計 69 項，完整跑一次 10.6 秒。
+
+兩個設計上的細節：
+
+* **模擬器裝在另一個 venv。** snmpsim 會拉 pysnmp 7.x —— 正是這個專案鎖著
+  不要的那個大版本。裝在同一個環境裡，它會蓋掉被測的 pysnmp，測試就不再是
+  在測 lock 裡那一份。分開之後模擬器只是一個另一個行程，透過 UDP 對話。
+  （順帶發現 snmpsim 1.2.2 自己漏宣告 `pysmi`，乾淨安裝會在綁埠之前就
+  ModuleNotFoundError，所以 `requirements-sim.in` 幫它補上。）
+* **沒有模擬器時 skip，但 CI 不准 skip。** 在沒裝模擬器的機器上跑純邏輯測試
+  不該是紅燈，所以 fixture 預設 skip；CI 設 `REQUIRE_SNMPSIM=1`，同一個條件
+  就變成 fail —— 否則 CI 會在「什麼都沒測」的情況下變綠。兩個方向都實測過。
+
+### 32.4 CI 的三個工作
+
+`.github/workflows/ci.yml`（這個 repo 之前完全沒有 CI）：
+
+| 工作 | 做什麼 | 買到什麼 |
+|---|---|---|
+| `tests` | 照 lock 裝 app + 測試依賴，另一個 venv 裝模擬器，跑 pytest | 走訪真的還活著 |
+| `lock` | 用釘住的 pip-tools 就地重編三份 lock，然後 `git diff --exit-code` | 有人改了 `.in` 沒重編、或手改了 `.txt`，合併前就會知道 |
+| `typecheck` | 照 lock 裝依賴（不然每個第三方 import 都是 unknown，等於沒檢查），跑釘住版本的 pyright | 不存在的模組與名字 |
+
+`lock` 這個工作能穩定是因為 `pip-compile` 在輸出檔已經存在時不會主動升級已
+釘住的版本（沒有 `--upgrade`），所以只有 `.in` 真的要求了不一樣的東西才會
+產生差異 —— 不會因為某個套件今天發了新版就無故變紅。這一點實測過：連續重編
+三份 lock，`git diff` 是空的。
+
+---
+
+## 33. 這一輪的侷限
+
+* lock 是在 **linux / CPython 3.11** 上解出來的，`uvicorn[standard]` 的
+  `uvloop`、`httptools` 這些就是依這個平台選的。這跟 `Dockerfile`
+  （`python:3.11-slim`）與 CI 一致，但在 macOS 上開發的人用同一份
+  `--require-hashes` 安裝可能會缺 wheel。要跨平台就得改用
+  `--universal`（uv）或每個平台一份 lock。
+* 移除 `alembic`、`apscheduler`、`redis` 是靠「整個 repo grep 不到任何
+  import」判斷的。動態 import 或某人自己的部署腳本在用，grep 看不到；
+  pyright 的 `reportMissingImports` 會在下一次 CI 說，但那是在合併之後。
+* 測試裡那個模擬器是 snmpsim，不是真的交換機。它驗的是「我們這一側的走訪、
+  解析、速率推算是對的」，不是「某台 Cisco 的 agent 會這樣回答」。真設備
+  那一側只有現場能驗。
+* pyright 現在的規則集抓不到型別錯誤，只抓名字與模組。這是刻意的取捨
+  （32.2），但不要把它當成「這份程式通過型別檢查」。
+* `tests/` 只覆蓋了前面幾輪成果的一部分 —— 快慢迴圈、trap 接收器、lease
+  接手、分片的端對端行為仍然只在我的工作目錄裡跑過，沒有進 repo。那些需要
+  多個模擬器與一個資料庫，搬進 CI 是另一件事。
+
+---
+
+## 34. 下一步
+
+| # | 動作 | 效果 | 需要新元件？ |
+|---|---|---|---|
+| 1 | API 的拓樸回應快取 | 每次請求 49 ms → 1 ms 量級（15.3） | Redis（已在 compose 裡，但要先把它加回依賴） |
+| 2 | 把分片狀態與抑制狀態放進 API／UI | 目前「少了一片」「這條線在 flapping」「這個 trap 在等輪詢」只在 log 裡 | 不用 |
+| 3 | trap 比對設備**所有已知位址** | 省掉每台設備的 `trap-source`（21.5） | 不用（多一張 `device_addresses`） |
+| 4 | 模型搬到 `Mapped[]` / `mapped_column()` | 解鎖 pyright 真正的型別檢查（32.2 那 177 筆） | 不用，但會碰到每個查詢 |
+| 5 | 盤點迴圈也吃一次 `_snmp_get` 的 MIB 解析快取 | 每台 8 次 GET，目前還是每次重新解析（20.4） | 不用 |
+| 6 | 把端對端那幾套（快慢迴圈、trap、lease、分片）也搬進 `tests/` | 現在只有單元與 SNMP 走訪在 CI 裡 | 不用（CI 要起多個模擬器與一個資料庫） |
+| 7 | 確認次數也做 per-profile | 核心交換機要立刻告警、分公司要確認三次 | 不用 |
+| 8 | 分片之後再看 `COLLECTOR_CONCURRENT` 的預設值 | 每片的設備變少，20 可能偏高（24.9） | 不用 |

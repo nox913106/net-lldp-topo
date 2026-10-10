@@ -2,6 +2,7 @@
 Database connection and session management
 """
 import logging
+from typing import AsyncGenerator
 
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
@@ -46,8 +47,14 @@ class Base(DeclarativeBase):
     pass
 
 
-async def get_db() -> AsyncSession:
-    """Dependency for getting database session"""
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Dependency for getting database session.
+
+    It yields, so the annotation is the generator, not the session: FastAPI
+    decides how to handle a dependency by inspecting the function, but a
+    plain "-> AsyncSession" is a lie that a type checker rightly rejects.
+    """
     async with async_session_maker() as session:
         try:
             yield session

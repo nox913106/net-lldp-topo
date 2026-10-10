@@ -192,9 +192,11 @@ git clone https://github.com/nox913106/DEV-lldp-topomon.git .
 python3.11 -m venv venv
 source venv/bin/activate
 
-# 安裝 Python 套件
+# 安裝 Python 套件。requirements.txt 是 pip-compile 產生的 lock（每個套件
+# 釘到確切版本並帶 hash），--require-hashes 讓少一個 hash 的手改在這裡就失敗，
+# 而不是裝到當天 PyPI 上的任何版本
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt
 
 # 建立環境設定檔
 cp .env.example .env
@@ -550,7 +552,7 @@ git pull
 
 # 更新套件
 source venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt
 
 # 重啟服務
 sudo systemctl restart topomon-web topomon-collector

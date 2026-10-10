@@ -1,0 +1,56 @@
+# Direct dependencies, with the ranges a human maintains. The file that gets
+# installed is requirements.txt: it is generated from this one, pins every
+# transitive package to an exact version and carries a hash for each.
+#
+#   pip install pip-tools
+#   pip-compile --generate-hashes --strip-extras requirements.in
+#
+# Why a lockfile at all: the deployed v1.x stopped seeing any LLDP neighbour
+# because pysnmp's asyncio entry points moved underneath an unpinned install
+# (docs/TROUBLESHOOTING_LLDP.md). A range in requirements.txt is not enough -
+# `pip install -r` on two different days produced two different trees, and
+# the failure was silent (0 rows, no error).
+
+# -- Web --------------------------------------------------------------------
+fastapi>=0.104.0
+# Only ever run as a command (Dockerfile CMD, deploy.sh); nothing imports it
+uvicorn[standard]>=0.24.0
+
+# -- Database ---------------------------------------------------------------
+# [asyncio] is the whole project: every query goes through
+# create_async_engine/AsyncSession. The extra is what pulls greenlet, and
+# SQLAlchemy 2.1 stopped depending on it unconditionally - so a plain
+# "sqlalchemy>=2.0.0" install now raises "The SQLAlchemy asyncio module
+# requires that the Python 'greenlet' library is installed" on the first
+# import. It only looked fine because greenlet came in by accident.
+sqlalchemy[asyncio]>=2.0.0
+# Drivers for the two DATABASE_URL forms this project uses: asyncpg for
+# PostgreSQL (docker-compose, production) and aiosqlite for the sqlite
+# default in app/config.py. aiosqlite was missing here, so a fresh install
+# that kept the default URL failed on the first query.
+asyncpg>=0.29.0
+aiosqlite>=0.19.0
+
+# -- Settings and models ----------------------------------------------------
+pydantic>=2.5.0
+# Pulls python-dotenv itself, which is what reads .env
+pydantic-settings>=2.1.0
+
+# -- SNMP -------------------------------------------------------------------
+# pysnmp 6.x asyncio API (bulkWalkCmd/walkCmd). pysnmp 4.x does not work with
+# pyasn1 >= 0.5 and pysnmp 7.x renamed the hlapi entry points, so keep the
+# range even though the lock pins an exact version: the range is what a
+# regenerated lock is allowed to move within.
+pysnmp>=6.2.6,<7.0.0
+pyasn1>=0.6.0
+
+# -- HTTP client ------------------------------------------------------------
+# app/core/log_exporter.py posts to Elasticsearch/Graylog
+httpx>=0.25.0
+
+# Deliberately not here, because nothing imports them: alembic (the schema is
+# upgraded in place by app/db/database.py - there is no migrations
+# directory), apscheduler (app/core/discovery_scheduler.py is plain asyncio),
+# redis (docker-compose runs the service and docs/PERFORMANCE.md section 15
+# weighs using it, but no Python code connects to it yet). Put one back in
+# this file, not in requirements.txt, when something actually imports it.

@@ -1,0 +1,8 @@
+# What CI installs to run the tests, on top of the application's own lock.
+# Regenerate with:
+#
+#   pip-compile --generate-hashes --strip-extras requirements-dev.in
+#
+-r requirements.in
+
+pytest>=8.0.0

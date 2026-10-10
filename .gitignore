@@ -29,6 +29,9 @@ venv/
 ENV/
 env/
 .venv/
+# The SNMP simulator the tests talk to, kept out of the project's own
+# environment on purpose (requirements-sim.in)
+.venv-sim/
 
 # IDE
 .idea/

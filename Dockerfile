@@ -8,9 +8,12 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies from the lockfile. --require-hashes is implied
+# by a fully hashed requirements.txt, but spelling it out means a hand-edited
+# line without a hash fails the build instead of silently installing whatever
+# PyPI serves that day (requirements.in explains why this project locks).
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 # Copy application
 COPY . .

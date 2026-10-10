@@ -1,0 +1,120 @@
+# What has to be true before a change lands.
+#
+# The point of reference is the outage this project already had: a deployed
+# v1.x stopped seeing any LLDP neighbour because pysnmp's asyncio entry points
+# moved underneath an unpinned install, and it failed *silently* - zero rows,
+# no exception, an empty topology (docs/TROUBLESHOOTING_LLDP.md). So the three
+# jobs below are, in order of how much they actually buy:
+#
+#   test       - walks a real SNMP agent and asserts on row counts
+#   lock       - the lockfiles still match what a human wrote in the .in files
+#   typecheck  - names that no longer exist, before anything is run
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PYTHON_VERSION: "3.11"
+  # Both pinned: a tool that changes version mid-week turns CI into a
+  # different check than the one that passed yesterday.
+  PIP_TOOLS_VERSION: "7.6.2"
+  PYRIGHT_VERSION: "1.1.414"
+
+jobs:
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the application and test locks
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements-dev.txt
+
+      - name: Install the SNMP simulator in its own virtualenv
+        # It pulls pysnmp 7.x, which is exactly the version this project
+        # pins away from - in one environment it would replace the pysnmp
+        # under test. See requirements-sim.in.
+        run: |
+          python -m venv .venv-sim
+          .venv-sim/bin/pip install --upgrade pip
+          .venv-sim/bin/pip install --require-hashes -r requirements-sim.txt
+
+      - name: pytest
+        env:
+          SNMPSIM_BIN: .venv-sim/bin/snmpsim-command-responder
+          # Without the simulator the SNMP tests skip, so that a developer's
+          # machine stays usable - which would also let CI go green having
+          # tested nothing. This turns that skip into a failure.
+          REQUIRE_SNMPSIM: "1"
+        run: pytest
+
+  lock:
+    name: lockfiles are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pip-tools
+        run: pip install "pip-tools==${{ env.PIP_TOOLS_VERSION }}"
+
+      - name: Recompile every lock in place
+        # pip-compile keeps the versions already pinned in the output file
+        # unless --upgrade is given, so this only changes something when an
+        # .in file asks for something the .txt does not deliver - a new
+        # dependency, a changed range, or a hand-edited lockfile.
+        run: |
+          for name in requirements requirements-dev requirements-sim; do
+            pip-compile --quiet --generate-hashes --strip-extras --no-header "$name.in"
+          done
+
+      - name: The locks must not have moved
+        run: |
+          if ! git diff --exit-code -- 'requirements*.txt'; then
+            echo
+            echo "A lockfile is out of date. Run:"
+            echo "  pip-compile --generate-hashes --strip-extras --no-header requirements.in"
+            echo "(and the same for requirements-dev.in / requirements-sim.in)"
+            exit 1
+          fi
+
+  typecheck:
+    name: pyright
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the application lock
+        # pyright needs the dependencies present to resolve them; without
+        # them every third-party import is simply "unknown" and the job
+        # proves nothing.
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: pyright
+        # Settings are in pyrightconfig.json, where the comment explains why
+        # the rule set is narrow: the models still use the legacy
+        # Column() declarative style, which makes the assignment rules
+        # unusable until they move to Mapped[].
+        run: npx --yes "pyright@${{ env.PYRIGHT_VERSION }}" --pythonpath "$(which python)"
