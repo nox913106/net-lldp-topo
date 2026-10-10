@@ -9,7 +9,7 @@ import signal
 import socket
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -145,10 +145,59 @@ LEASE_TTL = coordination_ttl(
 # with, and no reason to let a lease stand between the fleet and its alerts.
 fleet_lease = Lease(FLEET_LEASE, SHARD.name, LEASE_TTL) if SHARD.enabled else None
 
-# "This shard is running", so whoever holds the lease above can notice that
-# one of the configured shards is not.
-heartbeat = member_lease(SHARD, LEASE_TTL) if SHARD.enabled else None
+# Coverage is the sharded-only half of the heartbeat: with a single process
+# there is no "some shard is missing" to detect. The heartbeat row itself is
+# written either way - see _status() for why an unsharded collector reports
+# too.
 coverage = Coverage(SHARD) if SHARD.enabled else None
+
+
+def _status(trap_receiver) -> Dict[str, Any]:
+    """
+    What this process would otherwise only say in its own log.
+
+    Three kinds of state have been invisible to anyone looking at the web UI:
+    whether a shard of the configured count is missing, which devices are
+    mid-confirmation, and which cables are being held as flapping. The first
+    is in the database already; the other two are process memory by design
+    (app/core/damping.py), and the API runs in a different process.
+
+    So each collector reports them on its own heartbeat row, which it was
+    renewing anyway - no extra statement, and no risk of the API displaying
+    its *own* environment: in docker-compose the ALERT_* variables are set on
+    the collector service only, so an API process reading settings directly
+    would confidently show defaults that nothing is running with.
+
+    The settings are read back from the objects rather than from settings,
+    because those are what is in effect: both clamp a nonsensical value
+    (cycles < 1, transitions == 1) instead of running with it.
+    """
+    return {
+        "shard": {"index": SHARD.index, "count": SHARD.count},
+        "intervals": {
+            "inventory": settings.collector_interval,
+            "fast": settings.collector_fast_interval if FAST_LOOP_ENABLED else 0,
+        },
+        "damping": {
+            "offline_confirm_cycles": offline_confirm.cycles,
+            "link_flap_transitions": flap_damper.transitions,
+            "link_flap_window": flap_damper.window,
+            "trap_requires_poll": settings.alert_trap_requires_poll,
+            # Live state: how many devices have failed a poll without being
+            # confirmed offline yet, and which cables are being held.
+            "pending_offline": offline_confirm.pending(),
+            "pending_offline_devices": [
+                {"id": device_id, "failures": failures}
+                for device_id, failures in offline_confirm.pending_devices()
+            ],
+            "flapping_links": flap_damper.flapping_count(),
+            "flapping_link_ids": [
+                {"id": link_id, "transitions": transitions}
+                for link_id, transitions in flap_damper.flapping_links()
+            ],
+        },
+        "traps": trap_receiver.counters() if trap_receiver is not None else None,
+    }
 
 # Which neighbours are already known, and which ones cannot be turned into a
 # device. Re-seeded from the database at the start of every cycle, so the two
@@ -855,8 +904,17 @@ async def main():
             )
             trap_receiver = None
 
+    # "This process is running, and here is what it is doing". Created here
+    # rather than at import time because it reports on the trap receiver
+    # above. Written even by a single collector: it is the only thing that
+    # tells the API a collector exists at all, and with sharding it is also
+    # how a missing shard is noticed.
+    heartbeat = member_lease(
+        SHARD, LEASE_TTL, status=lambda: _status(trap_receiver)
+    )
+
     async def inventory_cycle():
-        if heartbeat is not None and not FAST_LOOP_ENABLED:
+        if not FAST_LOOP_ENABLED:
             # Whichever loop runs most often renews the heartbeat, because the
             # TTL is derived from that loop's interval
             await heartbeat.acquire()
@@ -886,8 +944,7 @@ async def main():
         )
 
         async def fast_cycle():
-            if heartbeat is not None:
-                await heartbeat.acquire()
+            await heartbeat.acquire()
             await poller.run_cycle()
 
         tasks.append(asyncio.create_task(_fixed_cadence(
@@ -921,8 +978,7 @@ async def main():
         # planned restart is not reported as a missing shard.
         if fleet_lease is not None:
             await fleet_lease.release()
-        if heartbeat is not None:
-            await heartbeat.release()
+        await heartbeat.release()
         await inventory_pool.aclose()
         await fast_pool.aclose()
 

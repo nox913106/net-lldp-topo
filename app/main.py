@@ -11,7 +11,10 @@ import os
 
 from app.config import get_settings, log_level
 from app.db.database import init_db
-from app.api import devices, topology, alerts, profiles, groups, discovery, snmp, settings
+from app.api import (
+    alerts, collector, devices, discovery, groups, profiles, settings, snmp,
+    topology
+)
 from app.core.discovery_scheduler import start_discovery_scheduler
 from app.api.settings import load_settings as load_app_settings
 
@@ -79,6 +82,7 @@ app.include_router(groups.router, prefix="/api/v1/groups", tags=["Device Groups"
 app.include_router(discovery.router, prefix="/api/v1/discovery", tags=["Discovery"])
 app.include_router(snmp.router, prefix="/api/v1/snmp", tags=["SNMP Testing"])
 app.include_router(settings.router, prefix="/api/v1/settings", tags=["Settings"])
+app.include_router(collector.router, prefix="/api/v1/collector", tags=["Collector"])
 
 # Mount static files
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

@@ -6,7 +6,7 @@ Only needed once the fleet is split across several collector processes
 back, which costs one statement per cycle and keeps the two deployments on the
 same code path.
 """
-from sqlalchemy import Column, DateTime, Integer, String
+from sqlalchemy import Column, DateTime, Integer, JSON, String
 
 from app.db.database import Base
 
@@ -48,3 +48,18 @@ class CollectorLease(Base):
     # Number of takeovers, so a lease flapping between two processes - which
     # is what a too-short TTL looks like - is visible in one SELECT.
     takeovers = Column(Integer, default=0)
+
+    # What this process is doing, written by the owner on every renewal.
+    #
+    # The API runs in a different process from the collectors and shares no
+    # memory with them, so without this there is no way to show an operator
+    # which damping is in effect or how many devices are mid-confirmation -
+    # and worse, the API reading its *own* environment would confidently
+    # display defaults while the collector ran with something else (in
+    # docker-compose the ALERT_* variables are set on the collector service
+    # only). So the numbers come from the process that actually has them.
+    #
+    # It rides along on a renewal that was happening anyway, so it costs no
+    # extra statement. Nullable, because a collector from before this column
+    # existed simply leaves it empty.
+    status = Column(JSON)

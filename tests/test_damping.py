@@ -75,6 +75,58 @@ def test_zero_or_negative_cycles_means_one():
         assert OfflineConfirm(cycles=value).record_failure(1).confirmed
 
 
+def test_pending_devices_report_their_progress():
+    """
+    What the API shows an operator: which devices are mid-confirmation and
+    how far, so damping is distinguishable from a collector that stopped
+    noticing.
+    """
+    confirm = OfflineConfirm(cycles=3)
+    confirm.record_failure(7)
+    confirm.record_failure(7)
+    confirm.record_failure(9)
+    assert confirm.pending_devices() == [(7, 2), (9, 1)]
+    assert confirm.pending() == 2
+
+
+def test_a_confirmed_device_is_no_longer_pending():
+    """Once it has alerted it is not "waiting" any more, it is offline."""
+    confirm = OfflineConfirm(cycles=2)
+    confirm.record_failure(7)
+    assert confirm.pending_devices() == [(7, 1)]
+    confirm.record_failure(7)
+    assert confirm.pending_devices() == []
+    assert confirm.pending() == 0
+
+
+def test_the_pending_list_is_bounded():
+    """A site outage puts every device behind the failed uplink in here."""
+    confirm = OfflineConfirm(cycles=3)
+    for device_id in range(100):
+        confirm.record_failure(device_id)
+    assert len(confirm.pending_devices(limit=10)) == 10
+    assert confirm.pending() == 100
+
+
+def test_flapping_links_report_their_change_count():
+    damper = FlapDamper(transitions=2, window_seconds=600)
+    damper.observe(1, down=True)
+    damper.observe(1, down=False)
+    damper.observe(1, down=True)
+    damper.observe(2, down=True)
+    damper.observe(2, down=False)
+    assert damper.flapping_links() == [(1, 2)]
+    assert damper.flapping_count() == 1
+
+
+def test_nothing_is_flapping_when_damping_is_off():
+    damper = FlapDamper()
+    damper.observe(1, down=True)
+    damper.observe(1, down=False)
+    assert damper.flapping_links() == []
+    assert damper.flapping_count() == 0
+
+
 # -- the backoff has to know about the confirmation window ----------------
 
 def test_backoff_keeps_full_cadence_while_confirming():

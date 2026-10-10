@@ -278,6 +278,72 @@
             margin-top: 0.25rem;
         }
 
+        /* Collector status */
+        .collector-warning {
+            padding: 0.75rem 1rem;
+            margin-bottom: 0.75rem;
+            border-radius: 6px;
+            border-left: 3px solid var(--danger, #e5534b);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+
+        .collector-quiet {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        .collector-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        .collector-table th,
+        .collector-table td {
+            text-align: left;
+            padding: 0.4rem 0.6rem;
+            border-bottom: 1px solid var(--border, rgba(128, 128, 128, 0.2));
+        }
+
+        .collector-table th {
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+
+        .collector-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 0.4rem;
+            background: var(--text-secondary);
+        }
+
+        .collector-dot.live {
+            background: var(--success, #3fb950);
+        }
+
+        .collector-dot.dead {
+            background: var(--danger, #e5534b);
+        }
+
+        .collector-sub {
+            margin-top: 1.25rem;
+        }
+
+        .collector-sub h3 {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+        }
+
         /* Modal Overlay */
         .modal-overlay {
             position: fixed;
@@ -413,6 +479,19 @@
                             <div class="info-label" data-i18n="totalLinks">Total Links</div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Collector status: see app/api/collector.py for why this
+                 comes from the collectors and not from this process -->
+            <div class="settings-section">
+                <div class="section-header">
+                    <h2>🛰️ <span data-i18n="collectorStatus">Collector Status</span></h2>
+                    <button class="btn btn-secondary" onclick="loadCollectorStatus()"
+                            data-i18n="refresh">Refresh</button>
+                </div>
+                <div class="section-content" id="collector-status">
+                    <p class="collector-quiet" data-i18n="loading">Loading…</p>
                 </div>
             </div>
 
@@ -721,6 +800,12 @@
         document.addEventListener('DOMContentLoaded', () => {
             loadSystemInfo();
             loadProfiles();
+            loadCollectorStatus();
+            // The damping counters are live state, so a stale panel is
+            // worse than no panel: it would say "nothing is pending" while
+            // a device is being confirmed. One poll per fast cycle is
+            // enough to stay honest without being chatty.
+            setInterval(loadCollectorStatus, 30000);
         });
 
         async function loadSystemInfo() {
@@ -739,6 +824,186 @@
             } catch (error) {
                 console.error('Error loading system info:', error);
             }
+        }
+
+        // -- Collector status --------------------------------------------
+        //
+        // Everything rendered here was reported by the collector processes
+        // themselves (app/collector.py _status). This page runs in a
+        // different process and must not substitute its own settings: in
+        // docker-compose the ALERT_* variables are set on the collector
+        // service only, so reading them here would show defaults nothing is
+        // running with.
+        async function loadCollectorStatus() {
+            const box = document.getElementById('collector-status');
+            try {
+                const response = await fetch(`${API_BASE}/collector/status`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                renderCollectorStatus(await response.json());
+            } catch (error) {
+                console.error('Error loading collector status:', error);
+                box.innerHTML = `<p class="collector-quiet">${escapeHtml(String(error))}</p>`;
+            }
+        }
+
+        function escapeHtml(value) {
+            // Hostnames and port names come from the devices over SNMP, so
+            // they are not this project's strings and go through here.
+            return String(value ?? '').replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;',
+                '"': '&quot;', "'": '&#39;'
+            })[c]);
+        }
+
+        // The API is not translated, so it sends a code and the numbers.
+        // A code this page does not know falls back to the API's own
+        // English sentence rather than showing nothing.
+        function warningText(warning) {
+            if (typeof warning === 'string') return warning;
+            const template = i18n.t('warn_' + warning.code);
+            if (template === 'warn_' + warning.code) return warning.message;
+            return template.replace(/\{(\w+)\}/g, (whole, key) =>
+                warning.params && key in warning.params
+                    ? String(warning.params[key]) : whole);
+        }
+
+        function statCard(value, label) {
+            return `<div class="info-item">
+                <div class="info-value">${escapeHtml(value)}</div>
+                <div class="info-label">${escapeHtml(label)}</div>
+            </div>`;
+        }
+
+        function renderCollectorStatus(data) {
+            const t = key => i18n.t(key);
+            const box = document.getElementById('collector-status');
+            const parts = [];
+
+            for (const warning of data.warnings || []) {
+                parts.push(`<div class="collector-warning">⚠️ ${escapeHtml(warningText(warning))}</div>`);
+            }
+
+            if (!data.reporting) {
+                parts.push(`<p class="collector-quiet">${escapeHtml(t('collectorNotReporting'))}</p>`);
+                box.innerHTML = parts.join('');
+                return;
+            }
+
+            const d = data.damping || {};
+            const list = v => Array.isArray(v) ? v.join(' / ') : v;
+            const cycles = d.offline_confirm_cycles;
+            const transitions = d.link_flap_transitions;
+
+            parts.push(`<div class="info-grid">
+                ${statCard(list(cycles) ?? '-', t('dampingConfirmCycles'))}
+                ${statCard(
+                    transitions === 0 ? t('disabled') : list(transitions) ?? '-',
+                    t('dampingFlapTransitions'))}
+                ${statCard(
+                    d.trap_requires_poll === undefined ? '-'
+                        : (d.trap_requires_poll === true ? t('enabled')
+                            : d.trap_requires_poll === false ? t('disabled')
+                            : list(d.trap_requires_poll)),
+                    t('dampingTrapRequiresPoll'))}
+                ${statCard(d.pending_offline ?? 0, t('dampingPendingOffline'))}
+                ${statCard(d.flapping_links ?? 0, t('dampingFlappingLinks'))}
+                ${statCard(
+                    data.shards_configured === null || data.shards_configured === undefined
+                        ? '-'
+                        : `${(data.shards_reporting || []).length}/${data.shards_configured}`,
+                    t('collectorProcesses'))}
+            </div>`);
+
+            // Which devices and cables, not just how many: the count alone
+            // cannot tell damping from a blind spot.
+            const pending = data.pending_offline_devices || [];
+            if (pending.length) {
+                parts.push(`<div class="collector-sub">
+                    <h3>${escapeHtml(t('dampingPendingOffline'))}</h3>
+                    <p class="collector-quiet">${escapeHtml(t('dampingPendingHint'))}</p>
+                    <table class="collector-table"><tbody>
+                    ${pending.map(device => `<tr>
+                        <td>${escapeHtml(device.hostname || device.id)}</td>
+                        <td class="collector-quiet">${escapeHtml(device.ip_address || '')}</td>
+                        <td>${device.failures === null || device.failures === undefined
+                            ? ''
+                            : escapeHtml(`${device.failures}/${list(cycles) ?? '?'}`)}</td>
+                    </tr>`).join('')}
+                    </tbody></table>
+                </div>`);
+            }
+
+            const flapping = data.flapping_links || [];
+            if (flapping.length) {
+                parts.push(`<div class="collector-sub">
+                    <h3>${escapeHtml(t('dampingFlappingLinks'))}</h3>
+                    <p class="collector-quiet">${escapeHtml(t('dampingFlappingHint'))}</p>
+                    <table class="collector-table"><tbody>
+                    ${flapping.map(link => `<tr>
+                        <td>${escapeHtml(link.hostname || link.device_id)} ${escapeHtml(link.local_port || '')}</td>
+                        <td class="collector-quiet">${escapeHtml(link.remote_hostname || '')} ${escapeHtml(link.remote_port || '')}</td>
+                        <td>${link.transitions === null || link.transitions === undefined
+                            ? ''
+                            : escapeHtml(`${link.transitions} ${t('transitionsUnit')}`)}</td>
+                    </tr>`).join('')}
+                    </tbody></table>
+                </div>`);
+            }
+
+            // One row per process. With a single collector this is one row,
+            // and it is still the only place the UI says the collector is
+            // alive at all.
+            parts.push(`<div class="collector-sub">
+                <h3>${escapeHtml(t('collectorProcesses'))}</h3>
+                <table class="collector-table">
+                    <thead><tr>
+                        <th>${escapeHtml(t('collectorShard'))}</th>
+                        <th>${escapeHtml(t('collectorOwner'))}</th>
+                        <th>${escapeHtml(t('collectorLastSeen'))}</th>
+                        <th>${escapeHtml(t('collectorIntervals'))}</th>
+                        <th>${escapeHtml(t('dampingPendingOffline'))}</th>
+                    </tr></thead>
+                    <tbody>
+                    ${(data.processes || []).map(p => `<tr>
+                        <td><span class="collector-dot ${p.live ? 'live' : 'dead'}"></span>${
+                            p.shards > 1 ? escapeHtml(`${p.shard} / ${p.shards}`) : '—'}</td>
+                        <td>${escapeHtml(p.owner)}</td>
+                        <td>${p.age_seconds === null || p.age_seconds === undefined
+                            ? '' : escapeHtml(`${Math.round(p.age_seconds)}${t('secondsAgo')}`)}</td>
+                        <td class="collector-quiet">${p.intervals
+                            ? escapeHtml(`${p.intervals.inventory}s / ${p.intervals.fast || '-'}s`)
+                            : ''}</td>
+                        <td>${escapeHtml((p.damping || {}).pending_offline ?? '')}</td>
+                    </tr>`).join('')}
+                    </tbody>
+                </table>
+            </div>`);
+
+            if (data.fleet_wide) {
+                parts.push(`<div class="collector-sub">
+                    <h3>${escapeHtml(t('collectorFleetWide'))}</h3>
+                    <p class="collector-quiet">${escapeHtml(t('collectorFleetWideHint'))}</p>
+                    <table class="collector-table"><tbody><tr>
+                        <td><span class="collector-dot ${data.fleet_wide.live ? 'live' : 'dead'}"></span>${
+                            escapeHtml(data.fleet_wide.owner)}</td>
+                        <td class="collector-quiet">${escapeHtml(
+                            `${data.fleet_wide.takeovers} ${t('collectorTakeovers')}`)}</td>
+                    </tr></tbody></table>
+                </div>`);
+            }
+
+            parts.push(`<div class="collector-sub">
+                <h3>${escapeHtml(t('trapsSection'))}</h3>
+                ${data.traps ? `<div class="info-grid">
+                    ${statCard(data.traps.received ?? 0, t('trapsReceived'))}
+                    ${statCard(data.traps.applied ?? 0, t('trapsApplied'))}
+                    ${statCard(data.traps.ignored ?? 0, t('trapsIgnored'))}
+                    ${statCard(data.traps.dropped ?? 0, t('trapsDropped'))}
+                    ${statCard(data.traps.deferred ?? 0, t('trapsDeferred'))}
+                </div>` : `<p class="collector-quiet">${escapeHtml(t('trapsOff'))}</p>`}
+            </div>`);
+
+            box.innerHTML = parts.join('');
         }
 
         async function loadProfiles() {

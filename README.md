@@ -56,7 +56,7 @@ sudo bash deploy.sh native   # Native 部署
 ## 文件
 
 - [系統設計文件 (SDD)](docs/SDD.md)
-- [API 文件](docs/API.md)
+- [API 設計文件](docs/SDD-API.md)
 - [Ubuntu 部署指南](docs/DEPLOYMENT.md) ⭐ 新增
 - [設定說明](docs/CONFIGURATION.md)
 - [收不到 LLDP 排查指南](docs/TROUBLESHOOTING_LLDP.md) ⭐ 新增
@@ -127,6 +127,12 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 本來就不會變成告警。第一次 down、以及輪詢讀到的 down 都不延遲 —— 埠狀態
 跟「設備活著」是同一個 GET 回來的，所以那是設備自己說的，不是掉包推論的。
 
+抑制一旦打開，「沒有告警」就有兩種意思：真的沒事，或者正在確認中。設定頁的
+**收集器狀態**會把後者寫出來 —— 哪一台在確認中（含「3 次裡的第 2 次」）、
+哪一條線被按住、哪一片沒有在回報。資料是收集器行程自己回報的，不是 API 行程
+照自己的環境變數猜的（`GET /api/v1/collector/status`，見
+[docs/SDD-API.md](docs/SDD-API.md) 第 8 節）。
+
 ## 分片（多個 collector 行程）
 
 一輪的瓶頸是 SNMP 解碼的 CPU，而 GIL 讓多執行緒幫不上忙，所以要跨過單核
@@ -153,7 +159,8 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 **1000 台用四片等於 500 台用兩片**，所以往上一個數量級是改設定。
 
 0 到 N-1 每個號碼都要有行程在跑：少跑一個，那些設備就沒有人輪詢。
-拿到 lease 的行程會警告這件事（`Shard(s) 2 of 4 are not reporting`）。
+拿到 lease 的行程會警告這件事（`Shard(s) 2 of 4 are not reporting`），
+設定頁的**收集器狀態**也會，不用去翻 log。
 `COLLECTOR_TRAP_ENABLED` 一台主機只能開一個行程 —— udp/162 只有一個綁得到，
 而綁到的那個會處理整個機群的 trap，不只自己那一片。
 

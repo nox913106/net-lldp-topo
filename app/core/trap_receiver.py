@@ -586,6 +586,26 @@ class TrapReceiver:
         self._unknown_sources -= set(self._devices)
         return self._devices
 
+    def counters(self) -> Dict[str, Any]:
+        """
+        The receiver's counters, for the log line and for the API's status.
+
+        ``unknown_sources`` is the one an operator acts on: traps arriving
+        from an address that is not a managed device means the devices are
+        sending from an interface this does not know about, which is the
+        trap-source problem in docs/CONFIGURATION.md section 5.3.
+        """
+        return {
+            "listening": self.port,
+            "received": self.received,
+            "applied": self.acted_on,
+            "ignored": self.ignored,
+            "dropped": self.dropped,
+            "deferred": self.deferred,
+            "requires_poll": self.requires_poll,
+            "unknown_sources": sorted(self._unknown_sources)[:20],
+        }
+
     def stats(self) -> str:
         return (
             f"{self.received} received, {self.acted_on} applied, "

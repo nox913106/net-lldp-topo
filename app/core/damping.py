@@ -32,7 +32,9 @@ after one failure, no flap damping, and traps alert immediately.
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Hashable, Iterable, List, Mapping, Optional
+from typing import (
+    Any, Dict, Hashable, Iterable, List, Mapping, Optional, Tuple
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +112,26 @@ class OfflineConfirm:
         return sum(
             1 for failures in self._failures.values() if failures < self.cycles
         )
+
+    def pending_devices(
+        self, limit: int = 50
+    ) -> List[Tuple[Hashable, int]]:
+        """
+        Which devices are mid-confirmation, and how far, for the API's status.
+
+        ``(device_id, failures)`` - the progress is the point: "2 of 3
+        failures" is the difference between damping working and the collector
+        having stopped noticing. Bounded, because during a site outage this
+        is every device behind the failed uplink and the list is only worth
+        showing if it stays readable; pending() has the real count.
+        """
+        found = [
+            (device_id, failures)
+            for device_id, failures in self._failures.items()
+            if failures < self.cycles
+        ]
+        found.sort(key=lambda pair: str(pair[0]))
+        return found[:max(0, int(limit))]
 
     def prune(self, device_ids: Iterable[Hashable]) -> None:
         """Forget devices that no longer exist"""
@@ -193,6 +215,36 @@ class FlapDamper:
 
     def count(self, link_id: int) -> int:
         return self._count(link_id)
+
+    def flapping_links(self, limit: int = 50) -> List[Tuple[int, int]]:
+        """
+        Every cable counted as flapping, with its change count, for the API.
+
+        Only cables that have changed state recently are in the dictionary at
+        all (prune() drops the rest), so this walks a handful of entries on a
+        healthy fleet. Bounded for the same reason as
+        OfflineConfirm.pending_devices().
+        """
+        if not self.enabled:
+            return []
+        found = [
+            (link_id, count) for link_id, count in (
+                (link_id, self._count(link_id))
+                for link_id in list(self._changes)
+            )
+            if count >= self.transitions
+        ]
+        found.sort()
+        return found[:max(0, int(limit))]
+
+    def flapping_count(self) -> int:
+        """How many cables are flapping, unbounded"""
+        if not self.enabled:
+            return 0
+        return sum(
+            1 for link_id in list(self._changes)
+            if self._count(link_id) >= self.transitions
+        )
 
     def forget(self, link_id: int) -> None:
         self._changes.pop(link_id, None)

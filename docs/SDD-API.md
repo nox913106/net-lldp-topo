@@ -15,6 +15,7 @@
 | `/api/v1/profiles/{id}` | GET, PUT, DELETE | 單一 Profile |
 | `/api/v1/discovery/start` | POST | 啟動發現 |
 | `/api/v1/discovery/status` | GET | 發現狀態 |
+| `/api/v1/collector/status` | GET | 收集器狀態：分片、告警抑制、trap |
 
 ---
 
@@ -313,3 +314,108 @@
   }
 }
 ```
+
+---
+
+## 8. 收集器 API
+
+### GET /api/v1/collector/status
+
+收集器行程自己回報的狀態。
+
+這個端點跟其他端點不一樣的地方：**資料不是這個行程算出來的**。收集器跟 API
+是兩個行程、不共用記憶體，而「哪些設備正在確認中」「哪些線被按住」是刻意留在
+收集器行程記憶體裡的（`app/core/damping.py`）。所以每個收集器把它正在做的事
+寫在自己本來就要續約的 heartbeat 那一列上（`collector_leases.status`），這裡
+只是把那些列讀回來、把 id 換成看得懂的名字。
+
+API 行程**不會**用自己的環境變數去填這些值：docker-compose 裡 `ALERT_*` 只設
+在 collector 服務上，照自己的環境回答會變成「很有自信地顯示一組沒有人在用的
+預設值」。
+
+**Response:**
+```json
+{
+  "reporting": true,
+  "sharded": true,
+  "shards_configured": 4,
+  "shards_reporting": [0, 1, 3],
+  "shards_missing": [2],
+  "processes": [
+    {
+      "shard": 0, "shards": 4, "owner": "shard-0-of-4", "live": true,
+      "renewed_at": "2026-10-10T19:06:39", "expires_at": "2026-10-10T19:16:39",
+      "age_seconds": 12.2,
+      "intervals": {"inventory": 300, "fast": 60},
+      "damping": {
+        "offline_confirm_cycles": 3,
+        "link_flap_transitions": 4,
+        "link_flap_window": 600.0,
+        "trap_requires_poll": true,
+        "pending_offline": 1,
+        "pending_offline_devices": [{"id": 3, "failures": 2}],
+        "flapping_links": 1,
+        "flapping_link_ids": [{"id": 1, "transitions": 7}]
+      },
+      "traps": {
+        "listening": 162, "received": 412, "applied": 395, "ignored": 17,
+        "dropped": 0, "deferred": 3, "requires_poll": true,
+        "unknown_sources": ["10.9.9.9"]
+      }
+    }
+  ],
+  "fleet_wide": {
+    "owner": "shard-1-of-4", "live": true,
+    "renewed_at": "2026-10-10T19:06:39", "takeovers": 0
+  },
+  "damping": {
+    "offline_confirm_cycles": 3,
+    "link_flap_transitions": 4,
+    "link_flap_window": 600.0,
+    "trap_requires_poll": true,
+    "pending_offline": 1,
+    "flapping_links": 1
+  },
+  "traps": {
+    "receivers": 1, "received": 412, "applied": 395, "ignored": 17,
+    "dropped": 0, "deferred": 3, "requires_poll": true,
+    "unknown_sources": ["10.9.9.9"]
+  },
+  "pending_offline_devices": [
+    {"id": 3, "hostname": "core-sw-3", "ip_address": "10.0.0.3", "failures": 2}
+  ],
+  "flapping_links": [
+    {"id": 1, "device_id": 1, "hostname": "core-sw-1",
+     "local_port": "GigabitEthernet1/0/24", "remote_hostname": "dist-sw-7",
+     "remote_port": "TenGigabitEthernet1/1/2", "transitions": 7}
+  ],
+  "warnings": [
+    {
+      "code": "shards_missing",
+      "message": "Shard(s) 2 of 4 are not reporting: about 25% of the fleet is not being polled by anyone.",
+      "params": {"shards": "2", "configured": 4, "percent": 25}
+    }
+  ]
+}
+```
+
+**幾個欄位的意思：**
+
+| 欄位 | 意思 |
+|---|---|
+| `reporting` | 有沒有**活著的**收集器在回報。false 可能是沒有在跑，也可能是收集器版本比這個欄位舊 —— 那樣它還是在輪詢，只是不會說自己的事 |
+| `processes[].live` | 由**資料庫的時鐘**判定（`app/core/lease.py`），不是 API 行程的時鐘 |
+| `processes[].age_seconds` | 用 API 行程的時鐘算的近似值，只是給 UI 顯示「12 秒前」用；權威答案是 `live` |
+| `damping.<設定>` | 所有活著的行程回報的值。**如果各片不一樣，這裡會是一個陣列**，同時產生一個 `damping_disagree` 警告 |
+| `damping.pending_offline` / `flapping_links` | 所有片加總 |
+| `pending_offline_devices` | id 已經換成 hostname/IP，並附上「已經失敗幾次」。已經被刪掉的設備不會出現（不會留下一個光禿禿的 id） |
+| `warnings[]` | `code` 給 UI 翻譯用，`message` 是給不認得那個 code 的客戶端的英文退路，`params` 是要代入的數字 |
+
+**警告的 code：**
+
+| code | 什麼時候出現 |
+|---|---|
+| `shards_missing` | 設定了 N 片但有些號碼沒有行程在回報 —— 那些設備沒有任何人在輪詢 |
+| `shards_disagree` | 各行程的 `COLLECTOR_SHARDS` 不一致，會有設備被輪詢兩次、有些完全沒人輪詢 |
+| `damping_disagree` | 各片的抑制設定不一致，同一個機群裡的設備判斷標準不同 |
+| `trap_unknown_sources` | 有 trap 從不是受管設備的位址送來 —— 幾乎都是 trap 來源位址的問題，見 CONFIGURATION 第 5.3 節 |

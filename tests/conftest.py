@@ -7,6 +7,7 @@ raising (docs/TROUBLESHOOTING_LLDP.md). Mocking the SNMP layer would have
 reproduced neither the bug nor its absence, so the SNMP tests talk to an
 snmpsim agent over the loopback instead.
 """
+import atexit
 import os
 import shutil
 import socket
@@ -19,6 +20,14 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# app/db/database.py builds its engine at import time from DATABASE_URL, so
+# the test database has to be chosen before anything imports it - and it must
+# never be the developer's own topomon.db, which the default URL points at.
+if "DATABASE_URL" not in os.environ:
+    _db_dir = tempfile.mkdtemp(prefix="topomon-tests-")
+    atexit.register(shutil.rmtree, _db_dir, True)
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_db_dir}/test.db"
 
 # The simulated chassis: 48 interfaces, three of them cabled, port 3 down.
 NIF = 48

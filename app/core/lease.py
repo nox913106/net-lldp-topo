@@ -33,9 +33,9 @@ only clock involved is the one all shards share.
 """
 import logging
 from datetime import datetime, timedelta
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
-from sqlalchemy import literal_column, select, text
+from sqlalchemy import JSON, bindparam, literal_column, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.database import async_session_maker, engine
@@ -110,6 +110,9 @@ class LeaseHolder(NamedTuple):
     expires_at: Optional[datetime]
     live: bool
     takeovers: int
+    # Whatever the owner last reported about itself; see
+    # CollectorLease.status. Empty for a collector that reports nothing.
+    status: Optional[Dict[str, Any]] = None
 
 
 class Lease:
@@ -130,7 +133,8 @@ class Lease:
         name: str,
         owner: str,
         ttl_seconds: float,
-        session_factory=None
+        session_factory=None,
+        status: Optional[Callable[[], Optional[Dict[str, Any]]]] = None
     ):
         self.name = name
         self.owner = owner
@@ -138,11 +142,27 @@ class Lease:
         self._session_factory = session_factory or async_session_maker
         self._held = False
         self._since: Optional[float] = None
+        # Called on every renewal to produce the row's status column, which
+        # is how the API gets at state that only lives in this process. It
+        # must be cheap and it must not raise: a lease is not worth losing
+        # over a diagnostic, so a failure is logged once per call and the
+        # row keeps whatever it had.
+        self._status = status
 
     @property
     def held(self) -> bool:
         """Whether the last acquire() succeeded. Not a fresh check."""
         return self._held
+
+    def _report(self) -> Optional[Dict[str, Any]]:
+        """This process's status for the row, or None to leave it alone"""
+        if self._status is None:
+            return None
+        try:
+            return self._status()
+        except Exception as e:  # pragma: no cover - a diagnostic must not bite
+            logger.debug(f"Lease {self.name}: building status failed: {e}")
+            return None
 
     async def acquire(self) -> bool:
         """
@@ -179,20 +199,29 @@ class Lease:
     async def _renew_or_steal(self, db, clock: _Clock) -> bool:
         """One statement: renew if ours, take over if expired, else nothing"""
         now, expiry = clock.now, clock.plus(self.ttl)
+        # COALESCE so a process that reports nothing leaves the previous
+        # owner's status alone rather than blanking it. The bindparam hands
+        # the dict to SQLAlchemy as JSON, which is what makes one statement
+        # work on both PostgreSQL's json type and SQLite's text - and
+        # none_as_null, because by default SQLAlchemy would send Python None
+        # as the JSON value "null", which COALESCE counts as present and
+        # would wipe the status it is meant to preserve.
         result = await db.execute(
             text(
                 f"UPDATE collector_leases SET "
                 f"  owner = :owner, "
                 f"  renewed_at = {now}, "
                 f"  expires_at = {expiry}, "
+                f"  status = COALESCE(:status, status), "
                 f"  acquired_at = CASE WHEN owner = :owner "
                 f"                     THEN acquired_at ELSE {now} END, "
                 f"  takeovers = CASE WHEN owner = :owner THEN takeovers "
                 f"                   ELSE COALESCE(takeovers, 0) + 1 END "
                 f"WHERE name = :name "
                 f"  AND (owner = :owner OR expires_at <= {now})"
-            ),
-            {"name": self.name, "owner": self.owner, **clock.params(self.ttl)}
+            ).bindparams(bindparam("status", type_=JSON(none_as_null=True))),
+            {"name": self.name, "owner": self.owner, "status": self._report(),
+             **clock.params(self.ttl)}
         )
         return (result.rowcount or 0) > 0
 
@@ -202,11 +231,12 @@ class Lease:
         result = await db.execute(
             text(
                 f"INSERT INTO collector_leases "
-                f"  (name, owner, acquired_at, renewed_at, expires_at, takeovers) "
-                f"VALUES (:name, :owner, {now}, {now}, {expiry}, 0) "
+                f"  (name, owner, acquired_at, renewed_at, expires_at, takeovers, status) "
+                f"VALUES (:name, :owner, {now}, {now}, {expiry}, 0, :status) "
                 f"ON CONFLICT (name) DO NOTHING"
-            ),
-            {"name": self.name, "owner": self.owner, **clock.params(self.ttl)}
+            ).bindparams(bindparam("status", type_=JSON(none_as_null=True))),
+            {"name": self.name, "owner": self.owner, "status": self._report(),
+             **clock.params(self.ttl)}
         )
         return (result.rowcount or 0) > 0
 
@@ -255,6 +285,7 @@ async def read_leases(
         CollectorLease.renewed_at,
         CollectorLease.expires_at,
         CollectorLease.takeovers,
+        CollectorLease.status,
         live,
     )
     if prefix:
@@ -278,12 +309,15 @@ async def read_leases(
             expires_at=row.expires_at,
             live=bool(row.live),
             takeovers=row.takeovers or 0,
+            status=row.status if isinstance(row.status, dict) else None,
         )
         for row in rows
     ]
 
 
-def member_lease(shard, ttl_seconds: float, session_factory=None) -> Lease:
+def member_lease(
+    shard, ttl_seconds: float, session_factory=None, status=None
+) -> Lease:
     """
     This shard's heartbeat.
 
@@ -299,7 +333,8 @@ def member_lease(shard, ttl_seconds: float, session_factory=None) -> Lease:
         name=f"{MEMBER_PREFIX}{shard.index}",
         owner=shard.name,
         ttl_seconds=ttl_seconds,
-        session_factory=session_factory
+        session_factory=session_factory,
+        status=status
     )
 
 
