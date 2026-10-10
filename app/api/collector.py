@@ -78,7 +78,7 @@ class FleetLease(BaseModel):
     takeovers: int = 0
 
 
-class Warning(BaseModel):
+class StatusWarning(BaseModel):
     """
     Something an operator should act on.
 
@@ -105,7 +105,7 @@ class CollectorStatus(BaseModel):
     traps: Optional[Dict[str, Any]] = None
     pending_offline_devices: List[DeviceRef] = []
     flapping_links: List[LinkRef] = []
-    warnings: List[Warning] = []
+    warnings: List[StatusWarning] = []
 
 
 def _age(renewed_at: Optional[datetime]) -> Optional[float]:
@@ -173,10 +173,10 @@ async def collector_status(db: AsyncSession = Depends(get_db)):
         if configured else []
     )
 
-    warnings: List[Warning] = []
+    warnings: List[StatusWarning] = []
     if configured and missing:
         share = len(missing) / configured
-        warnings.append(Warning(
+        warnings.append(StatusWarning(
             code="shards_missing",
             message=(
                 f"Shard(s) {', '.join(str(i) for i in missing)} of "
@@ -190,7 +190,7 @@ async def collector_status(db: AsyncSession = Depends(get_db)):
             },
         ))
     if live and len({p.shards or 1 for p in live}) > 1:
-        warnings.append(Warning(
+        warnings.append(StatusWarning(
             code="shards_disagree",
             message=(
                 "The running collectors disagree about COLLECTOR_SHARDS, so "
@@ -229,7 +229,7 @@ _SETTINGS = (
 )
 
 
-def _combine(live: List[ProcessStatus], warnings: List[Warning]):
+def _combine(live: List[ProcessStatus], warnings: List[StatusWarning]):
     """
     The fleet's damping and trap numbers.
 
@@ -250,7 +250,7 @@ def _combine(live: List[ProcessStatus], warnings: List[Warning]):
             damping[key] = values.pop()
         else:
             damping[key] = sorted(values, key=str)
-            warnings.append(Warning(
+            warnings.append(StatusWarning(
                 code="damping_disagree",
                 message=(
                     f"The running collectors disagree about {key}, so devices "
@@ -278,7 +278,7 @@ def _combine(live: List[ProcessStatus], warnings: List[Warning]):
     traps["unknown_sources"] = unknown[:20]
     traps["requires_poll"] = any(t.get("requires_poll") for t in reported)
     if unknown:
-        warnings.append(Warning(
+        warnings.append(StatusWarning(
             code="trap_unknown_sources",
             message=(
                 f"Traps are arriving from {len(unknown)} address(es) that are "
