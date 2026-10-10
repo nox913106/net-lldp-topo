@@ -9,15 +9,16 @@ from contextlib import asynccontextmanager
 import logging
 import os
 
-from app.config import get_settings
+from app.config import get_settings, log_level
 from app.db.database import init_db
 from app.api import devices, topology, alerts, profiles, groups, discovery, snmp, settings
 from app.core.discovery_scheduler import start_discovery_scheduler
 from app.api.settings import load_settings as load_app_settings
 
-# Configure logging
+# Configure logging. The level is APP_LOG_LEVEL; see app/config.py for why an
+# unknown value falls back to INFO instead of failing to start.
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level(),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)

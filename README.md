@@ -71,6 +71,7 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 ```
 
 詳細說明見 [docs/TROUBLESHOOTING_LLDP.md](docs/TROUBLESHOOTING_LLDP.md)。
+開了 trap 卻沒有任何反應，見 [docs/CONFIGURATION.md 第 5.4 節](docs/CONFIGURATION.md#54-開了-trap-卻沒反應)。
 
 ## 兩個輪詢迴圈
 
@@ -88,6 +89,12 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 另外可以收 SNMP trap（`COLLECTOR_TRAP_ENABLED`，udp/162）：linkDown／linkUp
 會在**毫秒內**更新那條線的狀態並發告警，而不是等到下一次快迴圈。trap 永遠
 不是唯一的事實來源 —— 快迴圈還是會重新確認一次。
+
+要不要在設備上加設定？**盤點、拓樸、告警都不用** —— 輪詢用的是你本來就在
+用的管理位址，而拓樸是靠 sysName 對名字，跟 IP 無關。只有收 trap 這一項
+可能要在設備端指定 trap 的來源位址（那就是「要不要 loopback」的由來）。
+三個解法與判讀方式見
+[docs/CONFIGURATION.md 第 5 節](docs/CONFIGURATION.md#5-設備端需要改什麼以及為什麼不需要-loopback)。
 
 ### 500 台的實測
 

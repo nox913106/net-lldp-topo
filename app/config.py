@@ -1,6 +1,8 @@
 """
 Application configuration management
 """
+import logging
+
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import Optional
@@ -193,3 +195,21 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get cached settings instance"""
     return Settings()
+
+
+def log_level() -> int:
+    """
+    APP_LOG_LEVEL as a logging level.
+
+    It had been in .env.example and the docs from the start while both entry
+    points hardcoded INFO, so DEBUG - the level the "why was this neighbour
+    not discovered" lines are logged at - could not actually be turned on.
+
+    getLevelName() answers with an int for a known name and with a string
+    ("Level banana") for anything else, which is the whole validation: a
+    typo, or a value that happens to name something else in the logging
+    module, falls back to INFO instead of failing the process over a log
+    setting.
+    """
+    level = logging.getLevelName(str(get_settings().app_log_level).strip().upper())
+    return level if isinstance(level, int) else logging.INFO

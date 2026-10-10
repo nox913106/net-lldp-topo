@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.config import get_settings
+from app.config import get_settings, log_level
 from app.db.database import async_session_maker, init_db
 from app.core.snmp_collector import SNMPCollector, InterfaceStats
 from app.core.snmp_pool import CollectorPool
@@ -45,8 +45,12 @@ SHARD = Shard.from_settings(settings)
 # Every line of every shard says which shard it came from. N collector
 # containers write to the same place, and without this a log line about a
 # device gives no way to tell which process was responsible for it.
+#
+# The level is APP_LOG_LEVEL (app/config.py), which until now was documented
+# but ignored: DEBUG is where the "why was this neighbour not discovered"
+# lines are, and both entry points hardcoded INFO.
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level(),
     format=(
         f"%(asctime)s - [{SHARD.label()}] %(name)s - %(levelname)s - %(message)s"
         if SHARD.enabled

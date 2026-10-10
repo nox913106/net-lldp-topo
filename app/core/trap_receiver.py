@@ -18,6 +18,17 @@ therefore arranged so that a trap can only ever be an *early* answer:
     within one fast interval.
   * Only traps whose source address is a managed device are acted on. Anything
     else is counted and dropped.
+
+    That match is against ``devices.ip_address`` alone, which has an
+    operational cost worth stating: plenty of platforms send traps from the
+    egress interface rather than from the address you manage them on, so
+    enabling traps can mean a ``trap-source`` line on every device - which is
+    where the "do I need a loopback on all of them" question comes from. It is
+    this implementation's choice, not the protocol's: matching every address
+    known for a device (the v1 agent-address varbind, the LLDP management
+    address, the device's own ipAddressIfIndex) would remove the requirement.
+    The alternatives an operator has today are in docs/CONFIGURATION.md
+    section 5.3.
   * Only traps about a port with a cable recorded on it are acted on. An
     access port to a laptop going down is not this project's business.
   * v1 and v2c only. Their community is checked by pysnmp, which is worth

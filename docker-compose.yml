@@ -37,7 +37,10 @@ services:
       - COLLECTOR_INTERVAL=300
       - COLLECTOR_FAST_INTERVAL=60
       # 收 linkDown/linkUp。要用的話設備端也要把 trap 目的地指到這台，
-      # 而且這個容器需要能綁 udp/162（host 網路 + root 時沒問題）
+      # 而且這個容器需要能綁 udp/162（host 網路 + root 時沒問題）。
+      # 第三件事常被漏掉：trap 的**來源位址**必須對上 devices.ip_address，
+      # 而很多平台預設是從出口介面送。三個解法（含兩個不用改設備的）在
+      # docs/CONFIGURATION.md 第 5.3 節，收不到的判讀在 5.4 節。
       - COLLECTOR_TRAP_ENABLED=false
       - COLLECTOR_TRAP_PORT=162
       # 分片：一個行程負責 devices.id % COLLECTOR_SHARDS == COLLECTOR_SHARD_ID

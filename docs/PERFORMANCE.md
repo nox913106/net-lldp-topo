@@ -1387,6 +1387,34 @@ trap 是設備在事件發生的當下主動說，而且告警是**從 trap 直�
 「這幾條線斷了」（可以直接派人去看的資訊），然後在 80 秒內才補上
 `device_offline`。這個順序是對的。
 
+### 21.5 它要求設備從管理位址送 trap（這是代價，不是協定）
+
+認設備是用**來源位址**對 `devices.ip_address`，而這在既有環境裡有一個不
+明顯的維運代價：不少平台預設是用**出口介面**的位址送 trap，而那不一定是
+你拿來管理它的那個位址。對不上的 trap 會被丟掉（每個來源記一次 warning），
+症狀是「開了 trap 但什麼都沒發生」。
+
+要修的話是在設備端指定 trap 來源（Cisco IOS 的 `snmp-server trap-source`、
+NX-OS 的 `snmp-server source-interface traps`、Junos 的
+`set snmp trap-options source-address`）—— 也就是**每一台都要加一行**，而
+大家通常指到 loopback。這是這個題目裡唯一會逼出「要不要在所有設備上加
+loopback」的地方。
+
+它是這份實作的選擇，不是 SNMP 的要求。比對「那台設備所有已知的位址」就不
+需要那一行：
+
+| 位址來源 | 從哪裡拿 | 成本 |
+|---|---|---|
+| v1 trap 的 agent-address 欄位 | trap 封包自己帶 | 零，封包裡已經有了 |
+| LLDP 管理位址 | 盤點迴圈已經在讀（`lldpRemManAddrTable`） | 零，已經在記憶體裡 |
+| 設備自己的介面位址 | 多走訪一次 `ipAddressIfIndex`，每台幾列 | 盤點迴圈多一次小走訪，要一張 `device_addresses` |
+
+前兩個幾乎免費，第三個才是真正能涵蓋所有情況的那個。列在第 31 節，還沒做。
+
+操作者今天有的三個選擇（含不改設備的那兩個）寫在
+[docs/CONFIGURATION.md](CONFIGURATION.md) 第 5.3 節，判讀 `Traps:` 那一行
+的方式在 5.4 節。
+
 ---
 
 ## 22. 這一輪的侷限
@@ -1923,3 +1951,4 @@ trap 立刻告警。`cycle4.py` 跑出來逐位不變（`raw_links=10324`、
 | 4 | 把分片狀態與抑制狀態放進 API／UI | 目前「少了一片」「這條線在 flapping」「這個 trap 在等輪詢」只在 log 裡 | 不用 |
 | 5 | 分片之後再看 `COLLECTOR_CONCURRENT` 的預設值 | 每片的設備變少，20 可能偏高，而連線數是乘上去的（24.9） | 不用 |
 | 6 | 確認次數也做 per-profile | 核心交換機要立刻告警、分公司要確認三次，是同一個機群裡的兩種判斷 | 不用 |
+| 7 | trap 比對設備**所有已知位址**，不只管理位址 | 省掉每台設備的 `trap-source` 設定，也就是既有環境裡唯一要碰設備的那一行（21.5） | 不用（多一張 `device_addresses`） |

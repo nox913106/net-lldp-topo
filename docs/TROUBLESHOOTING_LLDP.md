@@ -133,6 +133,27 @@ curl -s -X POST http://localhost:8080/api/discovery/manual \
 AP、IP 電話等設備常常不送 sysName TLV。這種情況會改用 chassis ID（MAC）當名稱，
 連線仍然會被記錄下來，只是沒有可讀的名字。
 
+### 6. 看得到鄰居，但它沒有被自動發現
+
+自動發現要有一個**連得到的位址**才能把鄰居變成設備。依序試：LLDP 廣告的
+管理位址 → sysName 查 DNS → chassis ID 本身是 IPv4 的話用它。拿到位址之後
+還會先用 SNMP 探一次，探不到就記進 dead-end 快取
+（`COLLECTOR_DISCOVERY_CACHE_TTL`，預設 3600 秒）後再試。
+
+常見原因是**廣告出來的管理位址連不到**：很多路由器預設廣告 loopback，而那
+個 loopback 不一定有路由到監控主機。要看到原因得把 log 轉到 DEBUG
+（`APP_LOG_LEVEL=DEBUG`）—— 這兩行是 debug 級的，因為一個機群裡本來就會有
+大量轉不成設備的鄰居（IP 話機、印表機）：
+
+```
+Could not resolve IP for neighbor <sysName>     ← 三個來源都沒拿到位址
+SNMP probe failed for neighbor <ip>             ← 拿到位址但那個位址不回應
+```
+
+這不會留下爛資料（不會多出一台永遠離線的設備），手動用真的連得到的位址把
+它加進來就好 —— 拓撲圖照樣會把線接上，因為接線靠的是 sysName 而不是那個
+位址。詳見 [CONFIGURATION.md 第 5.2 節](CONFIGURATION.md#52-自動發現的位址從哪裡來)。
+
 ## 手動用 net-snmp 驗證
 
 若手邊有 `snmpwalk`，可以直接比對：

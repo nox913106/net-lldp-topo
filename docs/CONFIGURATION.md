@@ -14,6 +14,8 @@ cp .env.example .env
 # 應用程式
 APP_NAME=DEV-lldp-topomon
 APP_DEBUG=false
+# DEBUG 會多出「為什麼這個鄰居沒被自動發現」那一類的行（見
+# docs/TROUBLESHOOTING_LLDP.md 第 6 種情況）。認不得的值退回 INFO
 APP_LOG_LEVEL=INFO
 
 # 資料庫
@@ -87,6 +89,10 @@ COLLECTOR_DISCOVERY_CACHE_TTL=3600
 # trap 永遠不是唯一的事實來源 —— 一個 UDP 封包可能遺失、重複、延遲或偽造，
 # 所以快迴圈還是會把狀態重新確認一次。只接受來源位址是受管設備、
 # community 正確、而且那個埠上確實有線的 trap；v3 notification 不支援。
+#
+# 「來源位址是受管設備」這一條在既有環境裡要注意：很多平台預設是從出口
+# 介面送 trap，不是從你管理它的那個位址。三個解法（其中兩個完全不用改
+# 設備）見第 5.3 節，收不到時的判讀見 5.4 節。
 COLLECTOR_TRAP_ENABLED=false
 COLLECTOR_TRAP_BIND=0.0.0.0
 COLLECTOR_TRAP_PORT=162
@@ -209,3 +215,102 @@ vendor_detection:
       cpu_oid: "1.3.6.1.4.1.xxx"
       memory_oid: "1.3.6.1.4.1.xxx"
 ```
+
+---
+
+## 5. 設備端需要改什麼（以及為什麼不需要 loopback）
+
+在既有環境裡導入這個專案，最常問的一句是「是不是每一台 switch / router /
+firewall 都要加設定」。答案是：**盤點、拓樸、告警都不用**，只有「收 trap」
+這一項可能要。
+
+| 用到什麼 | 靠哪個識別 | 設備端要改什麼 |
+|---|---|---|
+| 輪詢（存活、埠狀態、流量、CPU） | `devices.ip_address` —— 你本來就用來管理那台設備的位址 | 不用（SNMP 本來就得開） |
+| **把兩端接成一條線** | **sysName（hostname）** | 不用 |
+| 自動發現新設備 | LLDP 管理位址 TLV → DNS → chassis ID | 不用，見 5.2 |
+| 收 linkDown/linkUp trap | **trap 封包的來源位址** | 可能要，見 5.3 |
+
+### 5.1 為什麼拓樸不需要任何位址
+
+合併線路是名字對名字：`raw_links.remote_hostname`（鄰居透過 LLDP 告訴我們的
+sysName）去對 `devices.hostname`
+（`app/core/topology_engine.py:81`、`:102`）。整個合併過程不碰任何 IP，
+所以一台設備有幾個位址、管理位址是 loopback 還是 SVI、對拓樸圖毫無影響。
+
+反過來說，拓樸圖缺線的原因是**名字對不上**，不是位址對不上 —— 對不上的
+鄰居會留在 `raw_links` 裡，但畫不出連線。判讀見
+[docs/TROUBLESHOOTING_LLDP.md](TROUBLESHOOTING_LLDP.md) 第 4 種情況。
+
+### 5.2 自動發現的位址從哪裡來
+
+看到一個還沒進資料庫的鄰居時，要有一個位址才能去輪詢它。依序試四個來源：
+
+1. 那個鄰居透過 LLDP 廣告的管理位址（`lldpRemManAddrTable`，
+   `app/core/snmp_oids.py:14`）
+2. 廣告的 sysName 拿去查 DNS（`app/collector.py:170`）
+3. chassis ID 本身就是一個 IPv4 的話，直接用它
+   （`app/core/snmp_collector.py:829`）
+4. 都不行 → 記進 dead-end 快取，等你手動把它加進來
+
+所以 LLDP 管理位址只是**自動發現的捷徑**，不是必要條件；而且它是設備
+「本來就有」的那個位址 —— 很多路由器預設廣告的是 loopback，純粹因為廠商
+預設如此，不是這個專案要求的。完全不廣告管理位址、設備全部手動加，之後
+所有功能一模一樣。
+
+那個廣告出來的位址**連不到**（例如一個沒有路由到監控主機的 loopback）也
+不會留下爛資料：加進資料庫之前會先用 SNMP 探一次，探不到就記進 dead-end
+快取（`app/collector.py:230`），`COLLECTOR_DISCOVERY_CACHE_TTL` 之後才會
+再試一次。結果是「沒有被自動發現」，不是「多出一台永遠離線的設備」——
+手動用那個真的連得到的位址把它加進來就行，拓樸圖一樣會把線接上，因為接線
+靠的是 sysName 而不是那個位址。
+
+### 5.3 trap 是唯一的例外
+
+`COLLECTOR_TRAP_ENABLED=true` 時，收到的 trap 是用**來源位址**去對
+`devices.ip_address` 認設備的（`app/core/trap_receiver.py:547`）。對不上就
+丟掉，並且每個來源記一次：
+
+```
+Ignoring traps from 10.1.2.3: not a managed device (it is matched on its management address)
+```
+
+麻煩的是不少平台預設用**出口介面**的位址送 trap，而那不一定是你拿來管理它
+的那個位址。三個解法，由省事到費事：
+
+1. **不開 trap**（預設值）。每條線的 up/down 還是有，只是延遲從毫秒變成
+   最多一個 `COLLECTOR_FAST_INTERVAL`（預設 60 秒）。
+2. **改監控這一邊**：把 `devices.ip_address` 設成設備實際送 trap 的那個
+   位址（前提是那個位址也能輪詢）。零工單，但你得知道每台是從哪個介面送的。
+3. **改設備那一邊**：指定 trap 的來源位址。這就是「每台都要加一行」的那個
+   方案，也是 loopback 在這個題目裡唯一出現的理由：
+
+   | 平台 | 設定 |
+   |---|---|
+   | Cisco IOS / IOS-XE | `snmp-server trap-source <interface>` |
+   | Cisco NX-OS | `snmp-server source-interface traps <interface>` |
+   | Junos | `set snmp trap-options source-address <address>` |
+
+   其他平台找它自己的 trap source / source-interface 設定，確切語法以該
+   平台的文件為準。
+
+**這是實作選擇，不是協定要求。** 只比對來源位址是目前的做法；改成比對
+「那台設備所有已知的位址」（v1 trap 自帶的 agent-address 欄位、LLDP 管理
+位址、設備自己的 `ipAddressIfIndex`）之後，第 3 個解法就不需要了。那一項
+列在 [docs/PERFORMANCE.md](PERFORMANCE.md) 第 31 節，還沒做。
+
+### 5.4 開了 trap 卻沒反應
+
+trap 的失敗是安靜的 —— 沒有任何東西會主動告訴你「我在等 trap」。盤點迴圈
+每輪會印一行：
+
+```
+Traps: 0 received, 0 applied, 0 ignored, 0 dropped
+```
+
+| 看到的 | 意思 |
+|---|---|
+| `0 received` | 封包根本沒到。查設備端的 trap 目的地、路由、防火牆的 udp/162，以及容器有沒有綁到那個埠（需要 `network_mode: host`，見 `docker-compose.yml` 的註解） |
+| `received` 在跳、`ignored` 跟著跳 | 封包到了但認不出設備 —— 就是 5.3 的來源位址問題，log 裡會有上面那行 warning |
+| `applied` 在跳但沒有告警 | 那個埠上沒有記錄到線（只有有線的埠才算），或者 `ALERT_TRAP_REQUIRES_POLL=true` 正在等輪詢佐證（那時這一行會多一段 `left to a poll to alert on`） |
+| `dropped` 在跳 | 一瞬間超過 2000 個 trap 在排隊（機箱重開、光纖狂抖）。丟掉的是延遲不是正確性，快迴圈照樣會把狀態撿回來 |
