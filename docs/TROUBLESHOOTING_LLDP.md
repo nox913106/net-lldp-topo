@@ -154,6 +154,26 @@ SNMP probe failed for neighbor <ip>             ← 拿到位址但那個位址�
 它加進來就好 —— 拓撲圖照樣會把線接上，因為接線靠的是 sysName 而不是那個
 位址。詳見 [CONFIGURATION.md 第 5.2 節](CONFIGURATION.md#52-自動發現的位址從哪裡來)。
 
+### 7. 開了 trap，但 log 說「not an address any managed device is known to hold」
+
+設備從一個監控這邊還不知道的位址送 trap。診斷工具第 6 節會列出那台設備
+**自己回報**的位址 —— trap 從其中任何一個送來都認得出來：
+
+```bash
+docker compose exec collector python -m tools.diag_lldp <設備IP> <community>
+```
+
+對不上的話有三種情況：
+
+| 情況 | 處理 |
+|---|---|
+| 那台設備還沒被盤點輪詢過（剛加入） | 等一輪 `COLLECTOR_INTERVAL`（預設 300 秒） |
+| 第 6 節顯示兩張 IP 表都是空的 | 那台 agent 不提供位址表。在設備上指定 trap 來源，或把 `devices.ip_address` 改成它實際送出的位址 |
+| 位址表有東西，但送出的位址不在裡面 | 中間有 NAT。v1 trap 會靠自己宣稱的位址認出來；v2c 沒有那個欄位，只能照上一列處理 |
+
+`COLLECTOR_DEVICE_ADDRESSES=false` 時完全不收集，trap 只比對管理位址。
+設定頁「收集器狀態」的 trap 區會顯示可比對的位址總數。
+
 ## 手動用 net-snmp 驗證
 
 若手邊有 `snmpwalk`，可以直接比對：

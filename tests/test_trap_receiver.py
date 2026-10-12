@@ -159,6 +159,37 @@ def test_the_warning_says_what_the_trap_claimed():
     assert "claims to be 10.0.0.1" in records[0].getMessage()
 
 
+def test_the_set_of_remembered_sources_is_bounded():
+    """
+    A spoofing flood must not be able to grow the receiver's memory. The
+    warnings are already one per address; past the cap it simply stops
+    remembering which ones it has seen.
+    """
+    from app.core.trap_receiver import MAX_REMEMBERED_SOURCES
+
+    trap_receiver = receiver()
+    for number in range(MAX_REMEMBERED_SOURCES + 500):
+        trap_receiver._warn_unknown(
+            event(f"10.{number // 256}.{number % 256}.1")
+        )
+    assert len(trap_receiver._unknown_sources) == MAX_REMEMBERED_SOURCES
+
+
+def test_agent_matches_are_remembered_within_the_same_bound():
+    from app.core.trap_receiver import MAX_REMEMBERED_SOURCES
+
+    trap_receiver = receiver()
+    known = {"10.0.0.1": device(1)}
+    for number in range(MAX_REMEMBERED_SOURCES + 100):
+        found = trap_receiver._identify(
+            known,
+            event(f"203.0.{number // 256}.{number % 256}", agent_ip="10.0.0.1"),
+        )
+        # Still identified; only the "said this already" memory is capped
+        assert found.id == 1
+    assert len(trap_receiver._agent_matched) == MAX_REMEMBERED_SOURCES
+
+
 # -- the map the identification runs against -------------------------------
 
 async def _seed(addresses_for_two=()):

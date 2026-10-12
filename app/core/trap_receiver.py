@@ -81,6 +81,13 @@ DEVICE_MAP_TTL_SECONDS = 60.0
 # re-read the device table on every datagram
 DEVICE_MAP_MISS_COOLDOWN_SECONDS = 5.0
 
+# How many distinct addresses the "already reported this one" sets remember.
+# They exist so a misconfigured device is logged once instead of once per
+# trap, and anything that produces more than this many distinct source
+# addresses is a flood rather than a fleet - at which point the sets would
+# be the only part of the receiver that grows without limit.
+MAX_REMEMBERED_SOURCES = 1000
+
 # ifOperStatus to assume when the trap did not carry one
 _STATUS_FROM_TRAP = {
     LINK_DOWN_TRAP: 2,  # down
@@ -619,7 +626,8 @@ class TrapReceiver:
             device = devices.get(event.agent_ip)
             if device is not None:
                 key = (event.source_ip, event.agent_ip)
-                if key not in self._agent_matched:
+                if (key not in self._agent_matched
+                        and len(self._agent_matched) < MAX_REMEMBERED_SOURCES):
                     self._agent_matched.add(key)
                     logger.info(
                         f"Traps from {event.source_ip} are {device.hostname}: "
@@ -635,6 +643,11 @@ class TrapReceiver:
     def _warn_unknown(self, event: TrapEvent) -> None:
         """One line per unknown source, saying what to do about it"""
         if event.source_ip in self._unknown_sources:
+            return
+        if len(self._unknown_sources) >= MAX_REMEMBERED_SOURCES:
+            # Past this it is a flood, and remembering every address in it is
+            # the only unbounded thing here. Stop remembering rather than
+            # stop warning: the warnings are already one per address.
             return
         self._unknown_sources.add(event.source_ip)
         claimed = (

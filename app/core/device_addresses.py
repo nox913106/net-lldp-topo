@@ -17,7 +17,7 @@ A fleet whose addressing is not changing therefore writes nothing here at
 all.
 """
 import logging
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from sqlalchemy import delete, insert, select
 
@@ -28,55 +28,55 @@ logger = logging.getLogger(__name__)
 
 class DeviceAddressIndex:
     """
-    {device id: {address: row id}}, read once per cycle.
+    {device id: {addresses}}, read once per cycle.
 
     Read fresh each cycle rather than kept, for the same reason as the cable
-    index: the API can delete a device, and a stale index would aim DELETEs
-    at rows that are already gone and skip INSERTs for rows that are not
-    there - silently, because neither affects any rows.
+    index: the API can delete a device, and a stale index would skip INSERTs
+    for rows that are not there - silently, because that affects no rows and
+    raises nothing.
+
+    Addresses rather than row ids, so that the writes below are expressed in
+    the same terms as the comparison. There is nothing a row id would buy:
+    (device_id, address) is unique, and keeping ids would mean inventing one
+    for a row this cycle just inserted.
     """
 
     __slots__ = ("_by_device",)
 
     def __init__(self) -> None:
-        self._by_device: Dict[int, Dict[str, int]] = {}
+        self._by_device: Dict[int, Set[str]] = {}
 
     async def load(self, db, shard=None) -> int:
         """Replace the index with the current table. Returns the row count."""
-        statement = select(
-            DeviceAddress.id, DeviceAddress.device_id, DeviceAddress.address
-        )
+        statement = select(DeviceAddress.device_id, DeviceAddress.address)
         if shard is not None:
             statement = shard.scope(statement, DeviceAddress.device_id)
 
-        by_device: Dict[int, Dict[str, int]] = {}
+        by_device: Dict[int, Set[str]] = {}
         count = 0
         for row in await db.execute(statement):
-            by_device.setdefault(row.device_id, {})[row.address] = row.id
+            by_device.setdefault(row.device_id, set()).add(row.address)
             count += 1
 
         self._by_device = by_device
         return count
 
-    def known(self, device_id: int) -> Dict[str, int]:
-        return self._by_device.get(device_id, {})
+    def known(self, device_id: int) -> Set[str]:
+        return self._by_device.get(device_id, set())
 
     def diff(
         self, device_id: int, addresses: Iterable[Optional[str]]
-    ) -> Tuple[List[str], List[int]]:
+    ) -> Tuple[List[str], List[str]]:
         """
-        (addresses to add, row ids to delete) for this device.
+        (addresses to add, addresses to remove) for this device.
 
-        Deletions matter as much as insertions: an address that moves to
+        Removals matter as much as additions: an address that moves to
         another switch has to stop matching this one's traps, or the new
         switch's link_down is raised against the old device.
         """
         existing = self.known(device_id)
         wanted = {address for address in addresses if address}
-        return (
-            sorted(wanted - set(existing)),
-            [row_id for address, row_id in existing.items() if address not in wanted],
-        )
+        return sorted(wanted - existing), sorted(existing - wanted)
 
     async def apply(
         self, db, device_id: int, addresses: Iterable[Optional[str]]
@@ -92,20 +92,22 @@ class DeviceAddressIndex:
             return 0, 0
 
         if stale:
-            await db.execute(delete(DeviceAddress).where(DeviceAddress.id.in_(stale)))
+            await db.execute(
+                delete(DeviceAddress)
+                .where(DeviceAddress.device_id == device_id)
+                .where(DeviceAddress.address.in_(stale))
+            )
         if added:
             await db.execute(insert(DeviceAddress), [
                 {"device_id": device_id, "address": address, "source": "interface"}
                 for address in added
             ])
 
-        # Keep the index consistent with what was just written, so a second
-        # poll of the same device in the same cycle (a retry) is a no-op
-        # rather than a duplicate insert the unique constraint would reject.
-        current = self._by_device.setdefault(device_id, {})
-        for address in added:
-            current[address] = -1
-        for address in [a for a, row_id in current.items() if row_id in stale]:
-            current.pop(address, None)
+        # Keep the index matching what was just written, so a device polled
+        # twice in one cycle is a no-op the second time rather than an insert
+        # the unique constraint rejects.
+        current = self._by_device.setdefault(device_id, set())
+        current.difference_update(stale)
+        current.update(added)
 
         return len(added), len(stale)

@@ -118,6 +118,25 @@ async def _diagnose(collector: SNMPCollector, args) -> int:
         )
 
     print(f"\n總計: LLDP {len(lldp)} 筆, CDP {len(cdp)} 筆")
+
+    # Which addresses this device would be recognised by if it sent a trap.
+    # Asked here because "I enabled traps and nothing happens" is the other
+    # thing people bring this tool to (docs/CONFIGURATION.md section 5.3).
+    section("6. 這台設備自己回報的位址（trap 來源比對用）")
+    own = await collector.get_own_addresses(args.ip)
+    if own:
+        for address in own:
+            marker = "  ← 你輪詢它用的位址" if address == args.ip else ""
+            print(f"  {address}{marker}")
+        if args.ip not in own:
+            print(f"  （{args.ip} 不在這張表裡，但它一樣算 —— 管理位址永遠算）")
+        print("\n  從上面任何一個位址送來的 trap 都會被認成這台設備，"
+              "不需要設 trap-source。")
+    else:
+        print("  這台設備的 ipAdEntAddr 與 ipAddressTable 都是空的。")
+        print("  trap 就只能用管理位址比對 —— 如果它從別的介面送 trap，")
+        print("  那就要在設備上指定 trap 來源（見 docs/CONFIGURATION.md 5.3）。")
+
     return 0 if (lldp or cdp) else 2
 
 
