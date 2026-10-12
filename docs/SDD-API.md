@@ -360,7 +360,7 @@ API 行程**不會**用自己的環境變數去填這些值：docker-compose 裡
       "traps": {
         "listening": 162, "received": 412, "applied": 395, "ignored": 17,
         "dropped": 0, "deferred": 3, "requires_poll": true,
-        "unknown_sources": ["10.9.9.9"]
+        "known_addresses": 1203, "unknown_sources": ["10.9.9.9"]
       }
     }
   ],
@@ -379,7 +379,7 @@ API 行程**不會**用自己的環境變數去填這些值：docker-compose 裡
   "traps": {
     "receivers": 1, "received": 412, "applied": 395, "ignored": 17,
     "dropped": 0, "deferred": 3, "requires_poll": true,
-    "unknown_sources": ["10.9.9.9"]
+    "known_addresses": 1203, "unknown_sources": ["10.9.9.9"]
   },
   "pending_offline_devices": [
     {"id": 3, "hostname": "core-sw-3", "ip_address": "10.0.0.3", "failures": 2}
@@ -409,6 +409,7 @@ API 行程**不會**用自己的環境變數去填這些值：docker-compose 裡
 | `damping.<設定>` | 所有活著的行程回報的值。**如果各片不一樣，這裡會是一個陣列**，同時產生一個 `damping_disagree` 警告 |
 | `damping.pending_offline` / `flapping_links` | 所有片加總 |
 | `pending_offline_devices` | id 已經換成 hostname/IP，並附上「已經失敗幾次」。已經被刪掉的設備不會出現（不會留下一個光禿禿的 id） |
+| `traps.known_addresses` | trap 可以比對的位址總數（不是加總：每個接收器都比對整個機群）。等於設備數就表示位址收集沒有生效，見 CONFIGURATION 第 5.3 節 |
 | `warnings[]` | `code` 給 UI 翻譯用，`message` 是給不認得那個 code 的客戶端的英文退路，`params` 是要代入的數字 |
 
 **警告的 code：**

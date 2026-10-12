@@ -272,6 +272,11 @@ def _combine(live: List[ProcessStatus], warnings: List[StatusWarning]):
     traps: Dict[str, Any] = {"receivers": len(reported)}
     for key in ("received", "applied", "ignored", "dropped", "deferred"):
         traps[key] = sum(int(t.get(key) or 0) for t in reported)
+    # Not summed: every receiver matches against the whole fleet, so this is
+    # the same number reported more than once rather than a total.
+    known = [int(t["known_addresses"]) for t in reported if "known_addresses" in t]
+    if known:
+        traps["known_addresses"] = max(known)
     unknown = sorted({
         source for t in reported for source in (t.get("unknown_sources") or [])
     })

@@ -290,12 +290,12 @@ def test_trap_counters_are_summed_and_unknown_sources_explained():
         await _heartbeat(shard=0, shards=2, traps={
             "listening": 162, "received": 10, "applied": 8, "ignored": 2,
             "dropped": 0, "deferred": 1, "requires_poll": True,
-            "unknown_sources": ["10.9.9.9"],
+            "known_addresses": 1200, "unknown_sources": ["10.9.9.9"],
         })
         await _heartbeat(shard=1, shards=2, traps={
             "listening": 162, "received": 5, "applied": 5, "ignored": 0,
             "dropped": 0, "deferred": 0, "requires_poll": False,
-            "unknown_sources": [],
+            "known_addresses": 1200, "unknown_sources": [],
         })
         return await _get()
 
@@ -305,6 +305,9 @@ def test_trap_counters_are_summed_and_unknown_sources_explained():
     assert body["traps"]["deferred"] == 1
     assert body["traps"]["requires_poll"] is True
     assert body["traps"]["unknown_sources"] == ["10.9.9.9"]
+    # Not summed: each receiver matches against the whole fleet, so two
+    # receivers reporting 1200 means 1200 addresses, not 2400.
+    assert body["traps"]["known_addresses"] == 1200
     warning = _warning(body, "trap_unknown_sources")
     assert warning["params"] == {"count": 1, "addresses": "10.9.9.9"}
 

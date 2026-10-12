@@ -28,6 +28,7 @@ from app.core.discovery_cache import DiscoveryCache
 from app.core.lease import (
     Coverage, FLEET_LEASE, Lease, coordination_ttl, member_lease
 )
+from app.core.device_addresses import DeviceAddressIndex
 from app.core.link_index import LinkWriteBuffer, RawLinkIndex
 from app.core.sharding import Shard
 from app.core.traffic import sample_values
@@ -119,7 +120,10 @@ inventory_pool = CollectorPool(
     timeout=settings.snmp_timeout,
     retries=settings.snmp_retries,
     collect_traffic=INVENTORY_TRAFFIC,
-    label="inventory"
+    label="inventory",
+    # Only the inventory loop: the fast loop GETs three varbinds per cable
+    # and never walks a table, which is the whole reason it is cheap.
+    collect_addresses=settings.collector_device_addresses
 )
 
 fast_pool = CollectorPool(
@@ -425,6 +429,15 @@ async def poll_all_devices():
         link_index = RawLinkIndex()
         indexed_links = await link_index.load(db, shard=SHARD)
 
+        # The same trick for the addresses each device answers to: one
+        # statement here instead of a SELECT per device, and nothing written
+        # at all unless a device's addressing actually changed.
+        address_index = DeviceAddressIndex()
+        indexed_addresses = (
+            await address_index.load(db, shard=SHARD)
+            if settings.collector_device_addresses else 0
+        )
+
     # Forget devices that no longer exist so the backoff state cannot grow
     offline_backoff.prune(device.id for device in devices)
     offline_confirm.prune(device.id for device in devices)
@@ -489,7 +502,8 @@ async def poll_all_devices():
                         return None  # removed between listing and polling
 
                     reachable = await store_poll_result(
-                        collector, tracked, result, db, link_index, verdict=verdict
+                        collector, tracked, result, db, link_index,
+                        verdict=verdict, address_index=address_index
                     )
                     try:
                         await db.commit()
@@ -555,7 +569,9 @@ async def poll_all_devices():
     logger.info(
         f"Inventory cycle completed in {total:.1f}s "
         f"(devices {devices_seconds:.1f}s{fleet}, "
-        f"{indexed_links} links indexed), "
+        f"{indexed_links} links indexed"
+        + (f", {indexed_addresses} addresses" if indexed_addresses else "")
+        + "), "
         f"{inventory_pool.stats()}, discovery cache: {discovery_cache.stats()}"
     )
     return total
@@ -583,7 +599,8 @@ async def store_poll_result(
     result: Optional[Dict],
     db,
     link_index: RawLinkIndex,
-    verdict: Optional[Verdict] = None
+    verdict: Optional[Verdict] = None,
+    address_index: Optional[DeviceAddressIndex] = None
 ) -> bool:
     """
     The database half of a poll: write what SNMP returned.
@@ -687,6 +704,20 @@ async def store_poll_result(
 
             updated, inserted = await writes.flush(db)
 
+            # The addresses this device answers to, so its traps are
+            # recognised whichever interface they leave by. Only when they
+            # were actually collected: an empty list from a poll that did
+            # not ask is not evidence that the device has none.
+            # Present only when the poll actually walked the address table
+            # (app/core/snmp_collector.py), which is what keeps "this device
+            # holds nothing else" apart from "nobody looked".
+            addresses = ""
+            own = result.get("own_addresses")
+            if own is not None and address_index is not None:
+                added, removed = await address_index.apply(db, device.id, own)
+                if added or removed:
+                    addresses = f", {added} addresses added, {removed} removed"
+
             neighbor_count = len(result["lldp_neighbors"]) + len(result["cdp_neighbors"])
             logger.info(
                 f"Polled {device.hostname} ({device.ip_address}): "
@@ -694,7 +725,7 @@ async def store_poll_result(
                 f"{len(result['cdp_neighbors'])} CDP neighbors, "
                 f"{len(result['interface_stats'])} interfaces, "
                 f"{matched}/{neighbor_count} links matched to an interface, "
-                f"{updated} links updated, {inserted} added"
+                f"{updated} links updated, {inserted} added" + addresses
             )
             return True
         else:

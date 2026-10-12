@@ -35,6 +35,7 @@ from app.core.snmp_oids import (
     CDP_CACHE_DEVICE_ID, CDP_CACHE_DEVICE_PORT, CDP_CACHE_ADDRESS,
     IF_DESCR, IF_NAME, IF_HIGH_SPEED, IF_HC_IN_OCTETS, IF_HC_OUT_OCTETS,
     IF_OPER_STATUS,
+    INET_ADDRESS_TYPE_IPV4, IP_ADDRESS_IF_INDEX, IP_AD_ENT_ADDR,
     SYS_NAME, SYS_DESCR, SYS_UPTIME,
     VENDOR_OIDS, detect_vendor
 )
@@ -222,6 +223,32 @@ def _is_ipv4(text: str) -> bool:
         return False
 
 
+def _inet_address_from_index(index: str) -> Optional[str]:
+    """
+    The IPv4 address out of an ipAddressTable index, or None.
+
+    The index is InetAddressType.InetAddress, and InetAddress is itself
+    length-prefixed: "1.4.10.0.0.1" is IPv4 10.0.0.1. Anything else - IPv6,
+    a length that does not match, a row this walk cannot read - is skipped
+    rather than guessed at, because a wrong address here would attach one
+    device's traps to another.
+    """
+    parts = index.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        family, length = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if family != INET_ADDRESS_TYPE_IPV4 or length != 4:
+        return None
+    octets = parts[2:2 + 4]
+    if len(octets) != 4:
+        return None
+    address = ".".join(octets)
+    return address if _is_ipv4(address) else None
+
+
 @dataclass
 class DeviceInfo:
     """Device information from SNMP"""
@@ -301,7 +328,8 @@ class SNMPCollector:
         v3_priv_password: str = None,
         port: int = 161,
         max_repetitions: int = 25,
-        collect_traffic: bool = True
+        collect_traffic: bool = True,
+        collect_addresses: bool = False
     ):
         self.community = community
         self.timeout = timeout
@@ -318,6 +346,11 @@ class SNMPCollector:
         # two tables; a deployment that only wants the cabling inventory can
         # switch them off and keep the real ifHighSpeed reading.
         self.collect_traffic = collect_traffic
+        # Walk the device's own IP address table, so a trap that left by
+        # another interface can still be matched to it (get_own_addresses).
+        # Off by default here because a bare SNMPCollector is also what the
+        # diagnostic tools build, and they have no use for it.
+        self.collect_addresses = collect_addresses
 
         # One SNMP engine is reused for every request this collector makes.
         # Building an SnmpEngine costs ~25 ms of CPU and ~630 KiB of RSS
@@ -775,6 +808,48 @@ class SNMPCollector:
 
         return addresses
 
+    async def get_own_addresses(self, ip: str) -> List[str]:
+        """
+        Every IPv4 address this device holds, from its own IP address table.
+
+        Read so that a trap can be matched to the device that sent it even
+        when it left by an interface other than the one it is managed on,
+        which is most platforms' default (docs/CONFIGURATION.md section 5.3).
+
+        Two tables, because no single one is universal: ipAdEntAddr is
+        deprecated and implemented everywhere, ipAddressTable is its
+        replacement and the only one some newer agents have. The second is
+        walked only when the first comes back empty, so the normal device
+        costs one walk of a handful of rows.
+
+        Loopbacks and link-local addresses are kept: a device that sources
+        traps from 127.0.0.1 is broken either way, but 169.254.x and the
+        loopback *range* are exactly what some stacked switches put in the
+        agent-addr field, and matching one of those to the device that sent
+        it is the whole point. The address this device is polled on is not
+        added here - the trap receiver already knows that one.
+        """
+        found: List[str] = []
+        seen = set()
+
+        for index, value in (await self._snmp_walk(ip, IP_AD_ENT_ADDR)).items():
+            # The value is the address; the index is the same address again.
+            address = snmp_value_to_text(value) or index
+            if _is_ipv4(address) and address not in seen:
+                seen.add(address)
+                found.append(address)
+
+        if found:
+            return found
+
+        for index in await self._snmp_walk(ip, IP_ADDRESS_IF_INDEX):
+            address = _inet_address_from_index(index)
+            if address and address not in seen:
+                seen.add(address)
+                found.append(address)
+
+        return found
+
     async def get_lldp_neighbors(self, ip: str) -> List[LLDPNeighbor]:
         """Get LLDP neighbor information"""
         chassis_ids = await self._snmp_walk(ip, LLDP_REM_CHASSIS_ID)
@@ -1145,5 +1220,13 @@ class SNMPCollector:
 
         # Get metrics
         result["metrics"] = await self.get_device_metrics(ip, device_info.vendor)
+
+        # The addresses this device answers to, for matching its traps. The
+        # key is present only when the walk happened, so the caller can tell
+        # "this device holds no other address" (an empty list) from "nobody
+        # asked" (absent) - an empty list is evidence, and reconciling
+        # against it would delete the addresses of every device.
+        if self.collect_addresses:
+            result["own_addresses"] = await self.get_own_addresses(ip)
 
         return result

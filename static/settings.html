@@ -1000,6 +1000,8 @@
                     ${statCard(data.traps.ignored ?? 0, t('trapsIgnored'))}
                     ${statCard(data.traps.dropped ?? 0, t('trapsDropped'))}
                     ${statCard(data.traps.deferred ?? 0, t('trapsDeferred'))}
+                    ${data.traps.known_addresses === undefined ? ''
+                        : statCard(data.traps.known_addresses, t('trapsKnownAddresses'))}
                 </div>` : `<p class="collector-quiet">${escapeHtml(t('trapsOff'))}</p>`}
             </div>`);
 

@@ -16,19 +16,18 @@ therefore arranged so that a trap can only ever be an *early* answer:
     fast loop writes, so the next fast cycle re-establishes the truth. A lost
     trap costs one fast interval of latency; a forged or stale one is undone
     within one fast interval.
-  * Only traps whose source address is a managed device are acted on. Anything
-    else is counted and dropped.
+  * Only traps from an address a managed device is known to hold are acted
+    on. Anything else is counted and dropped.
 
-    That match is against ``devices.ip_address`` alone, which has an
-    operational cost worth stating: plenty of platforms send traps from the
-    egress interface rather than from the address you manage them on, so
-    enabling traps can mean a ``trap-source`` line on every device - which is
-    where the "do I need a loopback on all of them" question comes from. It is
-    this implementation's choice, not the protocol's: matching every address
-    known for a device (the v1 agent-address varbind, the LLDP management
-    address, the device's own ipAddressIfIndex) would remove the requirement.
-    The alternatives an operator has today are in docs/CONFIGURATION.md
-    section 5.3.
+    "Known to hold" is the device's management address plus every address its
+    own IP address table reported during the inventory poll
+    (app/models/device.py DeviceAddress). That is deliberate: plenty of
+    platforms send traps from whichever interface the packet leaves by rather
+    than from the address you poll them on, and matching only the latter
+    would mean an ``snmp-server trap-source`` line on every device in an
+    existing network. A v1 trap's agent-addr field is tried after both, for
+    devices behind NAT; it is in the datagram, so it can find a device but
+    never skips a check.
   * Only traps about a port with a cable recorded on it are acted on. An
     access port to a laptop going down is not this project's business.
   * v1 and v2c only. Their community is checked by pysnmp, which is worth
@@ -54,11 +53,12 @@ from app.core.alert_engine import AlertEngine
 from app.core.damping import trap_requires_poll
 from app.core.snmp_oids import (
     COLD_START_TRAP, IF_ADMIN_STATUS, IF_INDEX, IF_OPER_STATUS,
-    LINK_DOWN_TRAP, LINK_UP_TRAP, SNMP_TRAP_OID, WARM_START_TRAP
+    LINK_DOWN_TRAP, LINK_UP_TRAP, SNMP_TRAP_ADDRESS, SNMP_TRAP_OID,
+    WARM_START_TRAP
 )
 from app.db.database import async_session_maker
 from app.models.alert import AlertProfile
-from app.models.device import Device
+from app.models.device import Device, DeviceAddress
 from app.models.link import RawLink
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,8 @@ class ManagedDevice(NamedTuple):
 class TrapEvent:
     """One parsed notification"""
 
-    __slots__ = ("source_ip", "trap_oid", "if_index", "oper_status", "received_at")
+    __slots__ = ("source_ip", "agent_ip", "trap_oid", "if_index",
+                 "oper_status", "received_at")
 
     def __init__(
         self,
@@ -109,27 +110,41 @@ class TrapEvent:
         trap_oid: str,
         if_index: Optional[int],
         oper_status: Optional[int],
-        received_at: float
+        received_at: float,
+        agent_ip: Optional[str] = None
     ):
         self.source_ip = source_ip
+        # What a v1 trap said about itself (RFC 3584 translates the PDU's
+        # agent-addr into a varbind). A device behind NAT, or one that fills
+        # this from a loopback while sending from an egress interface, is
+        # recognisable by this when the source address is not known.
+        self.agent_ip = agent_ip
         self.trap_oid = trap_oid
         self.if_index = if_index
         self.oper_status = oper_status
         self.received_at = received_at
 
 
-def parse_varbinds(var_binds) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+def parse_varbinds(
+    var_binds
+) -> Tuple[Optional[str], Optional[int], Optional[int], Optional[str]]:
     """
-    Pull (snmpTrapOID, ifIndex, ifOperStatus) out of a notification.
+    Pull (snmpTrapOID, ifIndex, ifOperStatus, agentAddress) out of a notification.
 
     IF-MIB defines linkDown and linkUp as carrying ifIndex, ifAdminStatus and
     ifOperStatus, but plenty of devices send only ifIndex, or add ifDescr, or
     send the index in the varbind's OID suffix and not as its value. All of
     those are read here; anything else in the notification is ignored.
+
+    The agent address is only present on a v1 trap, which pysnmp translates
+    per RFC 3584 by appending snmpTrapAddress.0. It is what the device says
+    about itself rather than what the network says, so it is never trusted on
+    its own - see TrapReceiver._identify.
     """
     trap_oid: Optional[str] = None
     if_index: Optional[int] = None
     oper_status: Optional[int] = None
+    agent_ip: Optional[str] = None
 
     for var_bind in var_binds:
         oid = str(var_bind[0])
@@ -137,6 +152,10 @@ def parse_varbinds(var_binds) -> Tuple[Optional[str], Optional[int], Optional[in
 
         if oid == SNMP_TRAP_OID:
             trap_oid = _as_text(value)
+            continue
+
+        if oid == SNMP_TRAP_ADDRESS:
+            agent_ip = _as_address(value)
             continue
 
         base, _, suffix = oid.rpartition(".")
@@ -158,7 +177,32 @@ def parse_varbinds(var_binds) -> Tuple[Optional[str], Optional[int], Optional[in
                 if_index = _as_int(suffix)
             break
 
-    return trap_oid, if_index, oper_status
+    return trap_oid, if_index, oper_status, agent_ip
+
+
+def _as_address(value: Any) -> Optional[str]:
+    """
+    Dotted-quad out of an snmpTrapAddress varbind, or None.
+
+    pysnmp hands this over as a NetworkAddress/IpAddress, whose str() is
+    already dotted-quad, but a device can put anything in that field - so the
+    result is checked rather than assumed, and anything that is not four
+    octets in range is dropped.
+    """
+    try:
+        text = value.prettyPrint() if hasattr(value, "prettyPrint") else str(value)
+    except Exception:
+        return None
+    text = text.strip()
+    parts = text.split(".")
+    if len(parts) != 4:
+        return None
+    try:
+        if not all(0 <= int(part) <= 255 for part in parts):
+            return None
+    except ValueError:
+        return None
+    return text
 
 
 def _as_int(value: Any) -> Optional[int]:
@@ -228,6 +272,10 @@ class TrapReceiver:
         self._profiles: Dict[int, bool] = {}
         self._devices_loaded = 0.0
         self._unknown_sources: Set[str] = set()
+        # (source address, claimed address) pairs already reported, so a
+        # device matched by its v1 agent-addr says so once rather than per
+        # trap.
+        self._agent_matched: Set[Tuple[str, str]] = set()
 
         self.received = 0
         self.dropped = 0
@@ -336,7 +384,7 @@ class TrapReceiver:
         self.received += 1
         try:
             source_ip = self._source_address(engine)
-            trap_oid, if_index, oper_status = parse_varbinds(var_binds)
+            trap_oid, if_index, oper_status, agent_ip = parse_varbinds(var_binds)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning(f"Unparsable trap: {e}")
             return
@@ -369,7 +417,8 @@ class TrapReceiver:
             trap_oid=trap_oid,
             if_index=if_index,
             oper_status=oper_status,
-            received_at=time.monotonic()
+            received_at=time.monotonic(),
+            agent_ip=agent_ip
         )
         try:
             self._queue.put_nowait(event)
@@ -422,20 +471,17 @@ class TrapReceiver:
             latest[(event.source_ip, event.if_index)] = event
 
         async with async_session_maker() as db:
-            devices = await self._device_map(db, {ip for ip, _ in latest})
+            looking_for = {e.source_ip for e in latest.values()}
+            looking_for |= {e.agent_ip for e in latest.values() if e.agent_ip}
+            devices = await self._device_map(db, looking_for)
 
             wanted: Dict[Tuple[int, int], TrapEvent] = {}
             by_device: Dict[int, ManagedDevice] = {}
             for (source_ip, if_index), event in latest.items():
-                device = devices.get(source_ip)
+                device = self._identify(devices, event)
                 if device is None:
                     self.ignored += 1
-                    if source_ip not in self._unknown_sources:
-                        self._unknown_sources.add(source_ip)
-                        logger.warning(
-                            f"Ignoring traps from {source_ip}: not a managed "
-                            f"device (it is matched on its management address)"
-                        )
+                    self._warn_unknown(event)
                     continue
                 wanted[(device.id, if_index)] = event
                 by_device[device.id] = device
@@ -544,6 +590,64 @@ class TrapReceiver:
             return False
         return wanted
 
+    def _identify(
+        self, devices: Dict[str, ManagedDevice], event: TrapEvent
+    ) -> Optional[ManagedDevice]:
+        """
+        Which managed device sent this trap, by address.
+
+        The source address of the datagram is tried first, against every
+        address the device is known to hold - its management address and
+        whatever its own IP address table reported (app/models/device.py
+        DeviceAddress). That is what makes an `snmp-server trap-source` line
+        unnecessary: a device that sends from its egress interface is still
+        recognised, because the egress interface is in its own address table.
+
+        Only then, and only for v1, the address the trap claims for itself.
+        That one is in the datagram, so anybody can write anything in it -
+        it is used to *find* a device, never to skip a check: the trap still
+        has to be about a port with a cable on it, and with
+        ALERT_TRAP_REQUIRES_POLL the alert still waits for a poll to agree.
+        It earns its place on devices behind NAT and on agents that fill it
+        from a loopback while sending from somewhere else.
+        """
+        device = devices.get(event.source_ip)
+        if device is not None:
+            return device
+
+        if event.agent_ip and event.agent_ip != event.source_ip:
+            device = devices.get(event.agent_ip)
+            if device is not None:
+                key = (event.source_ip, event.agent_ip)
+                if key not in self._agent_matched:
+                    self._agent_matched.add(key)
+                    logger.info(
+                        f"Traps from {event.source_ip} are {device.hostname}: "
+                        f"the address is not one this device is known to hold, "
+                        f"but the trap identifies itself as {event.agent_ip}. "
+                        f"Polling that device will record the address it "
+                        f"actually sends from."
+                    )
+                return device
+
+        return None
+
+    def _warn_unknown(self, event: TrapEvent) -> None:
+        """One line per unknown source, saying what to do about it"""
+        if event.source_ip in self._unknown_sources:
+            return
+        self._unknown_sources.add(event.source_ip)
+        claimed = (
+            f" (it claims to be {event.agent_ip})"
+            if event.agent_ip and event.agent_ip != event.source_ip else ""
+        )
+        logger.warning(
+            f"Ignoring traps from {event.source_ip}{claimed}: not an address "
+            f"any managed device is known to hold. If this is a managed "
+            f"device, it is sending from an interface its IP address table "
+            f"did not report - see docs/CONFIGURATION.md section 5.3."
+        )
+
     async def _device_map(self, db, sources: Set[str]) -> Dict[str, ManagedDevice]:
         """
         {management address: ManagedDevice}, cached.
@@ -568,10 +672,31 @@ class TrapReceiver:
         rows = (await db.execute(select(
             Device.id, Device.hostname, Device.ip_address, Device.alert_profile_id
         ))).all()
+        known = {
+            device_id: ManagedDevice(device_id, hostname, profile_id)
+            for device_id, hostname, ip_address, profile_id in rows
+        }
         self._devices = {
-            ip_address: ManagedDevice(device_id, hostname, profile_id)
+            ip_address: known[device_id]
             for device_id, hostname, ip_address, profile_id in rows if ip_address
         }
+
+        # Every other address each device holds, as its own IP address table
+        # reported it during the inventory poll. This is what lets a device
+        # send traps from its egress interface without an
+        # `snmp-server trap-source` line (docs/CONFIGURATION.md 5.3).
+        #
+        # The management address wins a collision: two devices claiming the
+        # same address is a misconfiguration somewhere, and attributing a
+        # trap to the device that is actually polled on that address is the
+        # less surprising of the two answers.
+        extra = (await db.execute(select(
+            DeviceAddress.device_id, DeviceAddress.address
+        ))).all()
+        for device_id, address in extra:
+            device = known.get(device_id)
+            if device is not None and address:
+                self._devices.setdefault(address, device)
         profiles = (await db.execute(
             select(AlertProfile.id, AlertProfile.thresholds)
         )).all()
@@ -603,6 +728,11 @@ class TrapReceiver:
             "dropped": self.dropped,
             "deferred": self.deferred,
             "requires_poll": self.requires_poll,
+            # How many addresses the receiver can currently match a trap
+            # against. With COLLECTOR_DEVICE_ADDRESSES off this is one per
+            # device, and "the trap is ignored although the device is
+            # managed" has an obvious cause.
+            "known_addresses": len(self._devices),
             "unknown_sources": sorted(self._unknown_sources)[:20],
         }
 

@@ -90,11 +90,11 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 會在**毫秒內**更新那條線的狀態並發告警，而不是等到下一次快迴圈。trap 永遠
 不是唯一的事實來源 —— 快迴圈還是會重新確認一次。
 
-要不要在設備上加設定？**盤點、拓樸、告警都不用** —— 輪詢用的是你本來就在
-用的管理位址，而拓樸是靠 sysName 對名字，跟 IP 無關。只有收 trap 這一項
-可能要在設備端指定 trap 的來源位址（那就是「要不要 loopback」的由來）。
-三個解法與判讀方式見
-[docs/CONFIGURATION.md 第 5 節](docs/CONFIGURATION.md#5-設備端需要改什麼以及為什麼不需要-loopback)。
+要不要在設備上加設定？**都不用。** 輪詢用的是你本來就在用的管理位址，拓樸
+是靠 sysName 對名字跟 IP 無關，而 trap —— 以前唯一的例外 —— 現在會比對
+設備**自己回報的所有位址**（盤點時走訪它的 IP 位址表），所以從出口介面送
+的 trap 也認得出來，不必在每台設備加 `snmp-server trap-source`。
+見 [docs/CONFIGURATION.md 第 5 節](docs/CONFIGURATION.md#5-設備端需要改什麼以及為什麼不需要-loopback)。
 
 ### 500 台的實測
 

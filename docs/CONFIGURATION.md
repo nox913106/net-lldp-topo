@@ -81,6 +81,15 @@ COLLECTOR_TRAFFIC_STATS=true
 # 轉不成設備的鄰居（IP 話機、印表機、SNMP 關閉的 AP）隔多久才再探測一次
 COLLECTOR_DISCOVERY_CACHE_TTL=3600
 
+# 盤點時順便走訪每台設備自己的 IP 位址表，記下它持有哪些位址，這樣它從哪個
+# 介面送 trap 都認得出來 —— 也就是不用在每台設備上加 snmp-server trap-source
+# （見第 5.3 節）。代價是每台設備的盤點輪詢多約 10% 的 CPU（第 37 節）。
+#
+# 刻意**不**跟 COLLECTOR_TRAP_ENABLED 綁在一起：一台主機只有一個行程綁得到
+# udp/162，所以分片時拿到接收器的那一片需要其他片輪詢的設備的位址，而那些
+# 行程的 trap 是關的。不收 trap 的部署可以關掉這個。
+COLLECTOR_DEVICE_ADDRESSES=true
+
 # 收 SNMP trap（udp/162）。開了之後 linkDown/linkUp 會在毫秒內更新那條線
 # 的狀態並發告警，而不是等到下一次快迴圈。預設關閉：它會開一個監聽埠、
 # 需要能綁 1024 以下的埠（root 或 CAP_NET_BIND_SERVICE），而且在設備端
@@ -270,39 +279,55 @@ sysName）去對 `devices.hostname`
 手動用那個真的連得到的位址把它加進來就行，拓樸圖一樣會把線接上，因為接線
 靠的是 sysName 而不是那個位址。
 
-### 5.3 trap 是唯一的例外
+### 5.3 trap 的來源位址（**不用**在每台設備加 trap-source）
 
-`COLLECTOR_TRAP_ENABLED=true` 時，收到的 trap 是用**來源位址**去對
-`devices.ip_address` 認設備的（`app/core/trap_receiver.py:547`）。對不上就
-丟掉，並且每個來源記一次：
+`COLLECTOR_TRAP_ENABLED=true` 時，收到的 trap 是用**來源位址**認設備的。
+麻煩在於不少平台預設是用**出口介面**的位址送 trap，而那不一定是你拿來管理
+它的那個位址 —— 以前這表示要在每一台設備上加一行 `snmp-server trap-source`，
+在既有環境裡就是一台一張工單。
+
+現在不用了。盤點迴圈會走訪每台設備**自己的 IP 位址表**，把它持有的位址記進
+`device_addresses`（`app/core/device_addresses.py`），trap 接收器就拿整組
+位址去比對：
 
 ```
-Ignoring traps from 10.1.2.3: not a managed device (it is matched on its management address)
+設備 sw-01   管理位址 10.0.1.1（你輪詢它的位址）
+             其他位址 10.255.0.1、192.168.50.1（它自己回報的）
+             → 從這三個位址中任何一個送來的 trap 都認得出是 sw-01
 ```
 
-麻煩的是不少平台預設用**出口介面**的位址送 trap，而那不一定是你拿來管理它
-的那個位址。三個解法，由省事到費事：
+比對的順序是：
 
-1. **不開 trap**（預設值）。每條線的 up/down 還是有，只是延遲從毫秒變成
-   最多一個 `COLLECTOR_FAST_INTERVAL`（預設 60 秒）。
-2. **改監控這一邊**：把 `devices.ip_address` 設成設備實際送 trap 的那個
-   位址（前提是那個位址也能輪詢）。零工單，但你得知道每台是從哪個介面送的。
-3. **改設備那一邊**：指定 trap 的來源位址。這就是「每台都要加一行」的那個
-   方案，也是 loopback 在這個題目裡唯一出現的理由：
+1. **datagram 的來源位址**，對照上面那一整組。這是正常情況。
+2. **v1 trap 自己宣稱的位址**（RFC 3584 把 v1 的 agent-addr 欄位轉成
+   `snmpTrapAddress.0`）。只在來源位址誰都對不上時才用，給 NAT 後面的設備。
+   它在封包裡，所以任何人都可以寫任何值 —— 它只用來**找**設備，不會因此
+   跳過任何檢查：那個埠上還是要有線，`ALERT_TRAP_REQUIRES_POLL` 開著時
+   還是要等輪詢同意。來源位址已經認出某台設備時，宣稱的位址不會蓋過它。
 
-   | 平台 | 設定 |
-   |---|---|
-   | Cisco IOS / IOS-XE | `snmp-server trap-source <interface>` |
-   | Cisco NX-OS | `snmp-server source-interface traps <interface>` |
-   | Junos | `set snmp trap-options source-address <address>` |
+**位址只從輪詢學，不從 trap 學。** 從 trap 學會讓任何人用一個偽造的封包把
+自己的位址掛到某台設備上，然後以那台設備的身分送 trap。
 
-   其他平台找它自己的 trap source / source-interface 設定，確切語法以該
-   平台的文件為準。
+還有什麼情況要自己處理：
 
-**這是實作選擇，不是協定要求。** 只比對來源位址是目前的做法；改成比對
-「那台設備所有已知的位址」（v1 trap 自帶的 agent-address 欄位、LLDP 管理
-位址、設備自己的 `ipAddressIfIndex`）之後，第 3 個解法就不需要了。那一項
-列在 [docs/PERFORMANCE.md](PERFORMANCE.md) 第 31 節，還沒做。
+* 設備從一個**完全沒出現在它自己位址表裡**的位址送 trap（少見，通常是中間
+  有 NAT 而且用 v2c，所以也沒有 agent-addr 可用）。那就回到老方法：在設備
+  上指定 trap 來源，或把 `devices.ip_address` 改成它實際送出的位址。
+
+  | 平台 | 設定 |
+  |---|---|
+  | Cisco IOS / IOS-XE | `snmp-server trap-source <interface>` |
+  | Cisco NX-OS | `snmp-server source-interface traps <interface>` |
+  | Junos | `set snmp trap-options source-address <address>` |
+
+* `COLLECTOR_DEVICE_ADDRESSES=false` 時不會收集，trap 就只比對管理位址
+  （舊行為）。關掉的理由只有一個：那個走訪讓每台設備的盤點輪詢多約 10% 的
+  CPU（實測見 [docs/PERFORMANCE.md](PERFORMANCE.md) 第 37 節）。不收 trap
+  的部署可以關掉它。
+
+位址是輪詢時收集的，所以**一台設備要先被成功輪詢過一次**，它的其他位址才會
+被認得。新加入的設備在第一次盤點輪詢（`COLLECTOR_INTERVAL`，預設 300 秒）
+之前，trap 仍然只比對管理位址。
 
 ### 5.4 開了 trap 卻沒反應
 
@@ -316,6 +341,6 @@ Traps: 0 received, 0 applied, 0 ignored, 0 dropped
 | 看到的 | 意思 |
 |---|---|
 | `0 received` | 封包根本沒到。查設備端的 trap 目的地、路由、防火牆的 udp/162，以及容器有沒有綁到那個埠（需要 `network_mode: host`，見 `docker-compose.yml` 的註解） |
-| `received` 在跳、`ignored` 跟著跳 | 封包到了但認不出設備 —— 就是 5.3 的來源位址問題，log 裡會有上面那行 warning |
+| `received` 在跳、`ignored` 跟著跳 | 封包到了但認不出設備。log 裡每個來源會有一行 `Ignoring traps from <ip>: not an address any managed device is known to hold`。設定頁「收集器狀態」的 trap 區會顯示**可比對的位址**有幾個：如果那個數字等於設備數，表示位址收集沒有生效（`COLLECTOR_DEVICE_ADDRESSES`，或那些設備還沒被盤點過一輪）|
 | `applied` 在跳但沒有告警 | 那個埠上沒有記錄到線（只有有線的埠才算），或者 `ALERT_TRAP_REQUIRES_POLL=true` 正在等輪詢佐證（那時這一行會多一段 `left to a poll to alert on`） |
 | `dropped` 在跳 | 一瞬間超過 2000 個 trap 在排隊（機箱重開、光纖狂抖）。丟掉的是延遲不是正確性，快迴圈照樣會把狀態撿回來 |

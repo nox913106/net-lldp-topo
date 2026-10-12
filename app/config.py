@@ -153,6 +153,21 @@ class Settings(BaseSettings):
     # cabling inventory, and drops two table walks per device per cycle.
     collector_traffic_stats: bool = True
 
+    # Walk each device's own IP address table during the inventory poll and
+    # remember what it holds, so a trap can be matched to the device that
+    # sent it even when it left by an interface other than the one the
+    # device is polled on - which is most platforms' default, and otherwise
+    # means an `snmp-server trap-source` line on every device in an existing
+    # network (docs/CONFIGURATION.md section 5.3).
+    #
+    # Deliberately NOT tied to COLLECTOR_TRAP_ENABLED. Only one process per
+    # host can hold udp/162, so in a sharded deployment the shard with the
+    # receiver needs the addresses of devices the *other* shards poll, and
+    # those processes have traps switched off.
+    #
+    # Measured cost: see docs/PERFORMANCE.md section 37.
+    collector_device_addresses: bool = True
+
     # How long a neighbour that could not be turned into a device (no
     # management address, no DNS record, no SNMP answer) is left alone before
     # it is probed again.

@@ -80,12 +80,14 @@ class CollectorPool:
         retries: int,
         collect_traffic: bool,
         max_collectors: int = DEFAULT_MAX_COLLECTORS,
-        label: str = "snmp"
+        label: str = "snmp",
+        collect_addresses: bool = False
     ):
         self.default_community = default_community
         self.timeout = timeout
         self.retries = retries
         self.collect_traffic = collect_traffic
+        self.collect_addresses = collect_addresses
         self.max_collectors = max(1, int(max_collectors))
         self.label = label
         self._pooled: Dict[CredentialKey, _PooledCollector] = {}
@@ -116,7 +118,8 @@ class CollectorPool:
             v3_auth_password=device.snmpv3_auth_password,
             v3_priv_protocol=device.snmpv3_priv_protocol,
             v3_priv_password=device.snmpv3_priv_password,
-            collect_traffic=self.collect_traffic
+            collect_traffic=self.collect_traffic,
+            collect_addresses=self.collect_addresses
         )
 
     # -- checkout ---------------------------------------------------------

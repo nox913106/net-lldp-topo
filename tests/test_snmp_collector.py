@@ -16,7 +16,7 @@ from app.core.snmp_oids import (
     LLDP_REM_SYS_NAME,
 )
 from app.core.traffic import counter_rate
-from tests.conftest import CABLED, DOWN_PORT, NIF, PEER
+from tests.conftest import CABLED, DOWN_PORT, NIF, OWN_ADDRESSES, PEER
 
 
 def run(coro):
@@ -122,6 +122,76 @@ def test_interface_speed_is_read_not_guessed(snmp_agent):
     speeds = run(_with_collector(snmp_agent, check))
     assert len(speeds) == NIF
     assert {int(v) for v in speeds.values()} == {1000}
+
+
+def test_own_addresses_from_the_deprecated_table(snmp_agent):
+    """
+    Every address the device holds, so a trap that left by another interface
+    is still recognisable as this device's - the alternative being an
+    `snmp-server trap-source` line on every switch in the fleet.
+    """
+    async def check(collector, host):
+        return await collector.get_own_addresses(host)
+
+    addresses = run(_with_collector(snmp_agent, check))
+    assert sorted(addresses) == sorted(OWN_ADDRESSES)
+
+
+def test_own_addresses_from_the_modern_table(snmp_agent):
+    """
+    Same device, firmware that only has ipAddressTable. There the address is
+    in the row's index rather than its value, so it is a different code path
+    and some current firmware has nothing else.
+    """
+    host, port, _ = snmp_agent
+
+    async def check():
+        collector = SNMPCollector("modern", timeout=2, retries=1, port=port)
+        try:
+            return await collector.get_own_addresses(host)
+        finally:
+            await collector.aclose()
+
+    assert sorted(run(check())) == sorted(OWN_ADDRESSES)
+
+
+def test_a_device_with_no_address_table_reports_nothing(snmp_agent):
+    """Not an error, and not a guess: an empty list."""
+    _, port, community = snmp_agent
+
+    async def check():
+        collector = SNMPCollector(community, timeout=1, retries=0, port=port)
+        try:
+            return await collector.get_own_addresses("127.0.0.9")
+        finally:
+            await collector.aclose()
+
+    assert run(check()) == []
+
+
+def test_addresses_are_only_walked_when_asked(snmp_agent):
+    """
+    poll_device() is the inventory loop's whole SNMP footprint, and the walk
+    costs a round trip on every device - so it happens only when the
+    collector was built to collect them.
+    """
+    host, port, community = snmp_agent
+
+    async def check(collect: bool):
+        collector = SNMPCollector(
+            community, timeout=2, retries=1, port=port,
+            collect_addresses=collect
+        )
+        try:
+            return await collector.poll_device(host)
+        finally:
+            await collector.aclose()
+
+    # Absent rather than empty when it was not asked for: an empty list is
+    # evidence that the device holds nothing else, and reconciling against
+    # one of those would delete every address the fleet has.
+    assert "own_addresses" not in run(check(False))
+    assert sorted(run(check(True))["own_addresses"]) == sorted(OWN_ADDRESSES)
 
 
 def test_counters_move_and_produce_a_rate(snmp_agent):

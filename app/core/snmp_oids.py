@@ -50,6 +50,19 @@ IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"
 # ifTable index column, which is what a link trap names the port with
 IF_INDEX = "1.3.6.1.2.1.2.2.1.1"
 
+# The device's own IPv4 addresses. Read so that a trap can be matched to the
+# device that sent it even when it left by an interface other than the one it
+# is managed on (app/core/trap_receiver.py).
+#
+# ipAdEntAddr is deprecated in IP-MIB and still the one everything implements;
+# the value of each row is the address itself. ipAddressIfIndex is its
+# replacement, read only when the first comes back empty, and there the
+# address is in the OID suffix rather than the value: the suffix is
+# <InetAddressType>.<length>.<bytes>, so 1.4.10.0.0.1 is IPv4 10.0.0.1.
+IP_AD_ENT_ADDR = "1.3.6.1.2.1.4.20.1.1"
+IP_ADDRESS_IF_INDEX = "1.3.6.1.2.1.4.34.1.3"
+INET_ADDRESS_TYPE_IPV4 = 1
+
 # Notification OIDs (RFC 3418 / IF-MIB). snmpTrapOID.0 is the varbind every
 # v2c notification carries to say what it is about; the rest are the values it
 # can hold that this collector acts on.
@@ -58,6 +71,13 @@ COLD_START_TRAP = "1.3.6.1.6.3.1.1.5.1"
 WARM_START_TRAP = "1.3.6.1.6.3.1.1.5.2"
 LINK_DOWN_TRAP = "1.3.6.1.6.3.1.1.5.3"
 LINK_UP_TRAP = "1.3.6.1.6.3.1.1.5.4"
+
+# RFC 3584: when a v1 trap is translated to v2c, the agent-addr field of the
+# v1 PDU is appended as this varbind. It is the address the device says it is,
+# which can differ from the address the datagram arrived from - a device
+# behind NAT, or one that fills the field from a loopback while sending from
+# an egress interface.
+SNMP_TRAP_ADDRESS = "1.3.6.1.6.3.18.1.3.0"
 
 # System MIB OIDs
 SYS_NAME = "1.3.6.1.2.1.1.5.0"

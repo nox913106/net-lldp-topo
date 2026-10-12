@@ -38,9 +38,41 @@ PEER_IP = "127.0.0.1"
 IN_RATE = 87_500_000   # octets/s = 700 Mbps = 70% of a 1 Gbps port
 OUT_RATE = 1_250_000
 
+# The addresses the simulated device holds. The management address is the one
+# it is polled on; the others are what makes a trap from another interface
+# recognisable (app/core/trap_receiver.py).
+OWN_ADDRESSES = ("10.0.0.1", "10.255.255.1", "192.168.99.1")
 
-def _snmprec() -> str:
-    """The agent's whole MIB as snmpsim's record format."""
+
+@pytest.fixture(autouse=True)
+def _dispose_engine():
+    """
+    Give every test a clean connection pool.
+
+    These tests drive async code with asyncio.run(), so each one runs in its
+    own event loop - and a pooled database connection belongs to the loop
+    that opened it. Left alone, the second test to touch the database gets
+    "attached to a different loop" from asyncpg. SQLite never notices, which
+    is exactly why this has to be here: without it the suite passes locally
+    and fails against the database the project actually runs on.
+    """
+    yield
+    import asyncio as _asyncio
+
+    from app.db.database import engine
+
+    _asyncio.run(engine.dispose())
+
+
+def _snmprec(modern: bool = False) -> str:
+    """
+    The agent's whole MIB as snmpsim's record format.
+
+    ``modern`` swaps the deprecated ipAdEntAddr table for ipAddressTable, so
+    the fallback path in SNMPCollector.get_own_addresses is exercised against
+    an agent that really only has the newer one - which is what some current
+    firmware ships.
+    """
     rows = [
         "1.3.6.1.2.1.1.1.0|4|Cisco IOS Software, C9300, Version 17.9.4",
         "1.3.6.1.2.1.1.2.0|6|1.3.6.1.4.1.9.1.2494",
@@ -65,6 +97,15 @@ def _snmprec() -> str:
             f"1.0.8802.1.1.2.1.4.1.1.9.{idx}|4|{PEER}",               # remote sysName
             f"1.0.8802.1.1.2.1.4.2.1.3.{idx}.1.4.{PEER_IP}|2|2",      # mgmt address
         ]
+    # The device's own addresses. 64 is snmpsim's tag for IpAddress, 2 for
+    # Integer - an ipAddressTable row is indexed by the address and holds the
+    # ifIndex, where an ipAddrTable row holds the address itself.
+    for number, address in enumerate(OWN_ADDRESSES, start=1):
+        if modern:
+            rows.append(f"1.3.6.1.2.1.4.34.1.3.1.4.{address}|2|{number}")
+        else:
+            rows.append(f"1.3.6.1.2.1.4.20.1.1.{address}|64|{address}")
+
     for i in range(1, NIF + 1):
         rows += [
             f"1.3.6.1.2.1.2.2.1.2.{i}|4|GigabitEthernet1/0/{i}",
@@ -128,6 +169,10 @@ def snmp_agent(tmp_path_factory):
         own_data_dir = False
 
     (data_dir / "public.snmprec").write_text(_snmprec(), encoding="utf-8")
+    # Same device, but with only the newer IP address table
+    (data_dir / "modern.snmprec").write_text(
+        _snmprec(modern=True), encoding="utf-8"
+    )
     log = data_dir / "agent.log"
     port = _free_port()
 
@@ -138,7 +183,8 @@ def snmp_agent(tmp_path_factory):
     ]
     if as_root:
         data_dir.chmod(0o755)
-        (data_dir / "public.snmprec").chmod(0o644)
+        for recording in data_dir.glob("*.snmprec"):
+            recording.chmod(0o644)
         argv += ["--process-user=nobody", "--process-group=nogroup"]
 
     with log.open("w") as handle:
