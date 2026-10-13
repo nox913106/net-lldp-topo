@@ -289,7 +289,9 @@ def _combine(live: List[ProcessStatus], warnings: List[StatusWarning]):
                 f"Traps are arriving from {len(unknown)} address(es) that are "
                 f"not managed devices: {', '.join(unknown[:5])}. A device "
                 f"usually sends traps from the egress interface rather than "
-                f"from the address it is managed on - see "
+                f"from the address it is managed on, and an address that is "
+                f"newer than the last address walk is matched only after the "
+                f"next one (COLLECTOR_ADDRESS_INTERVAL) - see "
                 f"docs/CONFIGURATION.md section 5.3."
             ),
             params={"count": len(unknown), "addresses": ", ".join(unknown[:5])},

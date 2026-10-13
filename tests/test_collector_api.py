@@ -59,7 +59,7 @@ def _status(shard=0, shards=1, cycles=1, transitions=0, window=600.0,
             requires_poll=False, pending=(), flapping=(), traps=None):
     return {
         "shard": {"index": shard, "count": shards},
-        "intervals": {"inventory": 300, "fast": 60},
+        "intervals": {"inventory": 300, "fast": 60, "addresses": 3600},
         "damping": {
             "offline_confirm_cycles": cycles,
             "link_flap_transitions": transitions,
@@ -144,7 +144,12 @@ def test_a_single_collector_reports_its_own_settings():
     assert body["damping"]["link_flap_transitions"] == 4
     assert body["damping"]["link_flap_window"] == 900.0
     assert body["damping"]["trap_requires_poll"] is True
-    assert body["processes"][0]["intervals"] == {"inventory": 300, "fast": 60}
+    # Passed through as reported, the address walk interval included: the API
+    # must not substitute its own settings here (it is a different process,
+    # and in compose the COLLECTOR_* variables are set on the collector only).
+    assert body["processes"][0]["intervals"] == {
+        "inventory": 300, "fast": 60, "addresses": 3600
+    }
     assert body["processes"][0]["age_seconds"] is not None
     assert body["warnings"] == []
 

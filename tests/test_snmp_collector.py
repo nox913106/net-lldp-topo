@@ -194,6 +194,38 @@ def test_addresses_are_only_walked_when_asked(snmp_agent):
     assert sorted(run(check(True))["own_addresses"]) == sorted(OWN_ADDRESSES)
 
 
+def test_one_poll_can_skip_the_walk_but_cannot_switch_it_on(snmp_agent):
+    """
+    The per-call flag is how the inventory loop walks a device once an hour
+    instead of every cycle (AddressWalkSchedule). One collector is shared by
+    every device on the same credential, so this has to be an argument rather
+    than a flag on the object.
+
+    It can only narrow: a caller passing True must not be able to switch on
+    a walk the operator switched off with COLLECTOR_DEVICE_ADDRESSES=false.
+    """
+    host, port, community = snmp_agent
+
+    async def check(built_with: bool, asked_for):
+        collector = SNMPCollector(
+            community, timeout=2, retries=1, port=port,
+            collect_addresses=built_with
+        )
+        try:
+            return await collector.poll_device(host, collect_addresses=asked_for)
+        finally:
+            await collector.aclose()
+
+    # Feature on, this poll skipping it: the key is absent, which is what
+    # leaves the stored addresses alone instead of reconciling them away.
+    assert "own_addresses" not in run(check(True, False))
+    # Feature on, this poll asking for it
+    assert sorted(run(check(True, True))["own_addresses"]) == sorted(OWN_ADDRESSES)
+    # Feature off: neither True nor None gets a walk
+    assert "own_addresses" not in run(check(False, True))
+    assert "own_addresses" not in run(check(False, None))
+
+
 def test_counters_move_and_produce_a_rate(snmp_agent):
     """
     Two samples far enough apart must yield a plausible bps.

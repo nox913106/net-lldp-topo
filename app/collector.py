@@ -28,7 +28,7 @@ from app.core.discovery_cache import DiscoveryCache
 from app.core.lease import (
     Coverage, FLEET_LEASE, Lease, coordination_ttl, member_lease
 )
-from app.core.device_addresses import DeviceAddressIndex
+from app.core.device_addresses import AddressWalkSchedule, DeviceAddressIndex
 from app.core.link_index import LinkWriteBuffer, RawLinkIndex
 from app.core.sharding import Shard
 from app.core.traffic import sample_values
@@ -126,6 +126,12 @@ inventory_pool = CollectorPool(
     collect_addresses=settings.collector_device_addresses
 )
 
+# When each device is next due for an address walk. The pool flag above says
+# whether the feature is on at all; this says how often to pay for it: the
+# walk is 5% of a device's poll, and paying it once an hour instead of every
+# cycle divides that by the cycles in between (docs/PERFORMANCE.md 38.3).
+address_walk = AddressWalkSchedule(settings.collector_address_interval)
+
 fast_pool = CollectorPool(
     default_community=settings.snmp_default_community,
     timeout=settings.snmp_timeout,
@@ -181,6 +187,14 @@ def _status(trap_receiver) -> Dict[str, Any]:
         "intervals": {
             "inventory": settings.collector_interval,
             "fast": settings.collector_fast_interval if FAST_LOOP_ENABLED else 0,
+            # 0 when the walk is off entirely, so "addresses are never
+            # refreshed" and "refreshed every cycle" cannot look the same.
+            # Seconds as an int, like the other two - the schedule keeps it
+            # as a float for comparing against a monotonic clock.
+            "addresses": (
+                int(address_walk.interval)
+                if settings.collector_device_addresses else 0
+            ),
         },
         "damping": {
             "offline_confirm_cycles": offline_confirm.cycles,
@@ -441,6 +455,7 @@ async def poll_all_devices():
     # Forget devices that no longer exist so the backoff state cannot grow
     offline_backoff.prune(device.id for device in devices)
     offline_confirm.prune(device.id for device in devices)
+    address_walk.prune(device.id for device in devices)
 
     due = [d for d in devices if offline_backoff.should_poll(d.id)]
     due_ids = {d.id for d in due}
@@ -465,7 +480,14 @@ async def poll_all_devices():
     # Poll devices concurrently with limit
     semaphore = asyncio.Semaphore(settings.collector_concurrent)
 
+    # How many devices paid for an address walk this cycle, reported in the
+    # cycle line: with COLLECTOR_ADDRESS_INTERVAL above the cycle interval
+    # most cycles walk nothing, and one cycle in every N walks the fleet -
+    # which is the one explanation for a cycle that is suddenly slower.
+    address_walks = 0
+
     async def poll_with_semaphore(device: Device):
+        nonlocal address_walks
         async with semaphore:
             # One collector per credential, shared by every device that uses
             # it, rather than one per device: an SNMP engine is expensive to
@@ -475,7 +497,17 @@ async def poll_all_devices():
                 # An unreachable device costs several seconds of timeouts, and
                 # holding a connection across that would pin
                 # COLLECTOR_CONCURRENT connections for the whole SNMP phase.
-                result = await fetch_device_state(collector, device)
+                # Addresses are asked for on a schedule of their own, not
+                # every cycle: the walk is a measured 5% of this poll, and an
+                # interface's IP does not change between two of them
+                # (app/core/device_addresses.py AddressWalkSchedule).
+                walk_addresses = address_walk.due(device.id)
+                result = await fetch_device_state(
+                    collector, device, collect_addresses=walk_addresses
+                )
+                if result is not None and result.get("own_addresses") is not None:
+                    address_walk.record(device.id)
+                    address_walks += 1
 
                 # Whether this device is *called* offline is a separate
                 # question from whether it answered: with
@@ -571,6 +603,7 @@ async def poll_all_devices():
         f"(devices {devices_seconds:.1f}s{fleet}, "
         f"{indexed_links} links indexed"
         + (f", {indexed_addresses} addresses" if indexed_addresses else "")
+        + (f", {address_walks} walked" if address_walks else "")
         + "), "
         f"{inventory_pool.stats()}, discovery cache: {discovery_cache.stats()}"
     )
@@ -578,16 +611,22 @@ async def poll_all_devices():
 
 
 async def fetch_device_state(
-    collector: SNMPCollector, device: Device
+    collector: SNMPCollector, device: Device,
+    collect_addresses: Optional[bool] = None
 ) -> Optional[Dict]:
     """
     The SNMP half of a poll. Holds no database connection.
 
     Returns None when the exchange itself failed, which the caller stores the
     same way as a device that did not answer.
+
+    `collect_addresses` is the caller's decision about this one poll; it can
+    only skip the address walk, never switch it on (SNMPCollector.poll_device).
     """
     try:
-        return await collector.poll_device(device.ip_address)
+        return await collector.poll_device(
+            device.ip_address, collect_addresses=collect_addresses
+        )
     except Exception as e:
         logger.error(f"Error polling {device.hostname}: {e}")
         return None

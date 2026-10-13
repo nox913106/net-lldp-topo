@@ -44,10 +44,16 @@ services:
       # 第 5.3 節，收不到的判讀在 5.4 節。
       - COLLECTOR_TRAP_ENABLED=false
       - COLLECTOR_TRAP_PORT=162
-      # 走訪每台設備自己的 IP 位址表（見上）。每台設備的盤點輪詢多約 10% 的
-      # CPU；不收 trap 的部署可以關掉。分片時每一片都要開，因為拿到 udp/162
+      # 走訪每台設備自己的 IP 位址表（見上）。那次走訪是一次輪詢的約 5%
+      # CPU，而每台設備最多每 COLLECTOR_ADDRESS_INTERVAL 秒走訪一次，所以
+      # 預設下平均每輪只付 1/12（見 docs/PERFORMANCE.md 第 38 節）。
+      # 不收 trap 的部署可以整個關掉。分片時每一片都要開，因為拿到 udp/162
       # 的那一片需要其他片輪詢的設備的位址。
       - COLLECTOR_DEVICE_ADDRESSES=true
+      # 同一台設備的位址最多多久問一次。位址是慢變數，所以預設一小時而不是
+      # 每輪；代價是「設備多一個位址」之後最多約一小時才被 trap 認得（新設備
+      # 不受影響，第一次輪詢就問）。0 = 每輪都問。
+      - COLLECTOR_ADDRESS_INTERVAL=3600
       # 分片：一個行程負責 devices.id % COLLECTOR_SHARDS == COLLECTOR_SHARD_ID
       # 的設備。1 就是單一行程、完全不做分片協調（見 docs/PERFORMANCE.md
       # 第 24 節）。要加第二片的話，下面 collector-2 取消註解，**並且**把

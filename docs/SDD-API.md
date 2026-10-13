@@ -346,7 +346,7 @@ API 行程**不會**用自己的環境變數去填這些值：docker-compose 裡
       "shard": 0, "shards": 4, "owner": "shard-0-of-4", "live": true,
       "renewed_at": "2026-10-10T19:06:39", "expires_at": "2026-10-10T19:16:39",
       "age_seconds": 12.2,
-      "intervals": {"inventory": 300, "fast": 60},
+      "intervals": {"inventory": 300, "fast": 60, "addresses": 3600},
       "damping": {
         "offline_confirm_cycles": 3,
         "link_flap_transitions": 4,
@@ -410,6 +410,7 @@ API 行程**不會**用自己的環境變數去填這些值：docker-compose 裡
 | `damping.pending_offline` / `flapping_links` | 所有片加總 |
 | `pending_offline_devices` | id 已經換成 hostname/IP，並附上「已經失敗幾次」。已經被刪掉的設備不會出現（不會留下一個光禿禿的 id） |
 | `traps.known_addresses` | trap 可以比對的位址總數（不是加總：每個接收器都比對整個機群）。等於設備數就表示位址收集沒有生效，見 CONFIGURATION 第 5.3 節 |
+| `processes[].intervals.addresses` | 那個行程走訪設備位址表的間隔（秒）。`0` = `COLLECTOR_DEVICE_ADDRESSES` 關掉了，所以「從不走訪」與「每輪走訪」不會長得一樣 |
 | `warnings[]` | `code` 給 UI 翻譯用，`message` 是給不認得那個 code 的客戶端的英文退路，`params` 是要代入的數字 |
 
 **警告的 code：**

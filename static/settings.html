@@ -960,7 +960,8 @@
                         <th>${escapeHtml(t('collectorShard'))}</th>
                         <th>${escapeHtml(t('collectorOwner'))}</th>
                         <th>${escapeHtml(t('collectorLastSeen'))}</th>
-                        <th>${escapeHtml(t('collectorIntervals'))}</th>
+                        <th title="${escapeHtml(t('collectorIntervalsHint'))}">${
+                            escapeHtml(t('collectorIntervals'))}</th>
                         <th>${escapeHtml(t('dampingPendingOffline'))}</th>
                     </tr></thead>
                     <tbody>
@@ -970,8 +971,10 @@
                         <td>${escapeHtml(p.owner)}</td>
                         <td>${p.age_seconds === null || p.age_seconds === undefined
                             ? '' : escapeHtml(`${Math.round(p.age_seconds)}${t('secondsAgo')}`)}</td>
-                        <td class="collector-quiet">${p.intervals
-                            ? escapeHtml(`${p.intervals.inventory}s / ${p.intervals.fast || '-'}s`)
+                        <td class="collector-quiet" title="${escapeHtml(t('collectorIntervalsHint'))}">${
+                            p.intervals
+                            ? escapeHtml(`${p.intervals.inventory}s / ${p.intervals.fast || '-'}s`
+                                + ` / ${p.intervals.addresses ? p.intervals.addresses + 's' : '-'}`)
                             : ''}</td>
                         <td>${escapeHtml((p.damping || {}).pending_offline ?? '')}</td>
                     </tr>`).join('')}

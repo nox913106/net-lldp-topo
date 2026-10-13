@@ -167,12 +167,14 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community>
 
 | 情況 | 處理 |
 |---|---|
-| 那台設備還沒被盤點輪詢過（剛加入） | 等一輪 `COLLECTOR_INTERVAL`（預設 300 秒） |
+| 那台設備還沒被盤點輪詢過（剛加入） | 等一輪 `COLLECTOR_INTERVAL`（預設 300 秒）。新設備第一次輪詢就會走訪位址，不用等 `COLLECTOR_ADDRESS_INTERVAL` |
+| 位址是**最近才加上去的**（改過介面 IP） | 走訪不是每輪都做。最多等 `COLLECTOR_ADDRESS_INTERVAL`（預設 3600 秒）加一輪盤點，見 CONFIGURATION 第 5.5 節 |
 | 第 6 節顯示兩張 IP 表都是空的 | 那台 agent 不提供位址表。在設備上指定 trap 來源，或把 `devices.ip_address` 改成它實際送出的位址 |
 | 位址表有東西，但送出的位址不在裡面 | 中間有 NAT。v1 trap 會靠自己宣稱的位址認出來；v2c 沒有那個欄位，只能照上一列處理 |
 
 `COLLECTOR_DEVICE_ADDRESSES=false` 時完全不收集，trap 只比對管理位址。
-設定頁「收集器狀態」的 trap 區會顯示可比對的位址總數。
+設定頁「收集器狀態」的 trap 區會顯示可比對的位址總數，**間隔**欄的第三個
+數字則是走訪的間隔（`-` 表示整個關掉了）。
 
 ## 手動用 net-snmp 驗證
 

@@ -168,6 +168,23 @@ class Settings(BaseSettings):
     # Measured cost: see docs/PERFORMANCE.md section 37.
     collector_device_addresses: bool = True
 
+    # How stale a device's address list is allowed to get. The walk above
+    # costs a measured 5% of a device's poll, and addressing is a slow
+    # variable: an interface's IP changes when someone changes it, not every
+    # five minutes. So each device is walked at most this often rather than
+    # every cycle, which divides that cost by however many cycles fit in
+    # here (docs/PERFORMANCE.md section 38).
+    #
+    # In seconds rather than cycles, so that raising COLLECTOR_INTERVAL
+    # cannot quietly make the addresses staler than this. A device polled
+    # for the first time by this process is always walked, so the staleness
+    # is on *changes*, not on new devices: an address that moves can keep
+    # matching its old device for up to this long - which the trap receiver
+    # still checks against that device's cables before applying anything.
+    #
+    # 0 (or less) restores the old behaviour, a walk on every cycle.
+    collector_address_interval: int = 3600  # 1 hour
+
     # How long a neighbour that could not be turned into a device (no
     # management address, no DNS record, no SNMP answer) is left alone before
     # it is probed again.

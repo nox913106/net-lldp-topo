@@ -92,7 +92,7 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 
 要不要在設備上加設定？**都不用。** 輪詢用的是你本來就在用的管理位址，拓樸
 是靠 sysName 對名字跟 IP 無關，而 trap —— 以前唯一的例外 —— 現在會比對
-設備**自己回報的所有位址**（盤點時走訪它的 IP 位址表），所以從出口介面送
+設備**自己回報的所有位址**（盤點時走訪它的 IP 位址表，每台預設每小時一次），所以從出口介面送
 的 trap 也認得出來，不必在每台設備加 `snmp-server trap-source`。
 見 [docs/CONFIGURATION.md 第 5 節](docs/CONFIGURATION.md#5-設備端需要改什麼以及為什麼不需要-loopback)。
 

@@ -1173,22 +1173,35 @@ class SNMPCollector:
             for index in wanted
         }
 
-    async def poll_device(self, ip: str) -> Dict:
+    async def poll_device(
+        self, ip: str, collect_addresses: Optional[bool] = None
+    ) -> Dict:
         """
         Poll a single device for all data.
 
         For the duration of the call the interface name tables are cached, so
         the three steps that need them (LLDP port mapping, CDP and interface
         statistics) share one walk instead of walking them again each time.
+
+        `collect_addresses` is per call because one collector is shared by
+        every device using the same credential (app/core/snmp_pool.py), so
+        "walk this device's addresses this time" cannot be a flag on the
+        object. It can only narrow what the collector was built with: False
+        skips a walk this time, None leaves the decision to the collector,
+        and True still does nothing when COLLECTOR_DEVICE_ADDRESSES is off -
+        a caller must not be able to switch on a feature the operator
+        switched off.
         """
         self._open_walk_cache(ip)
         try:
-            return await self._poll_device(ip)
+            return await self._poll_device(ip, collect_addresses)
         finally:
             # Do not hold this device's tables between polls
             self._close_walk_cache(ip)
 
-    async def _poll_device(self, ip: str) -> Dict:
+    async def _poll_device(
+        self, ip: str, collect_addresses: Optional[bool] = None
+    ) -> Dict:
         result = {
             "ip": ip,
             "success": False,
@@ -1226,7 +1239,7 @@ class SNMPCollector:
         # "this device holds no other address" (an empty list) from "nobody
         # asked" (absent) - an empty list is evidence, and reconciling
         # against it would delete the addresses of every device.
-        if self.collect_addresses:
+        if self.collect_addresses and collect_addresses is not False:
             result["own_addresses"] = await self.get_own_addresses(ip)
 
         return result

@@ -17,6 +17,7 @@ A fleet whose addressing is not changing therefore writes nothing here at
 all.
 """
 import logging
+import time
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from sqlalchemy import delete, insert, select
@@ -111,3 +112,68 @@ class DeviceAddressIndex:
         current.update(added)
 
         return len(added), len(stale)
+
+
+class AddressWalkSchedule:
+    """
+    When each device is next due for an address walk.
+
+    The walk is the expensive half of this feature: the rows cost one SELECT
+    per cycle (above), but asking the device costs 5.01 ms of CPU against a
+    95.6 ms poll - 5.2%, or 2.5 s added to a 500-device inventory cycle
+    (docs/PERFORMANCE.md section 38.2, which also has how the first attempt
+    at this measurement reported 10% and why that was noise).
+
+    Addressing, though, is a slow variable. An interface's IP changes when
+    someone changes it; polling it every five minutes buys nothing over
+    polling it every hour. So a device is asked at most once per interval and
+    the other cycles skip the walk entirely, which is where the cost goes.
+
+    Process memory, deliberately: it decides only how often to *ask*, so the
+    worst a restart can do is ask everything once, and nothing that matters
+    is lost. Also why the clock is monotonic - a device must not go an extra
+    hour unwalked because the host's clock jumped forward.
+    """
+
+    __slots__ = ("interval", "_last")
+
+    def __init__(self, interval_seconds: float) -> None:
+        # Below zero is the same as zero: walk every cycle.
+        self.interval = max(0.0, float(interval_seconds))
+        self._last: Dict[int, float] = {}
+
+    def due(self, device_id: int) -> bool:
+        """
+        Whether this device's addresses should be asked for on this poll.
+
+        A device this process has not walked yet is always due, so the
+        interval delays picking up a *change* and never the first answer -
+        a device added to the fleet is matched against its own addresses on
+        its first successful poll, not an hour later.
+        """
+        if self.interval <= 0:
+            return True
+        last = self._last.get(device_id)
+        return last is None or (time.monotonic() - last) >= self.interval
+
+    def record(self, device_id: int) -> None:
+        """
+        Note that this device's addresses were just read.
+
+        Called only when the walk actually produced an answer. Marking a
+        device that did not answer would leave it unwalked for an interval
+        because it was unreachable, which is the opposite of what should
+        happen: a device that just came back is exactly one whose addressing
+        may have changed.
+        """
+        self._last[device_id] = time.monotonic()
+
+    def prune(self, device_ids: Iterable[int]) -> None:
+        """Forget devices that are no longer in the fleet."""
+        keep = set(device_ids)
+        for device_id in [d for d in self._last if d not in keep]:
+            del self._last[device_id]
+
+    def walked(self) -> int:
+        """How many devices this process has read addresses from."""
+        return len(self._last)

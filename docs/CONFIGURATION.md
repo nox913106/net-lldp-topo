@@ -83,12 +83,23 @@ COLLECTOR_DISCOVERY_CACHE_TTL=3600
 
 # 盤點時順便走訪每台設備自己的 IP 位址表，記下它持有哪些位址，這樣它從哪個
 # 介面送 trap 都認得出來 —— 也就是不用在每台設備上加 snmp-server trap-source
-# （見第 5.3 節）。代價是每台設備的盤點輪詢多約 10% 的 CPU（第 37 節）。
+# （見第 5.3 節）。那次走訪是一次輪詢的約 5% CPU，而且不是每輪都做
+# —— 見下面的 COLLECTOR_ADDRESS_INTERVAL 與 PERFORMANCE 第 38 節。
 #
 # 刻意**不**跟 COLLECTOR_TRAP_ENABLED 綁在一起：一台主機只有一個行程綁得到
 # udp/162，所以分片時拿到接收器的那一片需要其他片輪詢的設備的位址，而那些
 # 行程的 trap 是關的。不收 trap 的部署可以關掉這個。
 COLLECTOR_DEVICE_ADDRESSES=true
+
+# 同一台設備的位址表最多多久走訪一次（秒）。位址是慢變數：介面的 IP 在有人
+# 去改它的時候才改，所以每小時問一次跟每輪問一次拿到的是同一張表。寫成秒而
+# 不是輪數，這樣調 COLLECTOR_INTERVAL 不會順便讓位址變舊。
+#
+# 代價：設備「多」一個位址之後，最多約一小時（加一輪盤點、加接收器自己的
+# 60 秒快取）那個位址送來的 trap 才會被認得 —— 期間事件照樣由輪詢迴圈發現，
+# 丟的是即時性不是正確性。新設備不受影響：第一次成功輪詢一定會走訪。
+# 0 = 每輪都走訪（舊行為）。見第 5.5 節與 PERFORMANCE 第 38 節。
+COLLECTOR_ADDRESS_INTERVAL=3600
 
 # 收 SNMP trap（udp/162）。開了之後 linkDown/linkUp 會在毫秒內更新那條線
 # 的狀態並發告警，而不是等到下一次快迴圈。預設關閉：它會開一個監聽埠、
@@ -321,9 +332,12 @@ sysName）去對 `devices.hostname`
   | Junos | `set snmp trap-options source-address <address>` |
 
 * `COLLECTOR_DEVICE_ADDRESSES=false` 時不會收集，trap 就只比對管理位址
-  （舊行為）。關掉的理由只有一個：那個走訪讓每台設備的盤點輪詢多約 10% 的
-  CPU（實測見 [docs/PERFORMANCE.md](PERFORMANCE.md) 第 37 節）。不收 trap
-  的部署可以關掉它。
+  （舊行為）。關掉的理由只有一個：那個走訪是一次盤點輪詢的約 5% CPU（實測
+  見 [docs/PERFORMANCE.md](PERFORMANCE.md) 第 38.2 節）。不收 trap 的部署
+  可以關掉它。
+* 走訪**不是每輪都做**：同一台設備最多每 `COLLECTOR_ADDRESS_INTERVAL`
+  （預設 3600 秒）問一次，所以預設下那 5% 平均只付 1/12。代價寫在
+  下面的 5.5 節。
 
 位址是輪詢時收集的，所以**一台設備要先被成功輪詢過一次**，它的其他位址才會
 被認得。新加入的設備在第一次盤點輪詢（`COLLECTOR_INTERVAL`，預設 300 秒）
@@ -344,3 +358,37 @@ Traps: 0 received, 0 applied, 0 ignored, 0 dropped
 | `received` 在跳、`ignored` 跟著跳 | 封包到了但認不出設備。log 裡每個來源會有一行 `Ignoring traps from <ip>: not an address any managed device is known to hold`。設定頁「收集器狀態」的 trap 區會顯示**可比對的位址**有幾個：如果那個數字等於設備數，表示位址收集沒有生效（`COLLECTOR_DEVICE_ADDRESSES`，或那些設備還沒被盤點過一輪）|
 | `applied` 在跳但沒有告警 | 那個埠上沒有記錄到線（只有有線的埠才算），或者 `ALERT_TRAP_REQUIRES_POLL=true` 正在等輪詢佐證（那時這一行會多一段 `left to a poll to alert on`） |
 | `dropped` 在跳 | 一瞬間超過 2000 個 trap 在排隊（機箱重開、光纖狂抖）。丟掉的是延遲不是正確性，快迴圈照樣會把狀態撿回來 |
+
+### 5.5 位址最多能舊多久
+
+位址是在盤點輪詢時收集的，而且**不是每輪都收**：同一台設備最多每
+`COLLECTOR_ADDRESS_INTERVAL`（預設 3600 秒）走訪一次。所以有兩個不同的問題
+要分開看。
+
+**新設備：沒有延遲。** 這個行程沒走訪過的設備一律會走訪，所以一台設備加進來
+之後，它第一次成功輪詢就把自己的位址都記下來了 —— 不用等一小時。
+
+**設備多一個位址之後：最多約一小時。**
+
+| | 最多 |
+|---|---|
+| 等到下一次走訪 | `COLLECTOR_ADDRESS_INTERVAL`（3600 秒） |
+| 走訪只在盤點時發生 | ＋`COLLECTOR_INTERVAL`（300 秒） |
+| 接收器的位址表自己也有快取 | ＋60 秒（有未知來源時最快 5 秒就重讀） |
+| 合計 | **約 66 分鐘** |
+
+這段時間裡，從那個新位址送來的 trap 會算成「不屬於任何受管設備」：log 裡
+一行、`Traps:` 的 `ignored` 會跳、設定頁的收集器狀態會出現那個警告。
+**不會漏掉事件** —— 線路狀態照樣由輪詢迴圈發現（最慢一個
+`COLLECTOR_INTERVAL`），少掉的是 trap 那幾秒的即時性。
+
+反過來，位址從一台設備**搬到另一台**之後，舊設備最多也還會匹配那麼久。
+接收器仍然要求那個埠上有線、`ALERT_TRAP_REQUIRES_POLL=true` 時還要等輪詢
+佐證，所以通常的結果是「忽略」而不是「對錯的設備發告警」。
+
+要縮短就把 `COLLECTOR_ADDRESS_INTERVAL` 調小；`0` 回到每輪都走訪（也就是
+每台設備的輪詢多付那 5% CPU）。設定頁「收集器狀態」的**間隔**欄第三個數字
+就是這個值，`-` 表示位址收集整個關掉了。
+
+重啟收集器會讓所有設備在第一輪重新走訪一次 —— 排程是行程記憶，刻意的：
+它只決定「多久問一次」，剛重啟的行程本來就該重新確認。
