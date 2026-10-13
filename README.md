@@ -180,10 +180,14 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 pip install --require-hashes -r requirements-dev.txt
 pytest
 
-# 連「真的走一次 SNMP」那一組（模擬器刻意裝在另一個 venv，原因見
+# 連「真的走一次 SNMP」與端對端那幾組（模擬器刻意裝在另一個 venv，原因見
 # requirements-sim.in：它會拉 pysnmp 7.x，正是這裡鎖著不要的版本）
 python -m venv .venv-sim
 .venv-sim/bin/pip install --require-hashes -r requirements-sim.txt
+SNMPSIM_BIN=.venv-sim/bin/snmpsim-command-responder pytest
+
+# 對著真的 PostgreSQL 再跑一次（CI 兩種都跑）
+DATABASE_URL=postgresql+asyncpg://topomon:topomon@127.0.0.1:5432/topomon \
 SNMPSIM_BIN=.venv-sim/bin/snmpsim-command-responder pytest
 
 # 型別檢查（規則集很窄，原因寫在 pyrightconfig.json 裡）
@@ -195,10 +199,16 @@ pip-compile --generate-hashes --strip-extras --no-header requirements.in
 ```
 
 `.github/workflows/ci.yml` 跑三個工作：**tests**（照 lock 安裝，起一個 SNMP
-模擬器，跑 69 項測試）、**lock**（就地重編三份 lock 再 `git diff --exit-code`，
-抓「改了 `.in` 沒重編」和手改 `.txt`）、**typecheck**（pyright）。測試在沒有
-模擬器時會 skip 而不是 fail，但 CI 設 `REQUIRE_SNMPSIM=1` 把那個 skip 變成
-失敗 —— 否則 CI 會在什麼都沒測的情況下變綠。
+模擬器，跑 153 項測試 —— 而且跑兩次，一次 SQLite、一次 `postgres:16`，因為
+有兩類錯只在 PostgreSQL 發作，見 [docs/PERFORMANCE.md 第 39.3 節](docs/PERFORMANCE.md)）、
+**lock**（就地重編三份 lock 再 `git diff --exit-code`，抓「改了 `.in` 沒重編」
+和手改 `.txt`）、**typecheck**（pyright）。測試在沒有模擬器時會 skip 而不是
+fail，但 CI 設 `REQUIRE_SNMPSIM=1` 把那個 skip 變成失敗 —— 否則 CI 會在什麼
+都沒測的情況下變綠。
+
+那 153 項裡有 22 項是端對端的：真的跑一輪盤點與快迴圈、真的 trap 封包進真的
+接收器、租約與分片心跳對真的資料庫（`tests/test_*_e2e.py`，說明在
+`tests/README.md`）。在那之前這些證明都只活在開發容器的腳本裡。
 
 型別檢查抓不到當初那場事故（原因見 [docs/PERFORMANCE.md 第 32.2 節](docs/PERFORMANCE.md)），
 真正守住它的是 `tests/test_snmp_collector.py` —— 那幾項斷言的是**筆數**，

@@ -9,6 +9,12 @@
 #   test       - walks a real SNMP agent and asserts on row counts
 #   lock       - the lockfiles still match what a human wrote in the .in files
 #   typecheck  - names that no longer exist, before anything is run
+#
+# The test job runs twice, against SQLite and against a real PostgreSQL. That
+# is not belt and braces: pooled connections belong to the event loop that
+# opened them and a JSON None is not the JSON value "null", and both of those
+# bugs were invisible on SQLite while breaking the database this project
+# actually runs on (docs/PERFORMANCE.md 37.3, tests/test_lease_e2e.py).
 name: CI
 
 on:
@@ -25,8 +31,35 @@ env:
 
 jobs:
   test:
-    name: tests
+    name: tests (${{ matrix.database }})
     runs-on: ubuntu-latest
+    strategy:
+      # One dialect failing must not hide the other's result
+      fail-fast: false
+      matrix:
+        include:
+          # Empty means "whatever the tests pick", which is a temporary
+          # SQLite file - the default a developer runs with.
+          - database: sqlite
+            database_url: ""
+          - database: postgresql
+            database_url: "postgresql+asyncpg://topomon:topomon@127.0.0.1:5432/topomon"
+    services:
+      # Started for both legs; only the PostgreSQL one connects to it.
+      # Pinned, like every other tool here.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: topomon
+          POSTGRES_PASSWORD: topomon
+          POSTGRES_DB: topomon
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -55,6 +88,7 @@ jobs:
           # machine stays usable - which would also let CI go green having
           # tested nothing. This turns that skip into a failure.
           REQUIRE_SNMPSIM: "1"
+          DATABASE_URL: ${{ matrix.database_url }}
         run: pytest
 
   lock:
