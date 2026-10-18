@@ -3,6 +3,10 @@
  * Handles API calls, UI interactions, and data management
  */
 
+// i18n.js is loaded before this file, so window.i18n is there. The guard is
+// only for the case where it did not load at all.
+const t = key => (window.i18n ? window.i18n.t(key) : key);
+
 class App {
     constructor() {
         this.apiBase = '/api/v1';
@@ -203,7 +207,7 @@ class App {
 
         } catch (error) {
             console.error('Error loading topology:', error);
-            this.showError('Failed to load topology data');
+            this.showError(t('failedToLoadTopology'));
         } finally {
             this.showLoading(false);
         }
@@ -247,7 +251,7 @@ class App {
                     <span class="alert-message">${alert.message || alert.alert_type}</span>
                     <span class="alert-time">${this.formatTime(alert.triggered_at)}</span>
                 </div>
-            `).join('') || '<p style="padding: 0.5rem; color: var(--text-secondary);">No active alerts</p>';
+            `).join('') || `<p style="padding: 0.5rem; color: var(--text-secondary);">${t('noActiveAlerts')}</p>`;
         }
     }
 
@@ -255,7 +259,7 @@ class App {
         const select = document.getElementById('group-select');
         if (!select) return;
 
-        select.innerHTML = '<option value="">Select Group...</option>' +
+        select.innerHTML = `<option value="">${t('selectGroup')}</option>` +
             groups.map(g => `<option value="${g.id}">${g.name} (${g.device_count})</option>`).join('');
     }
 
@@ -269,46 +273,46 @@ class App {
         title.textContent = node.hostname;
         content.innerHTML = `
             <div class="detail-section">
-                <h4>Device Info</h4>
+                <h4>${t('deviceInfo')}</h4>
                 <div class="detail-row">
-                    <span class="detail-label">IP Address</span>
+                    <span class="detail-label">${t('ipAddress')}</span>
                     <span class="detail-value">${node.ip_address}</span>
                 </div>
                 <div class="detail-row">
-                    <span class="detail-label">Type</span>
-                    <span class="detail-value">${node.device_type || 'Unknown'}</span>
+                    <span class="detail-label">${t('type')}</span>
+                    <span class="detail-value">${node.device_type ? t(node.device_type) : t('unknown')}</span>
                 </div>
                 <div class="detail-row">
-                    <span class="detail-label">Vendor</span>
-                    <span class="detail-value">${node.vendor || 'Unknown'}</span>
+                    <span class="detail-label">${t('vendor')}</span>
+                    <span class="detail-value">${node.vendor || t('unknown')}</span>
                 </div>
                 <div class="detail-row">
-                    <span class="detail-label">Status</span>
-                    <span class="detail-value">${node.status}</span>
+                    <span class="detail-label">${t('status')}</span>
+                    <span class="detail-value">${t(node.status)}</span>
                 </div>
             </div>
             <div class="detail-section">
-                <h4>Metrics</h4>
+                <h4>${t('metrics')}</h4>
                 <div class="detail-row">
-                    <span class="detail-label">CPU</span>
+                    <span class="detail-label">${t('cpu')}</span>
                     <span class="detail-value">${node.cpu_percent ? node.cpu_percent.toFixed(1) + '%' : 'N/A'}</span>
                 </div>
                 <div class="detail-row">
-                    <span class="detail-label">Memory</span>
+                    <span class="detail-label">${t('memory')}</span>
                     <span class="detail-value">${node.memory_percent ? node.memory_percent.toFixed(1) + '%' : 'N/A'}</span>
                 </div>
             </div>
             ${node.alert_count > 0 ? `
             <div class="detail-section">
-                <h4>Alerts (${node.alert_count})</h4>
+                <h4>${t('alerts')} (${node.alert_count})</h4>
                 <div id="device-alerts-list" style="max-height: 200px; overflow-y: auto;">
-                    <p style="color: var(--text-secondary);">Loading alerts...</p>
+                    <p style="color: var(--text-secondary);">${t('loadingAlerts')}</p>
                 </div>
             </div>
             ` : ''}
             <div class="detail-section" style="margin-top: 1rem;">
                 <button onclick="window.app.showDeviceHierarchy(${node.id})" class="control-btn" style="display: block; width: 100%; text-align: center;">
-                    View Full Details →
+                    ${t('viewFullDetails')} →
                 </button>
             </div>
         `;
@@ -331,12 +335,12 @@ class App {
                 alertsList.innerHTML = data.alerts.map(a => `
                     <div style="padding: 0.5rem; background: var(--bg-tertiary); border-radius: 4px; margin-bottom: 0.5rem; border-left: 3px solid ${a.severity === 'critical' ? 'var(--danger)' : 'var(--warning)'};">
                         <div style="font-weight: 500; font-size: 0.875rem;">${this.formatAlertType(a.alert_type)}</div>
-                        <div style="font-size: 0.75rem; color: var(--text-secondary);">${a.message || 'No details'}</div>
-                        ${a.current_value ? `<div style="font-size: 0.75rem; color: var(--text-secondary);">Value: ${a.current_value.toFixed(1)} (threshold: ${a.threshold_value || '-'})</div>` : ''}
+                        <div style="font-size: 0.75rem; color: var(--text-secondary);">${a.message || t('noDetails')}</div>
+                        ${a.current_value ? `<div style="font-size: 0.75rem; color: var(--text-secondary);">${t('value')}: ${a.current_value.toFixed(1)} (${t('threshold').toLowerCase()}: ${a.threshold_value || '-'})</div>` : ''}
                     </div>
                 `).join('');
             } else if (alertsList) {
-                alertsList.innerHTML = '<p style="color: var(--text-secondary);">No active alerts</p>';
+                alertsList.innerHTML = `<p style="color: var(--text-secondary);">${t('noActiveAlerts')}</p>`;
             }
         } catch (error) {
             console.error('Error loading device alerts:', error);
@@ -344,14 +348,14 @@ class App {
     }
 
     formatAlertType(type) {
-        const types = {
-            'device_offline': 'Device Offline',
-            'cpu_high': 'High CPU',
-            'memory_high': 'High Memory',
-            'link_high_utilization': 'Link High Utilization',
-            'link_down': 'Link Down'
+        const keys = {
+            'device_offline': 'deviceOffline',
+            'cpu_high': 'highCpu',
+            'memory_high': 'highMemory',
+            'link_high_utilization': 'linkHighUtilization',
+            'link_down': 'linkDown'
         };
-        return types[type] || type;
+        return keys[type] ? t(keys[type]) : type;
     }
 
     showLinkDetails(link) {
@@ -364,41 +368,41 @@ class App {
         const sourceNode = this.topology.nodes.find(n => n.id === link.source.id || n.id === link.source);
         const targetNode = this.topology.nodes.find(n => n.id === link.target.id || n.id === link.target);
 
-        title.textContent = 'Link Details';
+        title.textContent = t('linkDetails');
         content.innerHTML = `
             <div class="detail-section">
-                <h4>Connection</h4>
+                <h4>${t('connection')}</h4>
                 <div class="detail-row">
-                    <span class="detail-label">From</span>
-                    <span class="detail-value">${sourceNode?.hostname || 'Unknown'}</span>
+                    <span class="detail-label">${t('from')}</span>
+                    <span class="detail-value">${sourceNode?.hostname || t('unknown')}</span>
                 </div>
                 <div class="detail-row">
-                    <span class="detail-label">To</span>
-                    <span class="detail-value">${targetNode?.hostname || 'Unknown'}</span>
+                    <span class="detail-label">${t('to')}</span>
+                    <span class="detail-value">${targetNode?.hostname || t('unknown')}</span>
                 </div>
             </div>
             <div class="detail-section">
-                <h4>Bandwidth</h4>
+                <h4>${t('bandwidth')}</h4>
                 <div class="detail-row">
-                    <span class="detail-label">Total</span>
+                    <span class="detail-label">${t('total')}</span>
                     <span class="detail-value">${this.formatBandwidth(link.total_bandwidth_mbps)}</span>
                 </div>
                 <div class="detail-row">
-                    <span class="detail-label">In Utilization</span>
+                    <span class="detail-label">${t('inUtilization')}</span>
                     <span class="detail-value">${this.formatUtilization(link.utilization_in_percent)}</span>
                 </div>
                 <div class="detail-row">
-                    <span class="detail-label">Out Utilization</span>
+                    <span class="detail-label">${t('outUtilization')}</span>
                     <span class="detail-value">${this.formatUtilization(link.utilization_out_percent)}</span>
                 </div>
                 <div class="detail-row">
-                    <span class="detail-label">Status</span>
-                    <span class="detail-value" style="color: var(--${this.getStatusColor(link.status)})">${link.status}</span>
+                    <span class="detail-label">${t('status')}</span>
+                    <span class="detail-value" style="color: var(--${this.getStatusColor(link.status)})">${t(link.status)}</span>
                 </div>
             </div>
             ${link.port_details?.length ? `
             <div class="detail-section">
-                <h4>Port Details</h4>
+                <h4>${t('portDetails')}</h4>
                 <div class="port-list">
                     ${link.port_details.map(p => `
                         <div class="port-item">
@@ -439,7 +443,10 @@ class App {
                 ts += 'Z';
             }
             const date = new Date(ts);
-            el.textContent = `Last update: ${date.toLocaleTimeString()}`;
+            // Only the time, so the label keeps its data-i18n span and
+            // follows a language switch without waiting for a refresh.
+            const timeEl = document.getElementById('last-update-time');
+            if (timeEl) timeEl.textContent = date.toLocaleTimeString();
         }
     }
 
@@ -523,22 +530,22 @@ class App {
                         <div class="hierarchy-modal-body">
                             <!-- Device Info -->
                             <div class="hierarchy-section">
-                                <h3>📋 ${window.i18n ? i18n.t('deviceInformation') : 'Device Information'}</h3>
+                                <h3>📋 ${t('deviceInformation')}</h3>
                                 <div class="device-info-grid">
-                                    <div><span class="label">${window.i18n ? i18n.t('ipAddress') : 'IP Address'}</span><span class="value">${device.ip_address}</span></div>
-                                    <div><span class="label">${window.i18n ? i18n.t('type') : 'Type'}</span><span class="value">${device.device_type}</span></div>
-                                    <div><span class="label">${window.i18n ? i18n.t('vendor') : 'Vendor'}</span><span class="value">${device.vendor}</span></div>
-                                    <div><span class="label">${window.i18n ? i18n.t('model') : 'Model'}</span><span class="value">${device.model || '-'}</span></div>
-                                    <div><span class="label">${window.i18n ? i18n.t('firmware') : 'Firmware'}</span><span class="value">${device.firmware_version || '-'}</span></div>
-                                    <div><span class="label">${window.i18n ? i18n.t('cpu') : 'CPU'}</span><span class="value">${device.cpu_percent ? device.cpu_percent.toFixed(1) + '%' : 'N/A'}</span></div>
-                                    <div><span class="label">${window.i18n ? i18n.t('memory') : 'Memory'}</span><span class="value">${device.memory_percent ? device.memory_percent.toFixed(1) + '%' : 'N/A'}</span></div>
+                                    <div><span class="label">${t('ipAddress')}</span><span class="value">${device.ip_address}</span></div>
+                                    <div><span class="label">${t('type')}</span><span class="value">${device.device_type}</span></div>
+                                    <div><span class="label">${t('vendor')}</span><span class="value">${device.vendor}</span></div>
+                                    <div><span class="label">${t('model')}</span><span class="value">${device.model || '-'}</span></div>
+                                    <div><span class="label">${t('firmware')}</span><span class="value">${device.firmware_version || '-'}</span></div>
+                                    <div><span class="label">${t('cpu')}</span><span class="value">${device.cpu_percent ? device.cpu_percent.toFixed(1) + '%' : 'N/A'}</span></div>
+                                    <div><span class="label">${t('memory')}</span><span class="value">${device.memory_percent ? device.memory_percent.toFixed(1) + '%' : 'N/A'}</span></div>
                                 </div>
                             </div>
                             
                             <!-- Upstream Hierarchy -->
                             ${ancestors.length > 0 ? `
                             <div class="hierarchy-section">
-                                <h3>⬆️ ${window.i18n ? i18n.t('upstreamDevices') : 'Upstream Devices'} (${ancestors.length})</h3>
+                                <h3>⬆️ ${t('upstreamDevices')} (${ancestors.length})</h3>
                                 <div class="hierarchy-tree">
                                     ${ancestors.map((a, i) => `
                                         <div class="hierarchy-item" style="margin-left: ${(ancestors.length - 1 - i) * 1.5}rem;">
@@ -561,7 +568,7 @@ class App {
                             <!-- Downstream Children -->
                             ${children.length > 0 ? `
                             <div class="hierarchy-section">
-                                <h3>⬇️ ${window.i18n ? i18n.t('downstreamDevices') : 'Downstream Devices'} (${children.length})</h3>
+                                <h3>⬇️ ${t('downstreamDevices')} (${children.length})</h3>
                                 <div class="hierarchy-children-list">
                                     ${children.map(c => `
                                         <div class="hierarchy-child">
@@ -577,12 +584,12 @@ class App {
                             <!-- Alerts -->
                             ${alertsData.alerts.length > 0 ? `
                             <div class="hierarchy-section">
-                                <h3>⚠️ ${window.i18n ? i18n.t('activeAlerts') : 'Active Alerts'} (${alertsData.alerts.length})</h3>
+                                <h3>⚠️ ${t('activeAlerts')} (${alertsData.alerts.length})</h3>
                                 <div class="hierarchy-alerts-list">
                                     ${alertsData.alerts.map(a => `
                                         <div class="hierarchy-alert ${a.severity}">
                                             <strong>${this.formatAlertType(a.alert_type)}</strong>
-                                            <p>${a.message || 'No details'}</p>
+                                            <p>${a.message || t('noDetails')}</p>
                                         </div>
                                     `).join('')}
                                 </div>
@@ -590,7 +597,7 @@ class App {
                             ` : ''}
                         </div>
                         <div class="hierarchy-modal-footer">
-                            <button class="btn-secondary" onclick="window.app.closeHierarchyModal()">Close</button>
+                            <button class="btn-secondary" onclick="window.app.closeHierarchyModal()">${t('close')}</button>
                         </div>
                     </div>
                 </div>
@@ -605,7 +612,7 @@ class App {
 
         } catch (error) {
             console.error('Error loading device hierarchy:', error);
-            alert('Failed to load device hierarchy');
+            alert(t('failedToLoadHierarchy'));
         }
     }
 

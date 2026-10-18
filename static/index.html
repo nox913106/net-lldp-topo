@@ -26,7 +26,7 @@
             </nav>
             <div class="header-actions">
                 <span class="status-indicator online"></span>
-                <span id="last-update"><span data-i18n="lastUpdate">Last update</span>: --</span>
+                <span id="last-update"><span data-i18n="lastUpdate">Last update</span>: <span id="last-update-time">--</span></span>
             </div>
         </header>
 
@@ -41,10 +41,10 @@
                 </div>
                 <div class="controls-right">
                     <select id="group-select" class="control-select" style="display: none;">
-                        <option value="">Select Group...</option>
+                        <option value="" data-i18n="selectGroup">Select Group...</option>
                     </select>
-                    <button id="refresh-btn" class="control-btn">🔄 Refresh</button>
-                    <button id="fit-btn" class="control-btn">⊡ Fit</button>
+                    <button id="refresh-btn" class="control-btn">🔄 <span data-i18n="refresh">Refresh</span></button>
+                    <button id="fit-btn" class="control-btn">⊡ <span data-i18n="fit">Fit</span></button>
                 </div>
             </div>
 
@@ -55,7 +55,7 @@
                 <!-- Loading Overlay -->
                 <div id="loading-overlay" class="loading-overlay" style="display: none;">
                     <div class="spinner"></div>
-                    <p>Loading topology...</p>
+                    <p data-i18n="loadingTopology">Loading topology…</p>
                 </div>
             </div>
 
@@ -63,7 +63,7 @@
             <div class="alerts-bar" id="alerts-bar">
                 <div class="alerts-bar-header">
                     <span class="alerts-icon">⚠️</span>
-                    <span class="alerts-title">Active Alerts</span>
+                    <span class="alerts-title" data-i18n="activeAlerts">Active Alerts</span>
                     <span class="alerts-count" id="alerts-count">0</span>
                 </div>
                 <div class="alerts-list" id="alerts-list">
@@ -75,7 +75,7 @@
         <!-- Device/Link Detail Panel -->
         <aside class="detail-panel" id="detail-panel" style="display: none;">
             <div class="panel-header">
-                <h3 id="panel-title">Details</h3>
+                <h3 id="panel-title" data-i18n="details">Details</h3>
                 <button class="panel-close" id="panel-close">×</button>
             </div>
             <div class="panel-content" id="panel-content">
@@ -84,7 +84,7 @@
         </aside>
     </div>
 
-    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="/static/vendor/d3-7.9.0.min.js"></script>
     <script src="/static/js/i18n.js"></script>
     <script src="/static/js/topology.js"></script>
     <script src="/static/js/app.js"></script>

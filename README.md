@@ -33,6 +33,11 @@ LLDP/CDP Topology Monitor - 網路拓撲監控系統
 PostgreSQL、Redis、Python 都在容器裡，主機上不用先裝。
 不用 docker 的裝法（systemd + venv）見 [docs/DEPLOYMENT.md 附錄 A](docs/DEPLOYMENT.md)。
 
+裝完之後**管理主機與瀏覽器都不需要連得到網際網路**。介面要用的檔案都隨程式
+一起送（d3 在 `static/vendor/`，見那裡的 README），所以放在沒有對外路由的
+管理網段也會正常顯示 —— 這點由 `tests/test_static_assets.py` 守著，因為少
+一個檔案的話瀏覽器是靜靜地畫不出來，不會報錯。
+
 ## 一鍵部署
 
 一台乾淨的 Ubuntu，一行。**這個 repo 是私有的**，所以權杖要給兩次 —— 一次
