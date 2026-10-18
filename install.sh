@@ -69,22 +69,41 @@ install_docker() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         ca-certificates curl gnupg
 
-    # 先試 Docker 官方源（版本比較新，compose v2 一定有）。內網或代理後面
-    # 拿不到的話退回發行版自己的套件 —— 那個版本舊，但功能是完整的。
+    # 先試 Docker 官方源（版本比較新，compose v2 一定有）。拿不到、或是裝
+    # 不起來（內網、代理、沒有對應的 codename）就退回發行版自己的套件 ——
+    # 那個版本舊，但功能是完整的。兩段都用 if 判斷而不是讓 set -e 直接結束，
+    # 因為「官方源不通」是個很常見的情況，不是錯誤。
+    local distro codename from_official=0
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    case "${ID:-ubuntu}" in
+        debian) distro=debian ;;
+        *)      distro=ubuntu ;;   # ubuntu 與它的衍生版都用 ubuntu 的源
+    esac
+    codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+
     install -m 0755 -d /etc/apt/keyrings
-    if curl -fsSL --max-time 30 https://download.docker.com/linux/ubuntu/gpg \
-         -o /tmp/docker.gpg 2>/dev/null; then
+    if [[ -n "$codename" ]] && curl -fsSL --max-time 30 \
+         "https://download.docker.com/linux/$distro/gpg" -o /tmp/docker.gpg 2>/dev/null; then
         gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg < /tmp/docker.gpg
         rm -f /tmp/docker.gpg
         chmod a+r /etc/apt/keyrings/docker.gpg
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" \
+https://download.docker.com/linux/$distro $codename stable" \
             > /etc/apt/sources.list.d/docker.list
-        apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        if apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+               docker-ce docker-ce-cli containerd.io docker-compose-plugin; then
+            from_official=1
+        else
+            warn "Docker 官方源裝不起來（$distro/$codename），改用發行版的套件"
+            rm -f /etc/apt/sources.list.d/docker.list
+            apt-get update -qq
+        fi
     else
         warn "連不到 download.docker.com，改用發行版的套件"
+    fi
+
+    if [[ $from_official -eq 0 ]]; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             docker.io docker-compose-v2
     fi

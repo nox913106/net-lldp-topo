@@ -461,7 +461,7 @@ sudo chown -R $USER:$USER /opt/topomon
 cd /opt/topomon
 
 # Clone 專案
-git clone https://github.com/nox913106/DEV-lldp-topomon.git .
+git clone https://github.com/nox913106/net-lldp-topo.git .
 
 # 建立虛擬環境
 python3.11 -m venv venv
@@ -574,9 +574,6 @@ sudo systemctl status topomon-web topomon-collector
 sudo journalctl -u topomon-web -f
 sudo journalctl -u topomon-collector -f
 ```
-
----
-
 
 ---
 

@@ -132,6 +132,10 @@ ensure_env() {
         return
     fi
 
+    # 裡面有資料庫密碼與 APP_SECRET_KEY，所以每次都收一次權限 —— 舊的部署
+    # 可能是 644（容器裡以 root 讀，不受影響）。
+    chmod 600 "$DIR/.env"
+
     # 既有的 .env：不要動它，但要講出這次更新多了哪些設定。少一個設定不會
     # 讓它壞掉（程式有預設值），可是「有一個新旋鈕而你不知道」會。
     local missing=()
@@ -377,12 +381,10 @@ cmd_health() {
         # 結論一樣（沒有服務在跑），所以這個 fallback 不會蓋掉真的失敗。
         have="$(compose ps --services --filter status=running 2>/dev/null | sort || true)"
     fi
+    missing="$(comm -23 <(echo "$want") <(echo "$have") || true)"
     if [[ -z "$want" ]]; then
         bad "讀不到 docker-compose.yml 的服務清單（$DIR）"
-        want=""; have=""
-    fi
-    missing="$(comm -23 <(echo "$want") <(echo "$have") || true)"
-    if [[ -n "$want" && -z "$missing" ]]; then
+    elif [[ -z "$missing" ]]; then
         ok "容器：$(echo "$have" | tr '\n' ' ')"
     else
         bad "沒有在跑的容器：$(echo "$missing" | tr '\n' ' ')"
