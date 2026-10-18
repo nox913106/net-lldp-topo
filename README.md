@@ -25,42 +25,73 @@ LLDP/CDP Topology Monitor - 網路拓撲監控系統
 
 ## 系統需求
 
-- Ubuntu 22.04 LTS
-- Python 3.11+
-- PostgreSQL 15+
-- Redis 7+
-- Docker & Docker Compose (建議)
+- Ubuntu 22.04 / 24.04 LTS（或 Debian）
+- Docker & Docker Compose v2 —— `install.sh` 會幫你裝
+- 2 core / 4 GB 起（500 台約吃 24% CPU，見 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)）
+- 連得到設備管理位址的 udp/161；要收 trap 再加 udp/162
 
-## 快速開始
+PostgreSQL、Redis、Python 都在容器裡，主機上不用先裝。
+不用 docker 的裝法（systemd + venv）見 [docs/DEPLOYMENT.md 附錄 A](docs/DEPLOYMENT.md)。
 
-```bash
-# Clone 專案
-git clone https://github.com/nox913106/DEV-lldp-topomon.git
-cd DEV-lldp-topomon
+## 一鍵部署
 
-# 使用 Docker Compose 啟動
-docker-compose up -d
-
-# 訪問 Web UI
-open http://localhost:8080
-```
-
-## 快速部署
+一台乾淨的 Ubuntu，一行：
 
 ```bash
-# 自動化部署（需要 root 權限）
-sudo bash deploy.sh docker   # Docker 部署（建議）
-sudo bash deploy.sh native   # Native 部署
+curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
 ```
+
+裝 docker、取原始碼到 `/opt/topomon`、產生隨機密鑰與登入密碼、起服務、等到
+`/health/ready` 說資料庫也連得上為止，然後印出網址與帳密（**密碼只顯示這一
+次**）。重複執行等同一次更新，不會動到 `.env`、憑證與資料庫。
+
+之後都用 `topomon`：
+
+```bash
+sudo topomon health      # 逐層檢查：容器、代理、認證、資料庫、收集器
+sudo topomon update      # 拉最新版、重建、健康檢查（沒過自動回滾）
+sudo topomon status      # 容器狀態 + 收集器回報
+sudo topomon logs        # 跟著看日誌（app / collector / proxy / db）
+sudo topomon backup      # 備份資料庫
+sudo topomon password    # 重設介面密碼
+```
+
+完整清單與每一項的細節見 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+
+### 介面是有密碼的
+
+這個系統沒有使用者的概念，認證整個落在反向代理上：8080（應用程式）與
+5432（資料庫）只綁 `127.0.0.1`，唯一的入口是 443，而 80 一律轉到 443。
+`/health` 與 `/health/ready` 不要密碼（給負載平衡器與 `topomon health`），
+其餘全部要，包含可以直接打 API 的 `/docs`。
+
+憑證預設是自簽的，所以瀏覽器第一次會警告 —— 換成真憑證是覆蓋
+`auth/tls.crt` 與 `auth/tls.key` 再 `topomon restart proxy`。
+
+這一層有測試守著：`tests/test_proxy_auth.py` 用真的 nginx 跑
+`deploy/nginx.conf`，確認沒帶密碼的請求**根本到不了應用程式**，而兩個健康
+檢查路徑仍然通。CI 每次都跑。
+
+### 開發用的起法
+
+```bash
+git clone https://github.com/nox913106/net-lldp-topo.git
+cd net-lldp-topo
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/uvicorn app.main:app --reload       # http://127.0.0.1:8000
+.venv/bin/python -m app.collector             # 另一個行程
+```
+
+預設資料庫是本地的 SQLite 檔，沒有代理也沒有密碼 —— 只適合本機。
 
 ## 文件
 
-- [系統設計文件 (SDD)](docs/SDD.md)
-- [API 設計文件](docs/SDD-API.md)
-- [Ubuntu 部署指南](docs/DEPLOYMENT.md) ⭐ 新增
-- [設定說明](docs/CONFIGURATION.md)
-- [收不到 LLDP 排查指南](docs/TROUBLESHOOTING_LLDP.md) ⭐ 新增
-- [效能與記憶體評估](docs/PERFORMANCE.md) ⭐ 新增
+- [部署與維護](docs/DEPLOYMENT.md) —— 一鍵安裝、`topomon` 每一個指令、認證與憑證、備份
+- [設定說明](docs/CONFIGURATION.md) —— 每個環境變數，以及設備端要不要改（不用）
+- [使用手冊](docs/USER_MANUAL.md) —— 介面怎麼用
+- [收不到 LLDP 排查指南](docs/TROUBLESHOOTING_LLDP.md) —— 拓撲空白時從這裡查
+- [效能與記憶體評估](docs/PERFORMANCE.md) —— 500 台的實測，以及每一次改動的量測
+- [系統設計文件 (SDD)](docs/SDD.md) / [API](docs/SDD-API.md)
 
 ## 疑難排解
 
@@ -171,7 +202,7 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 
 依賴是鎖定的：`requirements.in` 是人維護的那一份（直接依賴與版本範圍），
 `requirements.txt` 由 `pip-compile` 產生 —— 每個套件釘到確切版本並帶 hash，
-`Dockerfile` 與 `deploy.sh` 都用 `--require-hashes` 安裝。這個專案被依賴漂移
+`Dockerfile` 與 native 的安裝步驟都用 `--require-hashes` 安裝。這個專案被依賴漂移
 咬過一次（pysnmp 的進入點換掉，LLDP 走訪變成安靜地回傳 0 筆），所以範圍不夠，
 要的是同一份原始碼每次裝出同一棵樹。
 
@@ -179,6 +210,10 @@ docker compose exec collector python -m tools.diag_lldp <設備IP> <community> -
 # 測試：純邏輯那幾組不需要任何東西
 pip install --require-hashes -r requirements-dev.txt
 pytest
+
+# 反向代理那一組要一個 nginx（裝了就好，不用啟動 —— 測試會自己起一個在
+# 隨機埠上）。沒有的話那 8 項會 skip，CI 設 REQUIRE_NGINX=1 讓它變失敗。
+sudo apt install -y nginx-light
 
 # 連「真的走一次 SNMP」與端對端那幾組（模擬器刻意裝在另一個 venv，原因見
 # requirements-sim.in：它會拉 pysnmp 7.x，正是這裡鎖著不要的版本）
@@ -199,16 +234,22 @@ pip-compile --generate-hashes --strip-extras --no-header requirements.in
 ```
 
 `.github/workflows/ci.yml` 跑三個工作：**tests**（照 lock 安裝，起一個 SNMP
-模擬器，跑 153 項測試 —— 而且跑兩次，一次 SQLite、一次 `postgres:16`，因為
-有兩類錯只在 PostgreSQL 發作，見 [docs/PERFORMANCE.md 第 39.3 節](docs/PERFORMANCE.md)）、
+模擬器與一個 nginx，跑 183 項測試 —— 而且跑兩次，一次 SQLite、一次
+`postgres:15`，因為有兩類錯只在 PostgreSQL 發作，見
+[docs/PERFORMANCE.md 第 39.3 節](docs/PERFORMANCE.md)）、
 **lock**（就地重編三份 lock 再 `git diff --exit-code`，抓「改了 `.in` 沒重編」
 和手改 `.txt`）、**typecheck**（pyright）。測試在沒有模擬器時會 skip 而不是
 fail，但 CI 設 `REQUIRE_SNMPSIM=1` 把那個 skip 變成失敗 —— 否則 CI 會在什麼
 都沒測的情況下變綠。
 
-那 153 項裡有 22 項是端對端的：真的跑一輪盤點與快迴圈、真的 trap 封包進真的
+那 183 項裡有 22 項是端對端的：真的跑一輪盤點與快迴圈、真的 trap 封包進真的
 接收器、租約與分片心跳對真的資料庫（`tests/test_*_e2e.py`，說明在
 `tests/README.md`）。在那之前這些證明都只活在開發容器的腳本裡。
+
+另外 8 項跑的是**部署出去的那個 nginx 設定**（`tests/test_proxy_auth.py`）：
+沒帶密碼的請求到不了應用程式、`/docs` 也要密碼、明文 HTTP 在問密碼之前就被
+轉走、而兩個健康檢查路徑仍然免認證。那個檔案是這個專案唯一的認證，而一個
+只有人會讀的設定檔是最容易漂掉的東西。
 
 型別檢查抓不到當初那場事故（原因見 [docs/PERFORMANCE.md 第 32.2 節](docs/PERFORMANCE.md)），
 真正守住它的是 `tests/test_snmp_collector.py` —— 那幾項斷言的是**筆數**，

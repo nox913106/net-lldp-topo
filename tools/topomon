@@ -1,0 +1,684 @@
+#!/usr/bin/env bash
+#
+# topomon —— 部署、更新、健康檢查與日常維護。
+#
+# 這個檔案是在 repo 裡的，而 /usr/local/bin/topomon 只是一個指向它的連結。
+# 這樣 `topomon update` 做完 git pull 之後，下一次執行的就是新版的這個腳本，
+# 不必另外更新「更新用的工具」。
+#
+# 用法：topomon <指令>，不帶指令會列出全部指令。
+#
+# 設計上的三個決定：
+#
+#   1. 只支援 Docker Compose 部署。Native（systemd + venv）仍然可行，步驟寫在
+#      docs/DEPLOYMENT.md 的附錄裡，但沒有被這個工具包起來 —— 一個每個指令
+#      都「docker 的時候這樣、native 的時候那樣」的工具，等於兩個工具都只有
+#      一半是被測過的。
+#
+#   2. 認證在反向代理上，密碼只在產生的那一刻印出來，不存回磁碟。因此
+#      `topomon health` 檢查 API 的時候不是帶密碼從外面打，而是從 app 容器
+#      內部打 127.0.0.1 —— 繞過認證是因為它本來就在認證的裡面。
+#
+#   3. 更新失敗會自動回滾到更新前的那個 commit，然後把失敗的健康檢查印出來。
+#      一個「更新完就壞掉而且不說」的部署指令比沒有這個指令更糟。
+
+set -euo pipefail
+
+# --------------------------------------------------------------------------
+# 基本設定
+# --------------------------------------------------------------------------
+
+# readlink -f 是為了讓 /usr/local/bin/topomon 這個連結也能找到 repo 根目錄
+DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+cd "$DIR"
+
+BRANCH="${TOPOMON_BRANCH:-main}"
+LINK="/usr/local/bin/topomon"
+AUTH_DIR="$DIR/auth"
+BACKUP_DIR="${TOPOMON_BACKUP_DIR:-$DIR/backups}"
+LAST_GOOD="$DIR/auth/.last-good"
+# 健康檢查最多等多久（秒）。第一次部署要建映像、初始化資料庫、建資料表，
+# 所以比「重啟一次」需要的時間長得多。
+WAIT_SECONDS="${TOPOMON_WAIT:-180}"
+BACKUP_KEEP="${TOPOMON_BACKUP_KEEP:-14}"
+
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'; BOLD=$'\033[1m'; NC=$'\033[0m'
+
+info()  { echo "${GREEN}[INFO]${NC} $*"; }
+warn()  { echo "${YELLOW}[WARN]${NC} $*" >&2; }
+fail()  { echo "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+step()  { echo; echo "${BOLD}==> $*${NC}"; }
+
+# --------------------------------------------------------------------------
+# 工具
+# --------------------------------------------------------------------------
+
+# .env 的某一個值。刻意不用 `source .env`：那會把設定檔當成程式碼執行，而這個
+# 檔案裡有密碼，一個不小心的引號就會變成指令。
+env_value() {
+    local key="$1" default="${2:-}" line
+    # 容許 KEY = value：compose 自己會把鍵的空白去掉，這裡不跟它看法不同，
+    # 否則 health 會去檢查另一個埠。
+    line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$DIR/.env" 2>/dev/null | tail -n 1 || true)"
+    if [[ -z "$line" ]]; then
+        echo "$default"
+        return
+    fi
+    line="${line#*=}"
+    # 去掉前後空白與成對的引號
+    line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    line="${line%\"}"; line="${line#\"}"
+    line="${line%\'}"; line="${line#\'}"
+    [[ -n "$line" ]] && echo "$line" || echo "$default"
+}
+
+http_port()  { env_value TOPOMON_HTTP_PORT 80; }
+https_port() { env_value TOPOMON_HTTPS_PORT 443; }
+
+compose() { docker compose "$@"; }
+
+require_docker() {
+    command -v docker >/dev/null 2>&1 \
+        || fail "找不到 docker。先跑一次 install.sh，或見 docs/DEPLOYMENT.md"
+    docker compose version >/dev/null 2>&1 \
+        || fail "這個 docker 沒有 compose v2（docker compose version 失敗）"
+    docker info >/dev/null 2>&1 || fail \
+        "連不上 docker daemon。用 sudo 執行，或把自己加進 docker 群組：
+    sudo usermod -aG docker \$USER   （然後重新登入）"
+}
+
+require_tools() {
+    local tool
+    for tool in "$@"; do
+        command -v "$tool" >/dev/null 2>&1 \
+            || fail "需要 $tool。apt-get install -y $tool"
+    done
+}
+
+require_root() {
+    [[ $EUID -eq 0 ]] || fail "這個指令需要 root：sudo topomon $*"
+}
+
+random_password() {
+    # 不含 shell 與 URL 會有意見的字元：這組密碼會被貼進瀏覽器，也可能被貼進
+    # 腳本，少掉 /+=&#' 這些字可以省掉一整類「貼上之後就不對了」的問題。
+    # cut 而不是 head：head 讀夠了就關掉管線，上游拿到 SIGPIPE，而
+    # `set -o pipefail` 會把那個當成失敗。
+    openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | cut -c1-20
+}
+
+# --------------------------------------------------------------------------
+# .env 與認證
+# --------------------------------------------------------------------------
+
+ensure_env() {
+    if [[ ! -f "$DIR/.env" ]]; then
+        info "建立 .env（從 .env.example）"
+        cp "$DIR/.env.example" "$DIR/.env"
+        chmod 600 "$DIR/.env"
+
+        local secret db_password
+        secret="$(openssl rand -hex 32)"
+        db_password="$(random_password)"
+        sed -i "s|^APP_SECRET_KEY=.*|APP_SECRET_KEY=${secret}|" "$DIR/.env"
+        sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${db_password}|" "$DIR/.env"
+        # DATABASE_URL 裡也有同一組密碼。compose 會用 POSTGRES_PASSWORD 覆蓋
+        # 容器裡的這個值，但 .env 自己也是應用程式的設定檔（pydantic 會讀），
+        # 所以兩邊要一致，否則「不經過 compose 跑一次」就會連不上。
+        sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql+asyncpg://topomon:${db_password}@db:5432/topomon|" \
+            "$DIR/.env"
+        info "已產生隨機的 APP_SECRET_KEY 與資料庫密碼"
+        return
+    fi
+
+    # 既有的 .env：不要動它，但要講出這次更新多了哪些設定。少一個設定不會
+    # 讓它壞掉（程式有預設值），可是「有一個新旋鈕而你不知道」會。
+    local missing=()
+    while IFS= read -r key; do
+        grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$DIR/.env" || missing+=("$key")
+    done < <(grep -oE '^[A-Z][A-Z0-9_]*=' "$DIR/.env.example" | tr -d '=')
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        warn "你的 .env 沒有這些新設定（都有預設值，不設也能跑）："
+        printf '         %s\n' "${missing[@]}" >&2
+        warn "說明在 .env.example 與 docs/CONFIGURATION.md"
+    fi
+}
+
+ensure_auth() {
+    mkdir -p "$AUTH_DIR"
+    chmod 700 "$AUTH_DIR"
+
+    if [[ ! -f "$AUTH_DIR/htpasswd" ]]; then
+        local user password hash
+        user="${TOPOMON_ADMIN_USER:-admin}"
+        password="$(random_password)"
+        # apr1 是 nginx 認得而 openssl 做得出來的格式；bcrypt 需要
+        # apache2-utils 的 htpasswd，為了一個密碼多裝一個套件不值得。
+        hash="$(openssl passwd -apr1 "$password")"
+        printf '%s:%s\n' "$user" "$hash" > "$AUTH_DIR/htpasswd"
+        chmod 600 "$AUTH_DIR/htpasswd"
+        echo "$user" > "$AUTH_DIR/.admin-user"
+        NEW_CREDENTIALS="$user / $password"
+    fi
+
+    if [[ ! -f "$AUTH_DIR/tls.crt" || ! -f "$AUTH_DIR/tls.key" ]]; then
+        info "產生自簽 TLS 憑證（10 年）"
+        local host ip
+        host="$(hostname -f 2>/dev/null || hostname)"
+        ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+            -subj "/CN=${host}" \
+            -addext "subjectAltName=DNS:${host},DNS:localhost,IP:127.0.0.1${ip:+,IP:$ip}" \
+            -keyout "$AUTH_DIR/tls.key" -out "$AUTH_DIR/tls.crt" 2>/dev/null \
+            || fail "產生憑證失敗（openssl 太舊不支援 -addext？）"
+        chmod 600 "$AUTH_DIR/tls.key"
+        chmod 644 "$AUTH_DIR/tls.crt"
+    fi
+}
+
+# --------------------------------------------------------------------------
+# 等服務起來
+# --------------------------------------------------------------------------
+
+wait_healthy() {
+    local deadline=$((SECONDS + WAIT_SECONDS)) body
+    printf '%s' "等服務就緒 "
+    while (( SECONDS < deadline )); do
+        body="$(curl -fsS --max-time 5 -k \
+            "https://127.0.0.1:$(https_port)/health/ready" 2>/dev/null || true)"
+        if [[ "$body" == *'"status":"ready"'* ]]; then
+            echo " ${GREEN}就緒${NC}"
+            return 0
+        fi
+        printf '.'
+        sleep 3
+    done
+    echo " ${RED}逾時${NC}"
+    return 1
+}
+
+# --------------------------------------------------------------------------
+# 指令
+# --------------------------------------------------------------------------
+
+cmd_deploy() {
+    require_root deploy
+    require_docker
+    require_tools curl openssl
+    NEW_CREDENTIALS=""
+
+    step "設定"
+    ensure_env
+    ensure_auth
+
+    step "建置並啟動容器"
+    compose up -d --build
+
+    step "健康檢查"
+    if ! wait_healthy; then
+        warn "服務在 ${WAIT_SECONDS}s 內沒有就緒。最近的日誌："
+        compose logs --tail=40 app || true
+        fail "部署沒有完成。看 \`topomon logs\` 或 \`topomon health\`"
+    fi
+
+    git rev-parse HEAD > "$LAST_GOOD" 2>/dev/null || true
+    install_link
+    print_summary
+}
+
+install_link() {
+    # 連結而不是複製：見檔案開頭的說明
+    if [[ "$(readlink -f "$LINK" 2>/dev/null || true)" != "$DIR/tools/topomon" ]]; then
+        ln -sf "$DIR/tools/topomon" "$LINK"
+        info "已安裝 $LINK"
+    fi
+}
+
+print_summary() {
+    local ip port base
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+    ip="${ip:-127.0.0.1}"
+    port="$(https_port)"
+    base="https://${ip}"
+    if [[ "$port" != "443" ]]; then base="${base}:${port}"; fi
+    echo
+    echo "${BOLD}=========================================${NC}"
+    echo "${BOLD}  topomon 已就緒${NC}"
+    echo "${BOLD}=========================================${NC}"
+    echo
+    echo "  Web UI    ${base}/"
+    echo "  API 文件  ${base}/docs"
+    echo
+    if [[ -n "${NEW_CREDENTIALS:-}" ]]; then
+        echo "  ${YELLOW}${BOLD}登入帳密（只會顯示這一次）：${NC}"
+        echo "      ${BOLD}${NEW_CREDENTIALS}${NC}"
+        echo
+        echo "  忘記了就 \`sudo topomon password\` 重設一組。"
+        echo
+    fi
+    echo "  憑證是自己簽的，所以瀏覽器會先警告一次。要換成真憑證："
+    echo "      覆蓋 $AUTH_DIR/tls.crt 與 tls.key，然後 topomon restart"
+    echo
+    echo "  接下來：在設定頁填 SNMP community 與自動發現的網段，"
+    echo "  或 ${BLUE}docs/USER_MANUAL.md${NC}。設備端不需要任何改動"
+    echo "  （要收 trap 的話見 docs/CONFIGURATION.md 第 5 節）。"
+    echo
+    echo "  常用指令：topomon health / status / logs / update"
+    echo
+}
+
+cmd_update() {
+    require_root update
+    require_docker
+    require_tools curl openssl
+
+    local before after
+    before="$(git rev-parse HEAD)"
+
+    step "取得更新"
+    if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+        git status --short --untracked-files=no >&2
+        fail "有未提交的改動，git pull 會蓋掉它們。先處理上面這些檔案。
+    （.env 與 auth/ 不在版控裡，不會被更新碰到。）"
+    fi
+
+    git fetch --quiet origin "$BRANCH" || fail "git fetch 失敗（網路？）"
+    if ! git merge --ff-only "origin/$BRANCH" 2>/dev/null; then
+        fail "無法 fast-forward 到 origin/$BRANCH —— 這個 checkout 有自己的
+    commit。要丟掉本地的改動用：
+        git -C $DIR reset --hard origin/$BRANCH && sudo topomon deploy"
+    fi
+    after="$(git rev-parse HEAD)"
+
+    if [[ "$before" == "$after" ]]; then
+        info "已經是最新版（$(git rev-parse --short HEAD)）"
+    else
+        info "$(git rev-parse --short "$before") → $(git rev-parse --short "$after")"
+        git --no-pager log --oneline "$before..$after" | sed 's/^/         /'
+    fi
+
+    step "設定"
+    ensure_env
+    ensure_auth
+
+    step "重建並重啟"
+    compose up -d --build
+
+    step "健康檢查"
+    if wait_healthy; then
+        echo "$after" > "$LAST_GOOD"
+        info "更新完成"
+        return 0
+    fi
+
+    # 更新後起不來：回到更新前的 commit。不這樣做的話，一個壞掉的版本會一直
+    # 留在機器上，而這個指令最可能是在沒有人盯著的時候跑的。
+    warn "更新後健康檢查沒過，回滾到 $(git rev-parse --short "$before")"
+    compose logs --tail=40 app >&2 || true
+    git reset --hard --quiet "$before"
+    compose up -d --build
+    if wait_healthy; then
+        fail "已回滾到更新前的版本，服務是好的。失敗的原因在上面的日誌裡。"
+    fi
+    fail "回滾之後仍然起不來。看 \`topomon logs\`。"
+}
+
+cmd_rollback() {
+    require_root rollback
+    require_docker
+    [[ -f "$LAST_GOOD" ]] || fail "沒有紀錄上一個正常的版本（$LAST_GOOD 不存在）"
+    local target
+    target="$(cat "$LAST_GOOD")"
+    if [[ "$target" == "$(git rev-parse HEAD)" ]]; then
+        info "目前就是上一個健康檢查通過的版本（$(git rev-parse --short HEAD)）"
+        return 0
+    fi
+    step "回到 $(git rev-parse --short "$target")"
+    git reset --hard --quiet "$target"
+    compose up -d --build
+    wait_healthy || fail "回滾之後健康檢查沒過。看 \`topomon logs\`。"
+    info "已回滾"
+}
+
+# 在 app 容器裡面打 API：那裡面是 127.0.0.1，所以不需要（也不該需要）密碼。
+# python 一定在那個映像裡，所以也不必為了這件事裝 curl。
+api_get() {
+    local path="$1"
+    compose exec -T app python -c "
+import json, sys, urllib.request
+try:
+    with urllib.request.urlopen('http://127.0.0.1:8080$path', timeout=10) as r:
+        sys.stdout.write(r.read().decode())
+except Exception as exc:
+    print(json.dumps({'error': str(exc)}))
+" 2>/dev/null
+}
+
+HEALTH_FAILED=0
+ok()     { echo "  ${GREEN}[ OK ]${NC} $*"; }
+bad()    { echo "  ${RED}[FAIL]${NC} $*"; HEALTH_FAILED=1; }
+notice() { echo "  ${YELLOW}[WARN]${NC} $*"; }
+
+cmd_health() {
+    require_docker
+    require_tools curl
+    echo "${BOLD}topomon health${NC}  ($DIR @ $(git rev-parse --short HEAD 2>/dev/null || echo '?'))"
+    echo
+
+    # 1. 容器。設定檔裡有幾個服務就要有幾個在跑 —— 包含 collector：少了它，
+    #    UI 還是會好好地顯示一份越來越舊的拓撲，這是最難看出來的壞法。
+    local want have missing
+    want="$(compose config --services 2>/dev/null | sort || true)"
+    have="$(compose ps --services --status running 2>/dev/null | sort || true)"
+    if [[ -z "$have" ]]; then
+        # compose 2.0 之前用的是 --filter status=。兩種都拿不到東西的話，
+        # 結論一樣（沒有服務在跑），所以這個 fallback 不會蓋掉真的失敗。
+        have="$(compose ps --services --filter status=running 2>/dev/null | sort || true)"
+    fi
+    if [[ -z "$want" ]]; then
+        bad "讀不到 docker-compose.yml 的服務清單（$DIR）"
+        want=""; have=""
+    fi
+    missing="$(comm -23 <(echo "$want") <(echo "$have") || true)"
+    if [[ -n "$want" && -z "$missing" ]]; then
+        ok "容器：$(echo "$have" | tr '\n' ' ')"
+    else
+        bad "沒有在跑的容器：$(echo "$missing" | tr '\n' ' ')"
+    fi
+
+    # 2. 代理（HTTP）
+    if curl -fsS --max-time 5 "http://127.0.0.1:$(http_port)/health" >/dev/null 2>&1; then
+        ok "代理在聽 :$(http_port)"
+    else
+        bad "代理沒有回應 http://127.0.0.1:$(http_port)/health"
+    fi
+
+    # 3. 應用程式 + 資料庫（這一條就是 /health/ready 的用途）
+    local ready
+    ready="$(curl -fsS --max-time 10 -k "https://127.0.0.1:$(https_port)/health/ready" 2>/dev/null || true)"
+    if [[ "$ready" == *'"status":"ready"'* ]]; then
+        ok "應用程式就緒，資料庫連得上"
+    elif [[ -n "$ready" ]]; then
+        bad "應用程式起來了但沒有就緒：$ready"
+    else
+        bad "https://127.0.0.1:$(https_port)/health/ready 沒有回應"
+    fi
+
+    # 4. 認證真的有在要求。這一條是在防「設定被改掉而沒人發現」：一個沒有
+    #    認證的管理介面看起來跟有認證的一模一樣，直到有人逛進來。
+    local code
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
+        "https://127.0.0.1:$(https_port)/" 2>/dev/null || true)"
+    if [[ "$code" == "401" ]]; then
+        ok "認證有在要求（/ 回 401）"
+    else
+        bad "/ 回 $code 而不是 401 —— 這個介面現在不用密碼就進得去"
+    fi
+
+    # 5. 收集器自己的回報。API 與收集器是兩個行程，所以這是唯一能回答
+    #    「有人在輪詢嗎、是不是漏了一片」的地方（docs/SDD-API.md 第 8 節）。
+    local status
+    status="$(api_get /api/v1/collector/status || true)"
+    if [[ -z "$status" || "$status" == *'"error"'* ]]; then
+        bad "讀不到收集器狀態${status:+：$status}"
+    else
+        local summary
+        summary="$(/usr/bin/env python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+procs = d.get('processes') or []
+live = [p for p in procs if p.get('live')]
+print('live=%d/%d' % (len(live), len(procs)))
+for p in live:
+    iv = p.get('intervals') or {}
+    print('   shard %s/%s  %ss 前回報  盤點 %ss / 快 %ss / 位址 %ss' % (
+        p.get('shard'), p.get('shards'), p.get('age_seconds'),
+        iv.get('inventory'), iv.get('fast'), iv.get('addresses')))
+for w in d.get('warnings') or []:
+    print('!! ' + (w.get('message') or w.get('code', '')))
+" "$status" 2>/dev/null || true)"
+        if [[ -z "$summary" ]]; then
+            notice "收集器狀態讀到了但解析不出來（python3 不在這台主機上？）"
+        else
+            local live_line
+            live_line="$(echo "$summary" | head -1)"
+            if [[ "$live_line" == "live=0/"* ]]; then
+                bad "沒有收集器在回報 —— 拓撲與告警都不會更新"
+            else
+                ok "收集器 $live_line"
+            fi
+            echo "$summary" | tail -n +2 | grep -v '^!!' | sed 's/^/     /' || true
+            while IFS= read -r line; do
+                if [[ -n "$line" ]]; then notice "${line#!! }"; fi
+            done < <(echo "$summary" | grep '^!!' || true)
+        fi
+    fi
+
+    # 6. 兩個「能跑但不該這樣跑」的設定
+    if [[ "$(env_value APP_SECRET_KEY)" == "change-this-to-random-string" ]]; then
+        notice "APP_SECRET_KEY 還是範例值（sudo topomon deploy 會換掉它）"
+    fi
+    if [[ "$(env_value POSTGRES_PASSWORD topomon)" == "topomon" ]]; then
+        notice "資料庫密碼還是預設的 topomon。它只綁在 127.0.0.1，所以不是\
+洞，但換掉它要連 pgdata 一起重建（docs/DEPLOYMENT.md）"
+    fi
+
+    echo
+    if [[ $HEALTH_FAILED -eq 0 ]]; then
+        echo "${GREEN}${BOLD}一切正常${NC}"
+    else
+        echo "${RED}${BOLD}有檢查沒過${NC}（上面的 FAIL）"
+    fi
+    return $HEALTH_FAILED
+}
+
+cmd_status() {
+    require_docker
+    step "容器"
+    compose ps
+    step "收集器"
+    local status
+    status="$(api_get /api/v1/collector/status || true)"
+    if [[ -n "$status" && "$status" != *'"error"'* ]]; then
+        echo "$status" | /usr/bin/env python3 -m json.tool 2>/dev/null || echo "$status"
+    else
+        warn "讀不到收集器狀態（app 容器沒在跑？）"
+    fi
+    step "版本"
+    cmd_version
+}
+
+cmd_version() {
+    echo "  commit   $(git rev-parse --short HEAD 2>/dev/null || echo '?') \
+($(git log -1 --format=%cd --date=short 2>/dev/null || echo '?'))"
+    echo "  branch   $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+    echo "  目錄     $DIR"
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        echo "  docker   $(docker --version | sed 's/Docker version //')"
+    fi
+}
+
+cmd_logs() {
+    require_docker
+    # 預設跟著跑：會打 logs 的時候通常是「現在發生了什麼事」
+    compose logs --tail=200 -f "$@"
+}
+
+cmd_restart() {
+    require_root restart
+    require_docker
+    compose restart "$@"
+    wait_healthy || warn "重啟後健康檢查沒過，跑 \`topomon health\` 看哪一條"
+}
+
+cmd_start() {
+    require_root start
+    require_docker
+    compose up -d
+    wait_healthy || warn "健康檢查沒過，跑 \`topomon health\` 看哪一條"
+}
+
+cmd_stop() {
+    require_root stop
+    require_docker
+    compose stop
+    info "已停止（資料還在。要連資料一起刪見 \`topomon uninstall --purge\`）"
+}
+
+cmd_password() {
+    require_root password
+    require_tools openssl
+    local user password
+    user="${1:-$(cat "$AUTH_DIR/.admin-user" 2>/dev/null || echo admin)}"
+    password="${2:-$(random_password)}"
+    mkdir -p "$AUTH_DIR"; chmod 700 "$AUTH_DIR"
+    printf '%s:%s\n' "$user" "$(openssl passwd -apr1 "$password")" > "$AUTH_DIR/htpasswd"
+    chmod 600 "$AUTH_DIR/htpasswd"
+    echo "$user" > "$AUTH_DIR/.admin-user"
+    # nginx 每次請求都讀 htpasswd，所以不用重啟；但代理可能根本沒在跑
+    if docker info >/dev/null 2>&1; then
+        compose exec -T proxy nginx -s reload >/dev/null 2>&1 || true
+    fi
+    echo
+    echo "  ${BOLD}${user} / ${password}${NC}"
+    echo
+    info "立刻生效（nginx 每次請求都重讀這個檔案）"
+}
+
+cmd_backup() {
+    require_root backup
+    require_docker
+    local dir="${1:-$BACKUP_DIR}" file
+    mkdir -p "$dir"
+    file="$dir/topomon-$(date +%Y%m%d-%H%M%S).sql.gz"
+    info "備份資料庫到 $file"
+    # pg_dump 從 db 容器裡跑，所以不需要主機上有 postgresql-client
+    compose exec -T db pg_dump -U topomon --clean --if-exists topomon \
+        | gzip > "$file" || { rm -f "$file"; fail "備份失敗"; }
+    chmod 600 "$file"
+    info "$(du -h "$file" | cut -f1)"
+
+    # 只留最近幾份：一份 500 台的 dump 不大，但沒有人會去刪它們
+    local old
+    old="$(ls -1t "$dir"/topomon-*.sql.gz 2>/dev/null | tail -n +$((BACKUP_KEEP + 1)) || true)"
+    if [[ -n "$old" ]]; then
+        echo "$old" | xargs -r rm -f
+        info "刪掉 $(echo "$old" | wc -l) 份舊備份（保留最近 $BACKUP_KEEP 份）"
+    fi
+    echo
+    warn "這份備份裡**沒有** .env 與 auth/（密鑰、密碼、憑證）。那兩個要自己
+         另外收好，否則復原之後連不上資料庫也進不了介面。"
+}
+
+cmd_restore() {
+    require_root restore
+    require_docker
+    local file="${1:-}"
+    [[ -n "$file" ]] || fail "用法：topomon restore <備份檔.sql.gz>"
+    [[ -f "$file" ]] || fail "找不到 $file"
+
+    echo "${RED}${BOLD}這會用 $file 蓋掉現在資料庫裡的全部內容。${NC}"
+    echo "確定的話輸入 RESTORE："
+    local answer
+    read -r answer
+    [[ "$answer" == "RESTORE" ]] || fail "取消"
+
+    step "停掉會寫入的行程"
+    compose stop app collector
+    step "復原"
+    # dump 是 --clean --if-exists 做的，所以它自己會先 DROP 再建
+    gunzip -c "$file" | compose exec -T db psql -q -U topomon -d topomon \
+        || fail "復原失敗。資料庫現在可能是半套的 —— 不要啟動，先看上面的錯誤"
+    step "啟動"
+    compose up -d
+    wait_healthy || fail "復原後健康檢查沒過。看 \`topomon logs\`"
+    info "復原完成"
+}
+
+cmd_uninstall() {
+    require_root uninstall
+    require_docker
+    local purge=0
+    if [[ "${1:-}" == "--purge" ]]; then purge=1; fi
+
+    echo "${RED}${BOLD}這會停掉並刪除所有容器。${NC}"
+    if [[ $purge -eq 1 ]]; then
+        echo "${RED}${BOLD}--purge：資料庫的內容也會一起刪掉，無法復原。${NC}"
+    else
+        echo "資料庫的內容（pgdata volume）會留下來。"
+    fi
+    echo "確定的話輸入 UNINSTALL："
+    local answer
+    read -r answer
+    [[ "$answer" == "UNINSTALL" ]] || fail "取消"
+
+    if [[ $purge -eq 1 ]]; then
+        compose down --volumes --remove-orphans
+    else
+        compose down --remove-orphans
+    fi
+    if [[ "$(readlink -f "$LINK" 2>/dev/null || true)" == "$DIR/tools/topomon" ]]; then
+        rm -f "$LINK"
+    fi
+    info "已移除。留在原地的："
+    echo "         $DIR            （程式碼、.env、auth/、backups/）"
+    if [[ $purge -eq 0 ]]; then echo "         pgdata volume   （資料庫內容）"; fi
+    echo "         這些要手動刪。"
+}
+
+usage() {
+    cat <<EOF
+${BOLD}topomon${NC} —— LLDP/CDP 拓撲監控的部署與維護
+
+  ${BOLD}topomon deploy${NC}              第一次部署，或改了設定之後重新套用
+  ${BOLD}topomon update${NC}              拉最新版、重建、健康檢查（沒過會自動回滾）
+  ${BOLD}topomon health${NC}              檢查每一層：容器、代理、認證、資料庫、收集器
+  ${BOLD}topomon status${NC}              容器狀態與收集器完整回報
+  ${BOLD}topomon logs [服務]${NC}         跟著看日誌（app / collector / proxy / db）
+  ${BOLD}topomon restart [服務]${NC}      重啟
+  ${BOLD}topomon start${NC}               啟動全部
+  ${BOLD}topomon stop${NC}                停止全部（資料留著）
+  ${BOLD}topomon password [帳號] [密碼]${NC} 重設介面登入密碼（省略密碼＝隨機產生）
+  ${BOLD}topomon backup [目錄]${NC}       備份資料庫（預設 ./backups，保留 $BACKUP_KEEP 份）
+  ${BOLD}topomon restore <檔案>${NC}      從備份復原（會先要你打字確認）
+  ${BOLD}topomon rollback${NC}            回到上一個健康檢查通過的版本
+  ${BOLD}topomon version${NC}             版本與路徑
+  ${BOLD}topomon uninstall [--purge]${NC} 移除容器（--purge 連資料一起）
+
+第一次安裝（在一台乾淨的 Ubuntu 上）：
+
+  curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
+
+文件：docs/DEPLOYMENT.md（部署）、docs/CONFIGURATION.md（設定）、
+      docs/USER_MANUAL.md（使用）、docs/TROUBLESHOOTING_LLDP.md（收不到鄰居）
+EOF
+}
+
+main() {
+    local command="${1:-}"
+    [[ $# -gt 0 ]] && shift || true
+    case "$command" in
+        deploy)     cmd_deploy "$@" ;;
+        update)     cmd_update "$@" ;;
+        health)     cmd_health "$@" ;;
+        status)     cmd_status "$@" ;;
+        logs)       cmd_logs "$@" ;;
+        restart)    cmd_restart "$@" ;;
+        start)      cmd_start "$@" ;;
+        stop)       cmd_stop "$@" ;;
+        password)   cmd_password "$@" ;;
+        backup)     cmd_backup "$@" ;;
+        restore)    cmd_restore "$@" ;;
+        rollback)   cmd_rollback "$@" ;;
+        version)    cmd_version "$@" ;;
+        uninstall)  cmd_uninstall "$@" ;;
+        -h|--help|help) usage ;;
+        "")         usage; exit 2 ;;
+        *)          echo "${RED}不認得的指令：$command${NC}" >&2; echo >&2
+                    usage >&2; exit 2 ;;
+    esac
+}
+
+main "$@"

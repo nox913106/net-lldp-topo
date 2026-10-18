@@ -16,6 +16,15 @@ class Settings(BaseSettings):
     app_debug: bool = False
     app_log_level: str = "INFO"
     app_secret_key: str = "change-this-to-random-string"
+    # Origins allowed to call this API from a browser, comma separated.
+    #
+    # Empty (the default) means no CORS middleware at all, which is right for
+    # how this is deployed: the UI comes from this same process, so it is
+    # same-origin. Fill it in only if a page served from somewhere else has
+    # to call this API - and then name that origin, because the API reads
+    # every device's SNMP community and the credential the browser would
+    # attach is the operator's own (app/main.py).
+    app_cors_origins: str = ""
     
     # Database (默認使用 SQLite 方便本地測試)
     database_url: str = "sqlite+aiosqlite:///./topomon.db"
@@ -206,6 +215,18 @@ class Settings(BaseSettings):
     graylog_port: int = 12201
     graylog_protocol: str = "udp"
     
+    def cors_origin_list(self) -> list:
+        """Origins allowed to call this API from a browser, de-duplicated.
+
+        Empty means "add no CORS middleware" - see app_cors_origins above.
+        """
+        seen = []
+        for origin in (self.app_cors_origins or "").split(","):
+            origin = origin.strip()
+            if origin and origin not in seen:
+                seen.append(origin)
+        return seen
+
     def trap_community_list(self) -> list:
         """Communities accepted on notifications, defaulted and de-duplicated"""
         raw = self.collector_trap_communities or self.snmp_default_community

@@ -4,13 +4,14 @@ FastAPI main application entry point
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy import text
 from contextlib import asynccontextmanager
 import logging
 import os
 
 from app.config import get_settings, log_level
-from app.db.database import init_db
+from app.db.database import engine, init_db
 from app.api import (
     alerts, collector, devices, discovery, groups, profiles, settings, snmp,
     topology
@@ -64,14 +65,26 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS: none by default.
+#
+# The UI is served by this same process, so it is same-origin and needs no
+# CORS header at all. What was here before - allow_origins=["*"] together
+# with allow_credentials=True - is a combination browsers reject outright, so
+# it never worked; what it would have meant if it had is that any page in the
+# operator's browser could drive this API with their logged-in session, and
+# this API reads every device's SNMP community.
+#
+# APP_CORS_ORIGINS exists for the one real case: somebody serving the UI, or
+# a dashboard of their own, from another origin. It is an explicit list.
+_cors_origins = settings_config.cors_origin_list()
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # API routes
 app.include_router(devices.router, prefix="/api/v1/devices", tags=["Devices"])
@@ -120,7 +133,40 @@ async def settings_page():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
+    """
+    Liveness: this process is up and answering.
+
+    Deliberately touches nothing else. A liveness probe that also checks the
+    database makes an orchestrator restart a perfectly healthy web process
+    because the database is busy - and restarting it does not help. What to do
+    about a database that is down is a human decision, so it is reported by
+    /health/ready instead.
+    """
     return {"status": "healthy"}
 
 
+@app.get("/health/ready")
+async def ready():
+    """
+    Readiness: can this process actually serve a request?
+
+    Every endpoint but this one and /health needs the database, so "up" and
+    "useful" are different questions and this is the second one. It is one
+    round trip (SELECT 1), which also proves the pool can hand out a
+    connection rather than only that the server is listening.
+
+    Unauthenticated, like /health, so that a load balancer and
+    `topomon health` can use it (deploy/nginx.conf). That is why the failure
+    reason is logged rather than returned: an asyncpg connection error names
+    the host, the port and the user it tried.
+    """
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.warning("Readiness check failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", "database": "error"},
+        )
+    return {"status": "ready", "database": "ok"}

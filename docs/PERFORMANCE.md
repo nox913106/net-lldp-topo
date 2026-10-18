@@ -2384,7 +2384,7 @@ udp/162，所以分片時拿到接收器的那一片需要其他片輪詢的設�
 **這是攤平，不是削平。** 12 輪裡有 1 輪照樣付整個 2.51 s，其他 11 輪付 0。
 那一輪的峰值跟改之前的每一輪一樣高，所以沒有新的峰值 —— 只是變少。目前所有
 設備會在同一輪到期（上線時一起走訪，之後一起到期），要把峰值也攤掉就得把
-到期時間打散，列在第 40 節。
+到期時間打散，列在第 42 節。
 
 盤點那一輪的 log 會說走了幾台：`..., 1504 addresses, 500 walked)`，沒走訪的
 輪就沒有那一段。那是「這一輪為什麼比較慢」唯一需要的解釋。
@@ -2531,14 +2531,144 @@ engine dispose 掉（`tests/conftest.py`）。**這正是加這條 CI 的理由�
 ### 39.5 還沒進 CI 的
 
 * **`cycle4`**（500 台、真 PostgreSQL、語句數逐位比對）還是手動跑。它是成本
-  量測而不是行為測試，而且要一個 500 台的 fixture；列在第 40 節第 4 項。
+  量測而不是行為測試，而且要一個 500 台的 fixture；列在第 42 節第 4 項。
 * **設定頁的 Playwright 檢查**（19 項）也還是手動跑，因為 CI 要多一個瀏覽器
   與一個跑起來的 API。
 * 這兩個都還在 scratchpad 裡，所以第 39 節開頭那句話對它們還是成立的。
 
 ---
 
-## 40. 下一步
+## 41. 可以上線了：認證、一鍵部署，以及把假的東西拿掉
+
+前四十節都在「它測得準不準、跑得快不快」。這一節是另一個問題：**一台乾淨的
+機器上，一個人要花多少力氣才能把它跑起來，而跑起來之後它安不安全。**
+
+答案原本是：Docker Compose 跑得起來，但整個 API **沒有任何認證** ——
+`app/main.py` 唯一掛著的 middleware 是 CORS，而且是
+`allow_origins=["*"]` 配 `allow_credentials=True`。任何連得到 8080 的人都讀
+得到每一台設備的**明文 community**、改得動設備清單、關得掉告警。這不是「設計
+沒做完」，是這個專案從頭到尾假設它跑在一個完全可信的內網上，而那件事沒有被
+寫下來，也沒有任何東西在守它。
+
+### 41.1 認證放在哪裡，以及為什麼
+
+放在反向代理上，不在應用程式裡。理由不是偷懶：
+
+* 這個系統要保護的東西是「誰連得到這個管理介面」，不是「哪個使用者可以看
+  哪一台設備」。前者一層 HTTP basic auth 就夠，後者要一套使用者模型 ——
+  而這個專案連使用者的概念都沒有，發明一套會碰到每一個 endpoint。
+* 放在代理上，應用程式之後怎麼改都不會把這一層弄丟。
+
+所以：
+
+| | 之前 | 現在 |
+|---|---|---|
+| 應用程式 8080 | `0.0.0.0:8080`，對整個網路開 | `127.0.0.1:8080` |
+| 資料庫 5432 | `0.0.0.0:5432`（裡面有全部的 community） | `127.0.0.1:5432` |
+| Redis 6379 | `0.0.0.0:6379`，無密碼 | `127.0.0.1:6379` |
+| 唯一入口 | 無 | nginx 443（80 一律轉過去） |
+| 認證 | **無** | HTTP basic auth，密碼在部署時隨機產生 |
+| `/docs` | 開著（可以直接打 API） | 要密碼 |
+| 健康檢查 | 只有 `/health`（永遠回 healthy） | `/health` 免認證＋`/health/ready` 真的 `SELECT 1` |
+| CORS | `*` ＋ credentials | 預設不掛，`APP_CORS_ORIGINS` 指名 |
+| TLS | 無 | 自簽（部署時產生），basic auth 的密碼才不會走明文 |
+| 資料庫密碼 | 寫死 `topomon` | 新安裝隨機；既有部署沿用舊值（密碼烤在 pgdata 裡） |
+
+`127.0.0.1:5432` 這一條有個要注意的地方：collector 走 `network_mode: host`，
+所以它仍然連得到 `localhost:5432`。綁回 loopback 只擋掉網路上的其他人。
+
+### 41.2 一個設定檔變成八個測試
+
+`deploy/nginx.conf` 是現在整個專案的認證，而它是一個**只有人會讀的檔案**，
+也就是最容易漂掉的那一種東西 —— 一個 `auth_basic off` 就全開了，而從外面看
+不出任何差別。所以它跟 SNMP 走訪一樣，用真的東西測：
+
+`tests/test_proxy_auth.py` 會起一個**真的 nginx**，餵它**部署出去的那一份
+設定**（只替換 upstream 位址與兩個埠），後面接一個會記錄「我被要求了什麼
+路徑」的假應用程式，然後斷言：
+
+| 項 | 斷言 |
+|---|---|
+| 沒帶密碼 | 401，**而且假應用程式沒有收到任何請求** —— 是代理擋掉的，不是應用程式 |
+| 帶對密碼 | 200，請求有到 |
+| 帶錯密碼 | 401，請求沒到 |
+| `/docs` | 401（最容易忘的一個：那是可以直接打 API 的表單） |
+| `/health`、`/health/ready` | 200，不用密碼（負載平衡器與 `topomon health` 要用） |
+| `/health/../api/v1/devices` | 401 或 400 —— 免認證的是那兩條**路徑**，不是前綴 |
+| 明文 HTTP | 301，而且**在問密碼之前**（basic auth 是 base64，不是加密） |
+| 設定檔本身 | 只有一處 `auth_basic`，而且是那個 catch-all 的 location |
+
+「假應用程式沒有收到請求」這一條是刻意的：一個 401 從客戶端看不出來是代理
+擋的還是應用程式回的，而我們要證明的是**流量到不了應用程式**。
+
+nginx 跟 snmpsim 同一個規矩：`NGINX_BIN` 找不到就 skip，CI 設
+`REQUIRE_NGINX=1` 把 skip 變成失敗。CI 的 nginx 是 1.24（Ubuntu），比
+`http2 on;` 需要的 1.25.1 舊，所以測試會在舊版上把那一行註解掉再跑；部署用
+的映像釘在 `nginx:1.27-alpine`。
+
+### 41.3 一行部署，以及更新失敗會自己退回去
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
+```
+
+`install.sh` 只做「把機器準備好」：裝 docker、clone 到 `/opt/topomon`、然後
+`exec tools/topomon deploy`。真正做事的是 `tools/topomon`，它也是之後維護用
+的那一個指令（`health` / `update` / `status` / `logs` / `backup` /
+`password` / `restore` / `rollback` / `uninstall`）。
+
+三個決定值得寫下來：
+
+1. **`/usr/local/bin/topomon` 是連結，不是複本。** 它指向 repo 裡的
+   `tools/topomon`，所以 `topomon update` 做完 `git pull` 之後，下一次執行的
+   就是新版的它 —— 不然「更新用的工具」要另外更新。
+2. **`topomon update` 的健康檢查沒過就自動回滾**（`git reset --hard` 回更新
+   前那個 commit，重建，再檢查一次），並且把失敗的日誌印出來。這個指令最可能
+   是在沒有人盯著的時候跑的，而一個「更新完就壞掉而且不說」的部署指令比沒有
+   這個指令更糟。
+3. **密碼只在產生的那一刻印出來，不存回磁碟。** 所以 `topomon health` 檢查
+   API 的時候不是帶著密碼從外面打，而是從 app 容器**裡面**打
+   `127.0.0.1:8080` —— 繞過認證，是因為它本來就在認證的裡面。
+
+`topomon health` 檢查的五條都是「會無聲壞掉」的東西：容器少一個（少了
+collector，UI 會好好地顯示一份越來越舊的拓撲）、代理沒在聽、資料庫連不上、
+**認證沒在要求**（直接打 `/` 看是不是 401）、沒有收集器在回報。全過才
+exit 0，所以可以直接丟進 cron 或監控。
+
+### 41.4 拿掉的東西
+
+* **`POST /api/v1/discovery/start` 與 `GET /discovery/status`** ——
+  收集器還不存在時的佔位實作。`/start` 會 `sleep(2)` 然後回報「發現 0 台、
+  失敗 0 台」，而那跟「掃過了，網路上真的沒有別的設備」長得一模一樣。
+  比 404 更糟的不是沒有答案，是一個看起來像答案的東西。發現真正發生在收集器
+  （每輪從鄰居往外長）與排程器（掃網段），API 那一份是 `/manual`。
+* **`docs/SDD-API.md` 的 WebSocket 一節**沒有刪，改成標明「未實作」並寫出
+  缺的是什麼（收集器與 API 是兩個行程，推送要一條資料庫通知或 Redis
+  pub/sub 的路，而 Redis 目前程式還沒在用）。前端是在輪詢的。
+* **`deploy.sh`**（還在 clone 已經改名的舊 repo URL）、`cascade_result.txt`、
+  `check_groups.py`、`verify_cascade.py`。
+
+### 41.5 驗了什麼
+
+| | |
+|---|---|
+| 全部測試 | **183 項通過**（原本 153，新增 30：代理 8、HTTP 介面 7、部署 15） |
+| 代理那 8 項 | 對真的 nginx 1.24，跑部署用的那份設定 |
+| `deploy/nginx.conf` | `nginx -t` 通過（`http2 on;` 在 1.24 上要註解掉，那是 1.25.1 才有的寫法） |
+| `docker-compose.yml` | `docker compose config` 解析通過，五個服務 |
+| 兩個腳本 | `bash -n` 通過；`topomon` 的 dispatch、usage 與 `cmd_*` 三份清單一致（測試在守） |
+| CI | tests 工作多裝一個 nginx，`REQUIRE_NGINX=1`；PostgreSQL 從 16 改成 **15**，跟部署出去的那一版對齊 |
+
+**沒有驗到的：一次真的部署。** 這個開發容器裡沒有 docker daemon
+（`/var/run/docker.sock` 不存在），所以 `install.sh` 的 apt 與 docker 安裝
+路徑、`compose up` 之後的實際啟動順序、以及 `topomon update` 的回滾，都只有
+邏輯被測過，沒有在一台真機器上跑過。第一次上線建議：先在一台測試機跑
+`install.sh`，確認 `topomon health` 全綠，再跑一次 `topomon update`（應該
+回報「已經是最新版」），然後才接真設備。
+
+---
+
+## 42. 下一步
 
 | # | 動作 | 效果 | 需要新元件？ |
 |---|---|---|---|
@@ -2549,3 +2679,7 @@ engine dispose 掉（`tests/conftest.py`）。**這正是加這條 CI 的理由�
 | 5 | 確認次數也做 per-profile | 核心交換機要立刻告警、分公司要確認三次 | 不用 |
 | 6 | 分片之後再看 `COLLECTOR_CONCURRENT` 的預設值 | 每片的設備變少，20 可能偏高（24.9） | 不用 |
 | 7 | 位址走訪的到期時間打散 | 現在全機群同一輪到期，12 輪裡有 1 輪付整個 2.51 s（38.3） | 不用 |
+| 8 | 在一台真機器上跑一次 `install.sh` 與 `topomon update` | 部署路徑目前只有邏輯被測過（41.5） | 要（一台 Ubuntu，有 docker daemon） |
+| 9 | 讓 `topomon health` 能輸出機器可讀的格式（`--json`） | 現在要接監控只能看 exit code | 不用 |
+| 10 | 真正的 schema migration（alembic） | 現在只有「新增可為 NULL 的欄位與索引」會自動補（`_sync_upgrade_schema`），改型別與刪欄位要人工 | 要（alembic，而且要處理既有部署的 baseline） |
+

@@ -1,13 +1,39 @@
 services:
+  # 反向代理 —— 唯一對外的入口，也是整個系統的認證（deploy/nginx.conf 說明
+  # 為什麼認證在這裡）。憑證與 htpasswd 由 `topomon deploy` 產生在 auth/。
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "${TOPOMON_HTTP_PORT:-80}:80"
+      - "${TOPOMON_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./auth:/etc/nginx/auth:ro
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      # 代理在啟動時就解析 app 的位址，所以要等它真的在聽
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - topomon_net
+    restart: unless-stopped
+
   # FastAPI Application
+  #
+  # 只綁 127.0.0.1：繞過代理（也就是繞過認證）要先登入這台主機。要從外面看
+  # 8080 是刻意做不到的事，不是忘了開。
   app:
     build: .
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://topomon:topomon@db:5432/topomon
+      - DATABASE_URL=postgresql+asyncpg://topomon:${POSTGRES_PASSWORD:-topomon}@db:5432/topomon
       - REDIS_URL=redis://redis:6379
-      - APP_DEBUG=true
       - TZ=Asia/Taipei
     depends_on:
       db:
@@ -17,7 +43,22 @@ services:
     volumes:
       - .:/app
       - /etc/localtime:/etc/localtime:ro
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+    # --proxy-headers：日誌與錯誤訊息要看到真正的客戶端位址，而不是代理容器
+    # 的。--forwarded-allow-ips 給 *，因為這個行程只有代理與 127.0.0.1 連得到
+    # （上面的 ports），所以沒有別人能偽造那個標頭。
+    #
+    # 沒有 --reload：那是開發用的，它會多一個監看行程，而且改到一半的檔案會
+    # 讓它在半路重啟。要更新程式碼用 `topomon update`。
+    command: >-
+      uvicorn app.main:app --host 0.0.0.0 --port 8080
+      --proxy-headers --forwarded-allow-ips=*
+    healthcheck:
+      # python 一定在這個映像裡，所以不必為了健康檢查裝 curl
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
       - topomon_net
     restart: unless-stopped
@@ -30,7 +71,7 @@ services:
   collector:
     build: .
     environment:
-      - DATABASE_URL=postgresql+asyncpg://topomon:topomon@localhost:5432/topomon
+      - DATABASE_URL=postgresql+asyncpg://topomon:${POSTGRES_PASSWORD:-topomon}@localhost:5432/topomon
       - REDIS_URL=redis://localhost:6379
       - TZ=Asia/Taipei
       # 盤點間隔與快迴圈間隔，見 docs/PERFORMANCE.md 第 20 節
@@ -100,7 +141,7 @@ services:
   # collector-2:
   #   build: .
   #   environment:
-  #     - DATABASE_URL=postgresql+asyncpg://topomon:topomon@localhost:5432/topomon
+  #     - DATABASE_URL=postgresql+asyncpg://topomon:${POSTGRES_PASSWORD:-topomon}@localhost:5432/topomon
   #     - REDIS_URL=redis://localhost:6379
   #     - TZ=Asia/Taipei
   #     - COLLECTOR_INTERVAL=300
@@ -131,14 +172,18 @@ services:
     image: postgres:15-alpine
     environment:
       - POSTGRES_USER=topomon
-      - POSTGRES_PASSWORD=topomon
+      # 預設值是舊部署用的那一個，所以升級不會把既有的 pgdata 鎖在外面。
+      # 新安裝時 `topomon deploy` 會在 .env 裡放一組隨機密碼。
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-topomon}
       - POSTGRES_DB=topomon
       - TZ=Asia/Taipei
     volumes:
       - pgdata:/var/lib/postgresql/data
       - /etc/localtime:/etc/localtime:ro
+    # 只綁 127.0.0.1。collector 走 host 網路，所以它仍然連得到 localhost:5432，
+    # 但網路上的其他人連不到 —— 資料庫裡有每一台設備的 community。
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U topomon" ]
       interval: 5s
@@ -156,8 +201,10 @@ services:
     volumes:
       - redisdata:/data
       - /etc/localtime:/etc/localtime:ro
+    # 同樣只綁 127.0.0.1。Redis 預設沒有密碼，開在網路上等於開一個無認證的
+    # 鍵值庫。（目前程式還沒在用它，見 docs/PERFORMANCE.md 第 42 節第 1 項。）
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     networks:
       - topomon_net
     restart: unless-stopped

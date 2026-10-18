@@ -52,10 +52,20 @@
 
 ### 2.2 安裝步驟
 
+> 正式部署不用照這一節做 —— 一行指令就好，見
+> [docs/DEPLOYMENT.md](DEPLOYMENT.md)：
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
+> ```
+>
+> 下面是在自己機器上跑一份來看的步驟。
+
+
 ```bash
 # 1. 複製專案
-git clone <repository-url>
-cd DEV-lldp-topomon
+git clone https://github.com/nox913106/net-lldp-topo.git
+cd net-lldp-topo
 
 # 2. 建立虛擬環境
 python -m venv venv

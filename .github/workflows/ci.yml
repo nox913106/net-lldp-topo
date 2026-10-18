@@ -6,7 +6,9 @@
 # no exception, an empty topology (docs/TROUBLESHOOTING_LLDP.md). So the three
 # jobs below are, in order of how much they actually buy:
 #
-#   test       - walks a real SNMP agent and asserts on row counts
+#   test       - walks a real SNMP agent and asserts on row counts, and
+#                runs the shipped nginx config to prove the management
+#                interface still asks for a password
 #   lock       - the lockfiles still match what a human wrote in the .in files
 #   typecheck  - names that no longer exist, before anything is run
 #
@@ -46,9 +48,11 @@ jobs:
             database_url: "postgresql+asyncpg://topomon:topomon@127.0.0.1:5432/topomon"
     services:
       # Started for both legs; only the PostgreSQL one connects to it.
-      # Pinned, like every other tool here.
+      # Pinned, and pinned to the same major the deployment ships
+      # (docker-compose.yml): testing on a version nobody runs proves
+      # something about a database this project does not have.
       postgres:
-        image: postgres:16
+        image: postgres:15
         env:
           POSTGRES_USER: topomon
           POSTGRES_PASSWORD: topomon
@@ -81,9 +85,23 @@ jobs:
           .venv-sim/bin/pip install --upgrade pip
           .venv-sim/bin/pip install --require-hashes -r requirements-sim.txt
 
+      - name: Install nginx for the reverse-proxy tests
+        # tests/test_proxy_auth.py runs deploy/nginx.conf - the file that is
+        # the whole authentication story - under a real nginx. nginx-light is
+        # enough: no modules are involved, only auth_basic, ssl and proxy_pass.
+        # It is installed, never started: the test runs its own on a free port.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nginx-light
+          sudo systemctl stop nginx 2>/dev/null || true
+
       - name: pytest
         env:
           SNMPSIM_BIN: .venv-sim/bin/snmpsim-command-responder
+          # Same bargain as REQUIRE_SNMPSIM below: skipping keeps a
+          # developer's machine usable, and would let CI pass having tested
+          # nothing.
+          REQUIRE_NGINX: "1"
           # Without the simulator the SNMP tests skip, so that a developer's
           # machine stays usable - which would also let CI go green having
           # tested nothing. This turns that skip into a failure.

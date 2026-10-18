@@ -13,8 +13,7 @@
 | `/api/v1/alerts/{id}/acknowledge` | POST | 確認告警 |
 | `/api/v1/profiles` | GET, POST | Profile 管理 |
 | `/api/v1/profiles/{id}` | GET, PUT, DELETE | 單一 Profile |
-| `/api/v1/discovery/start` | POST | 啟動發現 |
-| `/api/v1/discovery/status` | GET | 發現狀態 |
+| `/api/v1/discovery/manual` | POST | 從一個 IP 開始手動發現 |
 | `/api/v1/collector/status` | GET | 收集器狀態：分片、告警抑制、trap |
 
 ---
@@ -239,81 +238,71 @@
 
 ## 6. 發現 API
 
-### POST /api/v1/discovery/start
+發現主要**不是**透過這個 API 發生的，知道這件事比端點本身重要：
 
-啟動設備發現
+* 收集器每一輪盤點都會從它已經在輪詢的設備的 LLDP/CDP 鄰居往外長
+  （設備的 `auto_discover`），
+* 排程器會定期掃過設定好的網段（設定頁的「自動發現」）。
+
+留給 API 的只有操作者手動做的那一件事：「從這個 IP 開始，跟著它的鄰居走一
+圈」。
+
+> 舊版這裡有 `POST /discovery/start` 與 `GET /discovery/status`（背景工作 +
+> job_id）。那是收集器還不存在時的佔位實作 —— `/start` 會 sleep 兩秒然後回報
+> 「發現 0 台」，比 404 更糟，因為它看起來像一個答案。已經移除。
+
+### POST /api/v1/discovery/manual
+
+從一個 IP 開始發現。`recursive` 為 true 時，會讀這台的 LLDP/CDP 鄰居表，凡是
+有管理位址（或 sysName 查得到 DNS）而且用同一個 community 回應 SNMP 的鄰居
+也一起加進來。
+
+同步回答，不是 job：一台 seed 加上它的鄰居，耗時大致是
+`(1 + 鄰居數) × SNMP_TIMEOUT` 的上限之內。反向代理的 `proxy_read_timeout`
+因此設成 300s（`deploy/nginx.conf`）。
 
 **Request:**
 ```json
 {
-  "seed_device_id": 1
+  "ip": "192.168.1.1",
+  "community": "public",
+  "recursive": true
 }
 ```
 
 **Response:**
 ```json
 {
-  "job_id": "abc123",
-  "status": "started",
-  "message": "Discovery started from device Core-1"
+  "success": true,
+  "discovered_count": 4,
+  "added_count": 3,
+  "devices": [
+    {"ip": "192.168.1.1", "hostname": "Core-1", "is_new": false},
+    {"ip": "192.168.1.11", "hostname": "Acc-1", "is_new": true}
+  ]
 }
 ```
 
-### GET /api/v1/discovery/status
-
-查詢發現狀態
-
-**Response:**
-```json
-{
-  "job_id": "abc123",
-  "status": "running",
-  "progress": {
-    "discovered": 45,
-    "pending": 12,
-    "failed": 2
-  },
-  "started_at": "2025-12-10T23:50:00+08:00"
-}
-```
+`success: false` 時 `error` 會說明原因，最常見的是 seed 根本沒回應 SNMP
+（community / 版本 / ACL）。這個端點**不會**回 5xx：發現失敗是一個結果，不是
+伺服器錯誤。
 
 ---
 
-## 7. WebSocket API
+## 7. WebSocket API（未實作）
 
-### /ws/topology
+**這一節是設計，不是現狀。** 目前沒有任何 WebSocket 端點：前端是輪詢
+`/api/v1/topology` 與 `/api/v1/alerts/active` 的。保留在這裡是因為它是原本的
+設計意圖，但在實作之前，請不要照這一節寫客戶端。
 
-即時拓撲更新
+即時推送要能成立，缺的不是端點而是一條從收集器到 API 行程的路：兩者是不同
+行程、不共用記憶體（見第 8 節），所以推送的來源得是資料庫通知或 Redis
+pub/sub，而 Redis 目前雖然在 compose 裡但程式沒有在用。
 
-**Message Format:**
-```json
-{
-  "type": "topology_update",
-  "data": {
-    "links": [
-      {"id": "1", "utilization_in_percent": 48.2}
-    ]
-  }
-}
-```
+原本的設計：
 
-### /ws/alerts
-
-即時告警推送
-
-**Message Format:**
-```json
-{
-  "type": "new_alert",
-  "data": {
-    "id": 5,
-    "alert_type": "device_offline",
-    "severity": "critical",
-    "device": {"hostname": "Acc-3"},
-    "message": "Device offline"
-  }
-}
-```
+* `/ws/topology` —— 即時拓撲更新（`{"type": "topology_update", ...}`）
+* `/ws/alerts` —— 即時告警推送（`{"type": "new_alert", ...}`）
 
 ---
 

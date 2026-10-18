@@ -73,3 +73,7 @@ coverage.xml
 
 # Jupyter Notebook
 .ipynb_checkpoints
+
+# 部署產生的，不進版控
+/auth/
+/backups/

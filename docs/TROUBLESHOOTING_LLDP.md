@@ -57,7 +57,9 @@ docker compose exec collector python -m tools.diag_lldp 192.168.1.1 --v3 \
 也可以用 API：
 
 ```bash
-curl -s -X POST http://localhost:8080/api/snmp/lldp \
+# 在主機上（8080 只綁 127.0.0.1，所以不用帶密碼；從別台機器要走
+# https://<ip>/api/v1/... 並加 -u 帳號:密碼 -k）
+curl -s -X POST http://127.0.0.1:8080/api/v1/snmp/lldp \
   -H 'Content-Type: application/json' \
   -d '{"ip":"192.168.1.1","community":"public"}' | jq
 ```
@@ -123,7 +125,7 @@ docker compose exec collector python -m tools.diag_lldp 192.168.1.1 public -v
 - 用「手動探索」並勾選遞迴，會依 LLDP 廣告的管理位址自動把鄰居加進來：
 
 ```bash
-curl -s -X POST http://localhost:8080/api/discovery/manual \
+curl -s -X POST http://127.0.0.1:8080/api/v1/discovery/manual \
   -H 'Content-Type: application/json' \
   -d '{"ip":"192.168.1.1","community":"public","recursive":true}' | jq
 ```

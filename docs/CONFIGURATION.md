@@ -2,11 +2,16 @@
 
 ## 1. 環境變數
 
-複製 `.env.example` 為 `.env` 並修改：
+`topomon deploy` 第一次跑的時候會自己從 `.env.example` 產生 `.env`，並且把
+`APP_SECRET_KEY` 與資料庫密碼換成隨機值。要自己手動建也可以：
 
 ```bash
 cp .env.example .env
 ```
+
+改完 `.env` 之後 `sudo topomon restart` 套用（改到 compose 本身則用
+`sudo topomon deploy`）。`topomon health` 會提醒兩個「能跑但不該這樣跑」的
+值：還是範例值的 `APP_SECRET_KEY`，以及還是預設 `topomon` 的資料庫密碼。
 
 ### 基本設定
 
@@ -18,11 +23,30 @@ APP_DEBUG=false
 # docs/TROUBLESHOOTING_LLDP.md 第 6 種情況）。認不得的值退回 INFO
 APP_LOG_LEVEL=INFO
 
-# 資料庫
-DATABASE_URL=postgresql://topomon:password@localhost:5432/topomon
+# 瀏覽器可以從哪些來源呼叫這個 API，逗號分隔。空的（預設）＝完全不掛 CORS
+# middleware，這對目前的部署是對的：介面是同一個行程送出去的，本來就同源。
+# 只有「別的地方送出來的頁面要打這個 API」才需要填，而且要指名來源 ——
+# 這個 API 讀得到每一台設備的 community。
+APP_CORS_ORIGINS=
 
-# Redis
+# 資料庫。驅動不能省：這是 SQLAlchemy 的 async engine，少了 +asyncpg 會在
+# 啟動時就失敗（"the asyncio extension requires an async driver"）。
+DATABASE_URL=postgresql+asyncpg://topomon:topomon@localhost:5432/topomon
+
+# 資料庫密碼。docker-compose.yml 的 db 容器與上面那兩條 URL 都用它。
+# 新安裝時 topomon deploy 會放一組隨機值；既有的部署沒有這一行，會沿用舊的
+# 預設值 —— 密碼是在 pgdata 初始化的時候烤進去的，改這裡只會把自己鎖在外面。
+POSTGRES_PASSWORD=topomon
+
+# Redis（目前程式還沒在用，見 docs/PERFORMANCE.md 第 42 節第 1 項）
 REDIS_URL=redis://localhost:6379
+
+# 反向代理在主機上聽哪兩個埠。80 一律轉到 443；443 後面的每一條路徑都要
+# HTTP basic auth 的帳密（`topomon password` 重設）。這兩個埠之外，應用程式
+# 的 8080 與資料庫的 5432 只綁 127.0.0.1 —— 見 docs/DEPLOYMENT.md「登入與
+# 憑證」。
+TOPOMON_HTTP_PORT=80
+TOPOMON_HTTPS_PORT=443
 
 # SNMP 預設設定
 SNMP_DEFAULT_COMMUNITY=public

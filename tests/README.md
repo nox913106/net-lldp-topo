@@ -10,6 +10,9 @@ What CI runs. Two kinds, and the split matters:
 | `test_loops_e2e.py` | 代理 + 資料庫 | **真的跑一輪盤點與快迴圈**：線路寫進去了、合併成一條、告警出現、流量是速率不是計數器 |
 | `test_trap_e2e.py` | 代理 + 資料庫 + 一個 UDP 埠 | **真的 trap 封包**：從設備自己持有的位址送來會被套用、誰都不持有的位址被忽略、v1 的宣稱只是最後手段、偽造的宣稱蓋不過來源位址、位址走訪的間隔內新位址還不認得 |
 | `test_lease_e2e.py` | 一個資料庫 | 整機群的工作只有一個行程做、過期才接手、分片心跳回報的狀態、少一片會被指名 |
+| `test_proxy_auth.py` | 一個 nginx（裝了就好） | **真的跑 `deploy/nginx.conf`**：沒密碼到不了應用程式、`/docs` 也要密碼、明文 HTTP 在問密碼前就被轉走、兩個健康檢查路徑仍然免認證 |
+| `test_http_surface.py` | 一個資料庫 | 兩個健康檢查的語意（ready 真的 `SELECT 1`、失敗是 503 而且不洩漏連線字串）、被刪掉的空殼端點真的是 404、CORS 預設關閉 |
+| `test_deploy.py` | 什麼都不用 | `install.sh` 與 `tools/topomon` 的語法、每個指令都有被 dispatch 也有被寫進說明、compose 沒有把 8080／5432 開到網路上 |
 
 最後三個檔案以前是 scratchpad 裡的腳本 —— 也就是這個專案最強的證據活在一個
 會被回收的容器裡，CI 測到的東西比我手上少。現在它們在 CI 裡，而且跑兩次：
@@ -36,8 +39,21 @@ python -m venv .venv-sim && .venv-sim/bin/pip install -r requirements-sim.txt
 SNMPSIM_BIN=.venv-sim/bin/snmpsim-command-responder python -m pytest tests -q
 ```
 
+```bash
+# 反向代理那一組（需要一個 nginx 在 PATH 上，或 NGINX_BIN 指給它）
+sudo apt install -y nginx-light
+python -m pytest tests/test_proxy_auth.py -q
+```
+
 `SNMPSIM_BIN` 沒設或那個檔不存在時，SNMP 那一組會 **skip**（不是 fail）——
-在沒有模擬器的機器上跑純邏輯測試不應該變成紅燈。
+在沒有模擬器的機器上跑純邏輯測試不應該變成紅燈。`nginx` 也是同一個規矩
+（`NGINX_BIN`）。兩個 skip 在 CI 都被 `REQUIRE_SNMPSIM=1` 與
+`REQUIRE_NGINX=1` 變成失敗，否則 CI 會在什麼都沒測的情況下變綠。
+
+nginx 只要「裝了」就夠，不需要啟動：測試會自己在一個隨機埠上起一個，用的是
+`deploy/nginx.conf` 本身（只替換 upstream 位址與那兩個埠）。比 1.25.1 舊的
+nginx 不認得 `http2 on;`，測試會把那一行註解掉再跑 —— 部署用的映像釘在
+1.27（`docker-compose.yml`）。
 
 ## 為什麼 snmpsim 要裝在另一個 venv
 
