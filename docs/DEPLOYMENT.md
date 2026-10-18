@@ -620,7 +620,7 @@ sudo journalctl -u topomon-collector -f
 
 ## 另外幾份文件
 
-* [專案介紹](INTRO.html) —— 單頁 HTML，可以直接給別人看
+* [專案介紹網站](index.html) —— 功能與畫面，可以直接給別人看
 * [設定說明](CONFIGURATION.md) —— 每一個環境變數，以及設備端要不要改
 * [使用手冊](USER_MANUAL.md) —— 介面怎麼用
 * [收不到 LLDP 鄰居](TROUBLESHOOTING_LLDP.md) —— 拓撲空白時從這裡查
