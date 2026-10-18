@@ -4,20 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>mf-topomon —— LLDP／CDP 網路拓撲監控</title>
-<meta name="description" content="mf-topomon 自動畫出交換機之間真正接著的線，逐條監看 up／down 與流量，設備端不需要任何設定改動。">
+<meta name="description" content="交換機自己就知道誰接誰。mf-topomon 把它們說的話畫成圖，逐條線盯著，斷掉的時候直接告訴你是哪一條 —— 設備端不用改任何設定。">
 <meta property="og:title" content="mf-topomon">
-<meta property="og:description" content="你的網路長什麼樣子，問設備就知道。LLDP／CDP 自動拓撲發現與逐線路監控。">
+<meta property="og:description" content="別再用 Visio 畫網路圖了。LLDP／CDP 自動拓撲發現與逐條線路監控。">
 <meta property="og:type" content="website">
 <meta property="og:image" content="img/topology.webp">
 <!--
-  mf-topomon 的形象網站。單一檔案 + 一個 img/ 目錄，沒有建置步驟：
-  直接用瀏覽器打開，或放到任何 web server 上（包含 GitHub Pages ——
-  Pages 設定成由 main 分支的 /docs 資料夾發佈，這一頁就是首頁）。
+  mf-topomon 的形象網站。一個 HTML 檔 + 一個 img/ 目錄，沒有建置步驟：
+  直接用瀏覽器打開，或放到任何 web server 上。GitHub Pages 設定成由 main
+  分支的 /docs 資料夾發佈，這一頁就是首頁。
 
   語言：網址帶 ?lang=zh-TW / zh-CN / en 可以指定，沒帶的話看瀏覽器語言，
   選過之後記在 localStorage。頁面原本寫的繁體就是 zh-TW 的字典。
 
-  截圖是系統實際執行的畫面（示範資料）。
+  截圖是系統實際執行的畫面（示範資料），要重拍的話把 seed_demo.py 的資料
+  建起來，用 Playwright 對 1440x900@2x 拍，縮到 1760 寬轉 WebP。
 -->
 <style>
   :root { color-scheme: light; }
@@ -29,66 +30,90 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700&display=swap">
 <style>
-/* 版面：整頁橫幅堆疊，功能格 + 左右交錯的畫面展示。
-   色票取自產品介面本身（深色底、藍色主色、線路狀態的綠／琥珀／紅），
-   不另外發明一組。深色優先，因為產品預設就是深色。 */
+/* 版面：長捲頁，白／淺底與品牌色帶交替；功能格、流程條、比較表，
+   最後是一整段左右交錯的畫面清單與安裝指令。
+   色票取自產品介面本身：深藍底、藍色主色、線路狀態的綠／琥珀／紅。 */
 :root {
-  --bg: #0c1016;
-  --bg-alt: #11161f;
-  --panel: #161c27;
-  --ink: #e9eef6;
-  --ink-soft: #a7b2c4;
-  --ink-faint: #76829a;
-  --line: #222b3a;
-  --accent: #4a9eff;
-  --accent-ink: #0b1220;
-  --accent-wash: #16263c;
-  --up: #35c17e;
-  --warn: #e0a83c;
-  --down: #e8615a;
-  --shadow: 0 18px 50px -24px rgba(0, 0, 0, 0.9);
+  --bg: #ffffff;
+  --bg-alt: #f3f6fb;
+  --panel: #ffffff;
+  --ink: #101722;
+  --ink-soft: #4b5667;
+  --ink-faint: #7b8699;
+  --line: #dde4ee;
+  --brand: #0e3a63;          /* 品牌色帶 */
+  --brand-2: #10507f;
+  --brand-ink: #eaf3ff;
+  --accent: #1668d6;
+  --accent-ink: #ffffff;
+  --accent-wash: #e7f0fd;
+  --up: #17895a;
+  --warn: #8a6100;
+  --down: #c03a32;
+  --dark: #0d131c;           /* 畫面清單那一段的底色 */
+  --dark-panel: #151d2a;
+  --dark-ink: #e8eef7;
+  --dark-soft: #9fadc2;
+  --dark-line: #25303f;
+  --shadow: 0 20px 50px -30px rgba(10, 25, 50, 0.55);
 
   --display: "Archivo", "Noto Sans TC", system-ui, sans-serif;
   --sans: "Noto Sans TC", "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --measure: 36rem;
-  color-scheme: dark;
+  color-scheme: light;
 }
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --bg: #f7f9fc;
-    --bg-alt: #eef2f8;
-    --panel: #ffffff;
-    --ink: #121821;
-    --ink-soft: #4d5869;
-    --ink-faint: #76829a;
-    --line: #dde3ec;
-    --accent: #1766d6;
-    --accent-ink: #ffffff;
-    --accent-wash: #e4edfb;
-    --up: #18865a;
-    --warn: #8a6100;
-    --down: #b83a33;
-    --shadow: 0 18px 44px -28px rgba(18, 30, 54, 0.45);
-    color-scheme: light;
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d131c;
+    --bg-alt: #121a26;
+    --panel: #151d2a;
+    --ink: #e8eef7;
+    --ink-soft: #a7b4c7;
+    --ink-faint: #7d8a9e;
+    --line: #25303f;
+    --brand: #0b2c4c;
+    --brand-2: #0d3f66;
+    --brand-ink: #dbeaff;
+    --accent: #4c9dff;
+    --accent-ink: #091320;
+    --accent-wash: #16283f;
+    --up: #35c17e;
+    --warn: #e0a83c;
+    --down: #e8615a;
+    --dark: #080d14;
+    --dark-panel: #121a26;
+    --dark-ink: #e8eef7;
+    --dark-soft: #9fadc2;
+    --dark-line: #222c3a;
+    --shadow: 0 20px 50px -28px rgba(0, 0, 0, 0.85);
+    color-scheme: dark;
   }
 }
-:root[data-theme="light"] {
-  --bg: #f7f9fc;
-  --bg-alt: #eef2f8;
-  --panel: #ffffff;
-  --ink: #121821;
-  --ink-soft: #4d5869;
-  --ink-faint: #76829a;
-  --line: #dde3ec;
-  --accent: #1766d6;
-  --accent-ink: #ffffff;
-  --accent-wash: #e4edfb;
-  --up: #18865a;
-  --warn: #8a6100;
-  --down: #b83a33;
-  --shadow: 0 18px 44px -28px rgba(18, 30, 54, 0.45);
-  color-scheme: light;
+:root[data-theme="dark"] {
+  --bg: #0d131c;
+  --bg-alt: #121a26;
+  --panel: #151d2a;
+  --ink: #e8eef7;
+  --ink-soft: #a7b4c7;
+  --ink-faint: #7d8a9e;
+  --line: #25303f;
+  --brand: #0b2c4c;
+  --brand-2: #0d3f66;
+  --brand-ink: #dbeaff;
+  --accent: #4c9dff;
+  --accent-ink: #091320;
+  --accent-wash: #16283f;
+  --up: #35c17e;
+  --warn: #e0a83c;
+  --down: #e8615a;
+  --dark: #080d14;
+  --dark-panel: #121a26;
+  --dark-ink: #e8eef7;
+  --dark-soft: #9fadc2;
+  --dark-line: #222c3a;
+  --shadow: 0 20px 50px -28px rgba(0, 0, 0, 0.85);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -101,83 +126,76 @@ body {
   line-height: 1.75;
   -webkit-font-smoothing: antialiased;
 }
-/* 捲到頂時，sticky 列上方那條安全區不要透出底下的內容 */
 body::before {
   content: "";
   position: fixed;
   inset: 0 0 auto;
   height: env(safe-area-inset-top, 0px);
   background: var(--bg);
-  z-index: 40;
+  z-index: 60;
 }
-
-h1, h2, h3 { margin: 0; line-height: 1.2; text-wrap: balance; font-family: var(--display); font-weight: 700; }
+h1, h2, h3 { margin: 0; line-height: 1.22; text-wrap: balance; font-family: var(--display); font-weight: 700; }
 p { margin: 0; }
 img { max-width: 100%; display: block; }
 a { color: var(--accent); text-underline-offset: 3px; }
-a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
 
 .band { width: 100%; }
 .band--alt { background: var(--bg-alt); }
+.band--brand { background: linear-gradient(100deg, var(--brand), var(--brand-2)); color: var(--brand-ink); }
+.band--dark { background: var(--dark); color: var(--dark-ink); }
 .wrap {
-  max-width: 68rem;
+  max-width: 70rem;
   margin-inline: auto;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
   padding-block: clamp(3rem, 7vw, 5.5rem);
 }
+.wrap--slim { padding-block: clamp(2.2rem, 4.5vw, 3.2rem); }
 
 /* ---------- 導覽列 ---------- */
 .nav {
   position: sticky;
   top: env(safe-area-inset-top, 0px);
-  z-index: 50;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  z-index: 70;
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
 }
 .nav-inner {
-  max-width: 68rem;
+  max-width: 70rem;
   margin-inline: auto;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
-  padding-block: 0.7rem;
+  padding-block: 0.65rem;
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.9rem;
   flex-wrap: wrap;
 }
 .brand {
   font-family: var(--mono);
-  font-size: 1.05rem;
+  font-size: 1.02rem;
   font-weight: 500;
   letter-spacing: -0.02em;
   color: var(--ink);
   text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
 }
 .brand b { color: var(--accent); font-weight: 500; }
-.nav-links { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-left: auto; }
+.nav-links { display: flex; gap: 0.15rem; flex-wrap: wrap; margin-left: auto; }
 .nav-links a {
   color: var(--ink-soft);
   text-decoration: none;
-  font-size: 0.88rem;
+  font-size: 0.87rem;
   padding: 0.3rem 0.6rem;
   border-radius: 3px;
 }
-.nav-links a:hover { color: var(--ink); background: var(--panel); }
-.lang {
-  display: inline-flex;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  overflow: hidden;
-}
+.nav-links a:hover { color: var(--ink); background: var(--bg-alt); }
+.lang { display: inline-flex; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
 .lang button {
   font-family: var(--mono);
   font-size: 0.72rem;
-  padding: 0.3rem 0.5rem;
+  padding: 0.28rem 0.5rem;
   background: transparent;
   color: var(--ink-faint);
   border: 0;
@@ -186,37 +204,24 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 }
 .lang button + button { border-left: 1px solid var(--line); }
 .lang button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
-@media (max-width: 720px) { .nav-links { order: 3; width: 100%; margin-left: 0; } }
+@media (max-width: 760px) { .nav-links { order: 3; width: 100%; margin-left: 0; } }
 
 /* ---------- Hero ---------- */
-.hero { display: grid; gap: 1.6rem; justify-items: start; }
+.hero { display: grid; gap: 1.4rem; justify-items: start; }
 .eyebrow {
   font-family: var(--mono);
-  font-size: 0.75rem;
-  letter-spacing: 0.1em;
+  font-size: 0.74rem;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--accent);
 }
-.hero h1 {
-  font-family: var(--mono);
-  font-weight: 500;
-  font-size: clamp(2.4rem, 8vw, 3.8rem);
-  letter-spacing: -0.04em;
-}
-.hero h1 b { color: var(--accent); font-weight: 500; }
-.hero .tagline {
-  font-family: var(--display);
-  font-weight: 600;
-  font-size: clamp(1.3rem, 4.2vw, 1.9rem);
-  line-height: 1.35;
-  max-width: 24ch;
-}
-.hero .sub { color: var(--ink-soft); max-width: var(--measure); }
+.hero h1 { font-size: clamp(2rem, 6.4vw, 3.4rem); letter-spacing: -0.02em; max-width: 16ch; }
+.hero .sub { color: var(--ink-soft); max-width: var(--measure); font-size: 1.05rem; }
 .cta { display: flex; gap: 0.6rem; flex-wrap: wrap; }
 .btn {
   display: inline-block;
-  padding: 0.6rem 1.1rem;
-  border-radius: 3px;
+  padding: 0.62rem 1.15rem;
+  border-radius: 4px;
   font-size: 0.95rem;
   font-weight: 500;
   text-decoration: none;
@@ -224,25 +229,30 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 }
 .btn--primary { background: var(--accent); color: var(--accent-ink); }
 .btn--ghost { border-color: var(--line); color: var(--ink); background: var(--panel); }
+.hero-note { font-family: var(--mono); font-size: 0.78rem; color: var(--ink-faint); }
 
 /* ---------- 畫面外框 ---------- */
 .shot {
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: hidden;
   background: var(--panel);
   box-shadow: var(--shadow);
   min-width: 0;
+  width: 100%;
 }
+.band--dark .shot { border-color: var(--dark-line); background: var(--dark-panel); }
 .shot-bar {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.4rem;
   padding: 0.45rem 0.7rem;
   border-bottom: 1px solid var(--line);
   background: var(--bg-alt);
 }
-.shot-bar i { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--line); display: block; }
+.band--dark .shot-bar { border-color: var(--dark-line); background: #0e1621; }
+.shot-bar i { width: 0.48rem; height: 0.48rem; border-radius: 50%; background: var(--line); display: block; }
+.band--dark .shot-bar i { background: var(--dark-line); }
 .shot-bar span {
   font-family: var(--mono);
   font-size: 0.68rem;
@@ -252,99 +262,98 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.shot img { width: 100%; height: auto; aspect-ratio: 1760 / 1100; object-fit: cover; object-position: top center; }
-.shot--tall img { aspect-ratio: auto; }
+.shot img { width: 100%; height: auto; }
 
-/* ---------- 三個價值 ---------- */
-.values { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
-.value { display: grid; gap: 0.4rem; min-width: 0; }
-.value h3 { font-size: 1.05rem; }
-.value p { color: var(--ink-soft); font-size: 0.95rem; }
-.value .mark { font-family: var(--mono); font-size: 0.75rem; color: var(--accent); letter-spacing: 0.08em; }
+/* ---------- 品牌色帶 ---------- */
+.promise { display: grid; gap: 1.1rem; }
+.promise h2 { font-size: clamp(1.4rem, 4.2vw, 2rem); max-width: 20ch; }
+.promise p { color: var(--brand-ink); opacity: 0.88; max-width: var(--measure); }
+.promise .mini { display: grid; gap: 0.9rem; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); margin-top: 0.6rem; }
+.promise .mini div { min-width: 0; }
+.promise .mini b { display: block; font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.06em; opacity: 0.75; font-weight: 500; }
+.promise .mini p { font-size: 0.95rem; }
 
 /* ---------- 區段標題 ---------- */
-.head { display: grid; gap: 0.6rem; margin-bottom: 2.2rem; max-width: var(--measure); }
-.head h2 { font-size: clamp(1.5rem, 4.5vw, 2.1rem); }
+.head { display: grid; gap: 0.6rem; margin-bottom: 2.4rem; max-width: var(--measure); }
+.head h2 { font-size: clamp(1.5rem, 4.6vw, 2.15rem); }
 .head p { color: var(--ink-soft); }
-.kicker {
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
+.band--dark .head p { color: var(--dark-soft); }
+.kicker { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); }
 
 /* ---------- 功能格 ---------- */
-.features { display: grid; gap: 1px; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); background: var(--line); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.features { display: grid; gap: 1px; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); background: var(--line); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .feature { background: var(--bg); padding: 1.4rem 1.3rem; display: grid; gap: 0.5rem; align-content: start; min-width: 0; }
 .band--alt .feature { background: var(--bg-alt); }
 .feature .ico { width: 1.9rem; height: 1.9rem; }
 .feature h3 { font-size: 1rem; font-family: var(--sans); font-weight: 700; }
 .feature p { color: var(--ink-soft); font-size: 0.92rem; }
 
-/* ---------- 畫面展示 ---------- */
-.showcase { display: grid; gap: 1.8rem; grid-template-columns: minmax(0, 1fr); align-items: center; }
-.showcase + .showcase { margin-top: clamp(3rem, 7vw, 4.5rem); }
-@media (min-width: 880px) {
-  .showcase { grid-template-columns: 0.85fr 1.15fr; gap: 3rem; }
-  .showcase--flip .showcase-text { order: 2; }
-}
-.showcase-text { display: grid; gap: 0.75rem; align-content: start; min-width: 0; }
-.showcase-text h3 { font-size: clamp(1.2rem, 3.4vw, 1.5rem); }
-.showcase-text p { color: var(--ink-soft); }
-.tags { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.3rem; }
-.tag {
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  border: 1px solid var(--line);
-  border-radius: 2px;
-  padding: 0.15rem 0.45rem;
-  color: var(--ink-faint);
-}
+/* ---------- 流程條 ---------- */
+.flow { display: grid; gap: 1px; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); background: var(--line); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.flow-step { background: var(--bg); padding: 1.1rem 1rem; display: grid; gap: 0.35rem; align-content: start; min-width: 0; }
+.band--alt .flow-step { background: var(--bg-alt); }
+.flow-step .n { font-family: var(--mono); font-size: 0.72rem; color: var(--accent); }
+.flow-step h3 { font-size: 0.95rem; font-family: var(--sans); }
+.flow-step p { font-size: 0.86rem; color: var(--ink-soft); }
 
-/* ---------- 運作方式 ---------- */
-.steps { display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
-.step { display: grid; gap: 0.5rem; align-content: start; min-width: 0; }
-.step .n {
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 50%;
-  width: 1.7rem;
-  height: 1.7rem;
-  display: grid;
-  place-items: center;
-}
-.step h3 { font-size: 1.05rem; }
-.step p { color: var(--ink-soft); font-size: 0.95rem; }
-.diagram { margin-top: 2.2rem; border: 1px solid var(--line); border-radius: 4px; padding: 1.2rem; background: var(--panel); }
-.diagram svg { width: 100%; height: auto; display: block; }
-.d-faint { fill: var(--ink-faint); font-family: "IBM Plex Mono", monospace; font-size: 11px; }
-.d-ink { fill: var(--ink); font-family: "IBM Plex Mono", monospace; font-size: 12px; }
-.d-accent { fill: var(--accent); }
-.d-up { fill: var(--up); }
-.d-down { fill: var(--down); }
-.k-line { stroke: var(--line); }
-.k-up { stroke: var(--up); }
-.k-accent { stroke: var(--accent); }
+/* ---------- 深度區 ---------- */
+.split { display: grid; gap: 2rem; align-items: center; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) { .split { grid-template-columns: 0.8fr 1.2fr; gap: 3rem; } }
+.split ul { margin: 0.4rem 0 0; padding-left: 1.1rem; color: var(--ink-soft); }
+.split li + li { margin-top: 0.4rem; }
+.split li b { color: var(--ink); font-weight: 600; }
+.trio { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin-top: 1.6rem; }
+.trio figure { margin: 0; display: grid; gap: 0.5rem; min-width: 0; }
+.trio figcaption { font-size: 0.85rem; color: var(--ink-soft); }
+.trio figcaption b { color: var(--ink); font-weight: 600; display: block; font-size: 0.9rem; }
 
-/* ---------- 部署 ---------- */
-.deploy { display: grid; gap: 1.5rem; }
+/* ---------- 比較表 ---------- */
+.scroller { overflow-x: auto; min-width: 0; border: 1px solid var(--line); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; min-width: 46rem; font-size: 0.92rem; background: var(--panel); }
+th, td { text-align: left; padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+thead th { font-size: 0.8rem; letter-spacing: 0.03em; color: var(--ink-faint); font-weight: 600; background: var(--bg-alt); }
+thead th.us { color: var(--accent); }
+tbody th { font-weight: 600; width: 13rem; }
+td.us { color: var(--ink); background: var(--accent-wash); }
+tr:last-child th, tr:last-child td { border-bottom: 0; }
+.dim { color: var(--ink-faint); }
+
+/* ---------- 畫面長清單（深色） ---------- */
+.rows { display: grid; gap: clamp(2.5rem, 6vw, 4rem); }
+.row { display: grid; gap: 1.5rem; align-items: center; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) {
+  .row { grid-template-columns: 1fr 1.25fr; gap: 3rem; }
+  .row--flip .row-text { order: 2; }
+}
+.row-text { display: grid; gap: 0.6rem; align-content: start; min-width: 0; }
+.row-text h3 { font-size: clamp(1.15rem, 3.2vw, 1.4rem); }
+.row-text p { color: var(--dark-soft); }
+.tags { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.2rem; }
+.tag { font-family: var(--mono); font-size: 0.72rem; border: 1px solid var(--dark-line); border-radius: 3px; padding: 0.12rem 0.45rem; color: var(--dark-soft); }
+
+/* ---------- 部署形態 ---------- */
+.modes { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+.mode { border: 1px solid var(--line); border-radius: 6px; padding: 1.2rem; background: var(--panel); display: grid; gap: 0.45rem; min-width: 0; }
+.mode h3 { font-size: 1rem; font-family: var(--sans); }
+.mode p { font-size: 0.92rem; color: var(--ink-soft); }
+.mode .ico { width: 1.8rem; height: 1.8rem; }
+
+/* ---------- 安裝 ---------- */
+.install { display: grid; gap: 1.2rem; }
 pre {
   margin: 0;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--accent);
-  border-radius: 4px;
+  background: #0b1119;
+  border: 1px solid #1d2938;
+  border-radius: 6px;
   padding: 1rem 1.1rem;
   overflow-x: auto;
   font-family: var(--mono);
   font-size: 0.82rem;
-  line-height: 1.7;
-  color: var(--ink);
+  line-height: 1.75;
+  color: #dce6f4;
 }
-pre .c { color: var(--ink-faint); }
+pre .c { color: #6f7f96; }
+pre .g { color: #4fd18b; }
 .copy {
   font-family: var(--mono);
   font-size: 0.74rem;
@@ -358,21 +367,19 @@ pre .c { color: var(--ink-faint); }
 }
 .copy:hover { border-color: var(--accent); color: var(--accent); }
 .cmds { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }
-.cmd { border: 1px solid var(--line); border-radius: 4px; padding: 0.9rem 1rem; background: var(--panel); display: grid; gap: 0.3rem; min-width: 0; }
+.cmd { border: 1px solid var(--line); border-radius: 6px; padding: 0.9rem 1rem; background: var(--panel); display: grid; gap: 0.3rem; min-width: 0; }
 .cmd code { font-family: var(--mono); font-size: 0.84rem; color: var(--accent); }
 .cmd p { font-size: 0.88rem; color: var(--ink-soft); }
 
-/* ---------- 支援清單 ---------- */
-.support { display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); }
+/* ---------- 支援 ---------- */
+.support { display: grid; gap: 1.6rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
 .support h3 { font-size: 0.95rem; font-family: var(--sans); }
 .support ul { margin: 0.4rem 0 0; padding-left: 1.1rem; color: var(--ink-soft); font-size: 0.93rem; }
 .support li + li { margin-top: 0.2rem; }
 
-/* ---------- Footer ---------- */
 footer { border-top: 1px solid var(--line); }
 footer .wrap { padding-block: 2.2rem; }
 .foot { display: grid; gap: 0.5rem; color: var(--ink-faint); font-size: 0.86rem; }
-.foot .brand { font-size: 0.95rem; }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
@@ -383,10 +390,10 @@ footer .wrap { padding-block: 2.2rem; }
     <a class="brand" href="#top">mf<b>-</b>topomon</a>
     <div class="nav-links">
       <a href="#features" data-i18n="nav.features">功能</a>
+      <a href="#topology" data-i18n="nav.topology">拓樸圖</a>
+      <a href="#compare" data-i18n="nav.compare">比較</a>
       <a href="#screens" data-i18n="nav.screens">畫面</a>
-      <a href="#how" data-i18n="nav.how">運作方式</a>
-      <a href="#deploy" data-i18n="nav.deploy">部署</a>
-      <a href="#support" data-i18n="nav.support">支援範圍</a>
+      <a href="#install" data-i18n="nav.install">安裝</a>
     </div>
     <div class="lang" role="group" aria-label="Language">
       <button type="button" data-lang="zh-TW" aria-pressed="true">繁</button>
@@ -399,14 +406,14 @@ footer .wrap { padding-block: 2.2rem; }
 <header class="band" id="top">
   <div class="wrap hero">
     <p class="eyebrow" data-i18n="hero.eyebrow">LLDP / CDP 網路拓撲監控</p>
-    <h1>mf<b>-</b>topomon</h1>
-    <p class="tagline" data-i18n="hero.tagline">你的網路長什麼樣子，問設備就知道。</p>
-    <p class="sub" data-i18n="hero.sub">自動畫出交換機之間真正接著的線，逐條看它是通是斷、跑多少流量，斷掉的時候主動告訴你是哪一條。設備端不需要任何設定改動。</p>
+    <h1 data-i18n="hero.h1">別再用 Visio 畫網路圖了</h1>
+    <p class="sub" data-i18n="hero.sub">交換機自己就知道誰接誰。mf-topomon 把它們說的話畫成圖，逐條線盯著，斷掉的時候直接告訴你是哪一條 —— 設備端不用改任何設定。</p>
     <div class="cta">
       <a class="btn btn--primary" href="#features" data-i18n="hero.cta1">看看它能做什麼</a>
-      <a class="btn btn--ghost" href="#deploy" data-i18n="hero.cta2">一行就能裝起來</a>
+      <a class="btn btn--ghost" href="#install" data-i18n="hero.cta2">一行就能裝起來</a>
     </div>
-    <div class="shot" style="margin-top:0.8rem">
+    <p class="hero-note" data-i18n="hero.note">LLDP / CDP · SNMP v1 / v2c / v3 · Docker · 繁中 / 简中 / English</p>
+    <div class="shot" style="margin-top:0.6rem">
       <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/</span></div>
       <img src="img/topology.webp" width="1760" height="1100" alt="mf-topomon 的拓樸畫面：核心、匯聚、防火牆與路由器之間的連線，線上標著頻寬與使用率" fetchpriority="high" decoding="async">
     </div>
@@ -414,271 +421,376 @@ footer .wrap { padding-block: 2.2rem; }
 </header>
 
 <main>
-  <!-- 三個價值 -->
-  <div class="band band--alt">
-    <div class="wrap">
-      <div class="values">
-        <div class="value">
-          <p class="mark">01</p>
-          <h3 data-i18n="value.1.h">網路圖不用再手動維護</h3>
-          <p data-i18n="value.1.p">誰接誰是設備自己透過 LLDP／CDP 講出來的。有人移了一條線，下一輪盤點就反映在圖上，不必等誰想起來要更新文件。</p>
-        </div>
-        <div class="value">
-          <p class="mark">02</p>
-          <h3 data-i18n="value.2.h">設備端一行設定都不用加</h3>
-          <p data-i18n="value.2.p">用你本來就在用的管理位址與 community。連 SNMP trap 都不必在每台設備指定來源位址 —— 它認得設備自己回報的每一個位址。</p>
-        </div>
-        <div class="value">
-          <p class="mark">03</p>
-          <h3 data-i18n="value.3.h">線斷了，它先告訴你</h3>
-          <p data-i18n="value.3.p">不是「某台設備不見了」，而是「核心到三樓那條 10G 掉了」。收得到 trap 的話，是在事件發生的當下。</p>
-        </div>
+  <!-- 品牌帶 1 -->
+  <div class="band band--brand">
+    <div class="wrap wrap--slim promise">
+      <h2 data-i18n="p1.h">給它一台設備，整張圖自己長出來</h2>
+      <p data-i18n="p1.p">不用填表、不用畫圖、不用在每台設備上加設定。它用你本來就在用的管理位址與 community，問設備一個它早就知道答案的問題：你的鄰居是誰。</p>
+      <div class="mini">
+        <div><b>01</b><p data-i18n="p1.a">移了一條線，下一輪盤點就反映在圖上。</p></div>
+        <div><b>02</b><p data-i18n="p1.b">新設備接上去，自己會被發現並接進拓樸。</p></div>
+        <div><b>03</b><p data-i18n="p1.c">拓樸靠設備名配對，換 IP、換網段都不影響。</p></div>
       </div>
     </div>
   </div>
 
-  <!-- 功能 -->
+  <!-- 核心功能 -->
   <div class="band" id="features">
     <div class="wrap">
       <div class="head">
-        <p class="kicker" data-i18n="features.kicker">功能</p>
-        <h2 data-i18n="features.h">一套工具，把「網路現在長什麼樣」這件事做完</h2>
-        <p data-i18n="features.p">從發現設備、畫出拓樸、逐線監看，到告警與抑制 —— 不需要再接三套東西。</p>
+        <p class="kicker" data-i18n="features.kicker">核心功能</p>
+        <h2 data-i18n="features.h">把「網路現在長什麼樣」這件事做完</h2>
+        <p data-i18n="features.p">從發現設備、畫出拓樸、逐條線監看，到告警與抑制 —— 不需要再接三套東西。</p>
       </div>
       <div class="features">
         <div class="feature">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" class="k-accent" stroke-width="1.6"/><circle cx="4" cy="5" r="2" class="k-line" stroke-width="1.6"/><circle cx="20" cy="5" r="2" class="k-line" stroke-width="1.6"/><circle cx="4" cy="19" r="2" class="k-line" stroke-width="1.6"/><circle cx="20" cy="19" r="2" class="k-line" stroke-width="1.6"/><path d="M6 6.5 9.6 10M18 6.5 14.4 10M6 17.5 9.6 14M18 17.5 14.4 14" class="k-accent" stroke-width="1.4"/></svg>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" stroke="var(--accent)" stroke-width="1.6"/><circle cx="4" cy="5" r="2" stroke="var(--line)" stroke-width="1.6"/><circle cx="20" cy="5" r="2" stroke="var(--line)" stroke-width="1.6"/><circle cx="4" cy="19" r="2" stroke="var(--line)" stroke-width="1.6"/><circle cx="20" cy="19" r="2" stroke="var(--line)" stroke-width="1.6"/><path d="M6 6.5 9.6 10M18 6.5 14.4 10M6 17.5 9.6 14M18 17.5 14.4 14" stroke="var(--accent)" stroke-width="1.4"/></svg>
           <h3 data-i18n="f.1.h">自動發現</h3>
           <p data-i18n="f.1.p">給它一台設備，它會順著 LLDP／CDP 鄰居一路長出整個網路；也可以讓它定期掃過你指定的網段。</p>
         </div>
         <div class="feature">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="2.5" y="9" width="5" height="6" rx="1" class="k-line" stroke-width="1.6"/><rect x="16.5" y="9" width="5" height="6" rx="1" class="k-line" stroke-width="1.6"/><path d="M7.5 11h9M7.5 13h9" class="k-up" stroke-width="1.6"/><path d="M12 4v3M12 17v3" class="k-accent" stroke-width="1.4" stroke-dasharray="2 2"/></svg>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="2.5" y="9" width="5" height="6" rx="1" stroke="var(--line)" stroke-width="1.6"/><rect x="16.5" y="9" width="5" height="6" rx="1" stroke="var(--line)" stroke-width="1.6"/><path d="M7.5 11h9M7.5 13h9" stroke="var(--up)" stroke-width="1.6"/><path d="M12 4v3M12 17v3" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="2 2"/></svg>
           <h3 data-i18n="f.2.h">一條線只畫一條</h3>
           <p data-i18n="f.2.p">同一條實體線兩端都會報一次。系統用設備名把兩半配成一條，多條併接的線也會收成一條，圖上不會有重複。</p>
         </div>
         <div class="feature">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 17l4-6 3.5 4L15 7l6 10" class="k-up" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 20.5h18" class="k-line" stroke-width="1.4"/></svg>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 17l4-6 3.5 4L15 7l6 10" stroke="var(--up)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 20.5h18" stroke="var(--line)" stroke-width="1.4"/></svg>
           <h3 data-i18n="f.3.h">逐條線路監看</h3>
           <p data-i18n="f.3.p">每條線的 up／down、協商速率與雙向流量都看得到，使用率高的線在圖上就是另一個顏色。</p>
         </div>
         <div class="feature">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5 20.5 19h-17z" class="k-line" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 9.5v4.5" class="k-accent" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="16.6" r="0.9" class="d-accent"/></svg>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5 20.5 19h-17z" stroke="var(--line)" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 9.5v4.5" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="16.6" r="0.9" fill="var(--accent)"/></svg>
           <h3 data-i18n="f.4.h">可調的告警</h3>
           <p data-i18n="f.4.p">使用率、CPU、記憶體、設備離線、線路斷線都有門檻，而且可以依設備套用不同的告警設定檔。</p>
         </div>
         <div class="feature">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12a8 8 0 0 1 16 0" class="k-line" stroke-width="1.6"/><path d="M7.5 12a4.5 4.5 0 0 1 9 0" class="k-accent" stroke-width="1.6"/><circle cx="12" cy="12" r="1.6" class="d-down"/><path d="M12 14v6" class="k-line" stroke-width="1.5"/></svg>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12a8 8 0 0 1 16 0" stroke="var(--line)" stroke-width="1.6"/><path d="M7.5 12a4.5 4.5 0 0 1 9 0" stroke="var(--accent)" stroke-width="1.6"/><circle cx="12" cy="12" r="1.6" fill="var(--down)"/><path d="M12 14v6" stroke="var(--line)" stroke-width="1.5"/></svg>
           <h3 data-i18n="f.5.h">SNMP Trap</h3>
           <p data-i18n="f.5.p">線路一斷，設備自己會通知 —— 畫面與告警在當下就更新，不必等下一輪輪詢。輪詢仍然會再確認一次。</p>
         </div>
         <div class="feature">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 15c3 0 3-6 6-6s3 6 6 6 3-6 6-6" class="k-line" stroke-width="1.6" stroke-linecap="round"/><path d="M3 19.5h18" class="k-accent" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 15c3 0 3-6 6-6s3 6 6 6 3-6 6-6" stroke="var(--line)" stroke-width="1.6" stroke-linecap="round"/><path d="M3 19.5h18" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round"/></svg>
           <h3 data-i18n="f.6.h">不會為了一個掉包吵你</h3>
           <p data-i18n="f.6.p">可以要求連續幾輪沒回應才算離線、一直跳動的線路把告警按住不反覆開關，以及讓 trap 等輪詢確認過再發。</p>
         </div>
         <div class="feature">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3.5" width="7" height="7" rx="1.2" class="k-accent" stroke-width="1.6"/><rect x="14" y="3.5" width="7" height="7" rx="1.2" class="k-line" stroke-width="1.6"/><rect x="3" y="13.5" width="7" height="7" rx="1.2" class="k-line" stroke-width="1.6"/><rect x="14" y="13.5" width="7" height="7" rx="1.2" class="k-line" stroke-width="1.6"/></svg>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3.5" width="7" height="7" rx="1.2" stroke="var(--accent)" stroke-width="1.6"/><rect x="14" y="3.5" width="7" height="7" rx="1.2" stroke="var(--line)" stroke-width="1.6"/><rect x="3" y="13.5" width="7" height="7" rx="1.2" stroke="var(--line)" stroke-width="1.6"/><rect x="14" y="13.5" width="7" height="7" rx="1.2" stroke="var(--line)" stroke-width="1.6"/></svg>
           <h3 data-i18n="f.7.h">分層與群組</h3>
           <p data-i18n="f.7.p">核心、匯聚、接取自動分層；也可以自己開「三樓」「無線」「WAN 邊界」這種群組，只看自己負責的那一區。</p>
         </div>
         <div class="feature">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="2.5" y="4.5" width="19" height="13" rx="1.5" class="k-line" stroke-width="1.6"/><path d="M2.5 9h19" class="k-line" stroke-width="1.4"/><path d="M8 20h8" class="k-accent" stroke-width="1.6" stroke-linecap="round"/><circle cx="5.5" cy="6.7" r="0.7" class="d-up"/></svg>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="2.5" y="4.5" width="19" height="13" rx="1.5" stroke="var(--line)" stroke-width="1.6"/><path d="M2.5 9h19" stroke="var(--line)" stroke-width="1.4"/><path d="M8 20h8" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round"/><circle cx="5.5" cy="6.7" r="0.7" fill="var(--up)"/></svg>
           <h3 data-i18n="f.8.h">多廠牌</h3>
           <p data-i18n="f.8.p">Cisco、HP／Aruba、Fortinet、Palo Alto、Ruckus、Juniper 等等；廠牌自動辨識，不用一台一台告訴它這是什麼。</p>
         </div>
         <div class="feature">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" class="k-line" stroke-width="1.6"/><path d="M3.5 12h17M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17" class="k-accent" stroke-width="1.3"/></svg>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="var(--line)" stroke-width="1.6"/><path d="M3.5 12h17M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17" stroke="var(--accent)" stroke-width="1.3"/></svg>
           <h3 data-i18n="f.9.h">三語介面、深淺色主題</h3>
-          <p data-i18n="f.9.p">繁體中文、簡體中文與英文，整套介面都翻過；深色與淺色主題都可以用，跟著你的習慣走。</p>
+          <p data-i18n="f.9.p">介面支援繁體中文、簡體中文與英文，深色與淺色主題都可以用，跟著你的習慣走。</p>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 畫面 -->
-  <div class="band band--alt" id="screens">
+  <!-- 流程條 -->
+  <div class="band band--alt">
+    <div class="wrap">
+      <div class="head">
+        <p class="kicker" data-i18n="flow.kicker">上手流程</p>
+        <h2 data-i18n="flow.h">從沒有東西，到有一張會自己更新的圖</h2>
+      </div>
+      <div class="flow">
+        <div class="flow-step"><p class="n">01</p><h3 data-i18n="flow.1.h">安裝</h3><p data-i18n="flow.1.p">一行指令，它會把需要的東西裝好並跑起來。</p></div>
+        <div class="flow-step"><p class="n">02</p><h3 data-i18n="flow.2.h">給一台設備</h3><p data-i18n="flow.2.p">IP 加 community，從核心交換機開始最省事。</p></div>
+        <div class="flow-step"><p class="n">03</p><h3 data-i18n="flow.3.h">自己長出來</h3><p data-i18n="flow.3.p">沿著鄰居把其他設備補齊，拓樸圖自動成形。</p></div>
+        <div class="flow-step"><p class="n">04</p><h3 data-i18n="flow.4.h">持續盯著</h3><p data-i18n="flow.4.p">每條線的狀態與流量固定回報，不需要你再做什麼。</p></div>
+        <div class="flow-step"><p class="n">05</p><h3 data-i18n="flow.5.h">出事通知你</h3><p data-i18n="flow.5.p">哪一條線、哪個埠、什麼時候、多嚴重。</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 拓樸圖深度區 -->
+  <div class="band" id="topology">
+    <div class="wrap">
+      <div class="head">
+        <p class="kicker" data-i18n="topo.kicker">拓樸圖</p>
+        <h2 data-i18n="topo.h">三種看法，從骨幹到全貌</h2>
+        <p data-i18n="topo.p">節點是設備，線是真的接著的線。線上標著協商速率與目前使用率，顏色會隨著壓力改變。</p>
+      </div>
+      <div class="split">
+        <div>
+          <ul>
+            <li data-i18n="topo.1"><b>總覽</b>：只畫核心與匯聚的骨幹，一眼看出主幹線的狀況。</li>
+            <li data-i18n="topo.2"><b>完整地圖</b>：所有設備一次攤開，連無線 AP 都在上面。</li>
+            <li data-i18n="topo.3"><b>群組視圖</b>：按樓層或角色切片，大網路不會變成毛線球。</li>
+            <li data-i18n="topo.4"><b>點一台設備</b>：右側立刻列出它的狀態、負載與目前的告警。</li>
+            <li data-i18n="topo.5"><b>線的顏色</b>：使用率越高越偏暖色，斷掉的線一眼就找得到。</li>
+          </ul>
+        </div>
+        <div class="shot">
+          <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/</span></div>
+          <img src="img/topology.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="拓樸總覽：兩台核心交換機連著匯聚層、防火牆與路由器">
+        </div>
+      </div>
+      <div class="trio">
+        <figure>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>完整地圖</span></div>
+            <img src="img/topology-full.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="完整地圖：一百多台設備與它們之間的所有連線">
+          </div>
+          <figcaption><b data-i18n="topo.c1.h">完整地圖</b><span data-i18n="topo.c1.p">所有設備一次看完，含無線 AP。</span></figcaption>
+        </figure>
+        <figure>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>群組視圖</span></div>
+            <img src="img/topology-group.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="群組視圖：依群組聚合的拓樸">
+          </div>
+          <figcaption><b data-i18n="topo.c2.h">群組視圖</b><span data-i18n="topo.c2.p">按樓層或角色切片來看。</span></figcaption>
+        </figure>
+        <figure>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>設備詳情</span></div>
+            <img src="img/device-detail.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="點選設備後右側顯示的詳細資訊與告警">
+          </div>
+          <figcaption><b data-i18n="topo.c3.h">設備詳情</b><span data-i18n="topo.c3.p">狀態、負載與目前的告警。</span></figcaption>
+        </figure>
+      </div>
+    </div>
+  </div>
+
+  <!-- 品牌帶 2 -->
+  <div class="band band--brand">
+    <div class="wrap wrap--slim promise">
+      <h2 data-i18n="p2.h">設備端要改什麼？什麼都不用。</h2>
+      <p data-i18n="p2.p">不必加 loopback、不必指定 trap 來源位址、不必為了這套系統多開一組帳號。拓樸靠設備自己回報的名字配對，跟 IP 無關；而 SNMP trap 會比對設備回報過的每一個位址，所以從任何一個介面送出來的通知都認得出來。</p>
+    </div>
+  </div>
+
+  <!-- 比較表 -->
+  <div class="band band--alt" id="compare">
+    <div class="wrap">
+      <div class="head">
+        <p class="kicker" data-i18n="cmp.kicker">比較</p>
+        <h2 data-i18n="cmp.h">跟現在的做法比</h2>
+        <p data-i18n="cmp.p">多數人今天就是靠這兩種：一張畫好就開始過期的圖，加上一套只知道「整台設備在不在」的監控。</p>
+      </div>
+      <div class="scroller">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col"></th>
+              <th scope="col" data-i18n="cmp.col1">試算表／手畫圖</th>
+              <th scope="col" data-i18n="cmp.col2">只 ping 的監控</th>
+              <th scope="col" class="us">mf-topomon</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row" data-i18n="cmp.r1">知道誰接誰</th><td class="dim" data-i18n="cmp.r1a">要手動維護，一移線就過期</td><td class="dim" data-i18n="cmp.r1b">不知道</td><td class="us" data-i18n="cmp.r1c">設備自己說的，每輪更新</td></tr>
+            <tr><th scope="row" data-i18n="cmp.r2">線斷的時候</th><td class="dim" data-i18n="cmp.r2a">圖上看不出來</td><td class="dim" data-i18n="cmp.r2b">只知道整台不見了</td><td class="us" data-i18n="cmp.r2c">指到那一條線與那個埠</td></tr>
+            <tr><th scope="row" data-i18n="cmp.r3">新設備上線</th><td class="dim" data-i18n="cmp.r3a">要記得補上去</td><td class="dim" data-i18n="cmp.r3b">要手動加</td><td class="us" data-i18n="cmp.r3c">沿著鄰居自動發現</td></tr>
+            <tr><th scope="row" data-i18n="cmp.r4">流量與使用率</th><td class="dim" data-i18n="cmp.r4a">沒有</td><td class="dim" data-i18n="cmp.r4b">看得到介面，對不到線</td><td class="us" data-i18n="cmp.r4c">每條線雙向，直接畫在圖上</td></tr>
+            <tr><th scope="row" data-i18n="cmp.r5">告警</th><td class="dim" data-i18n="cmp.r5a">沒有</td><td class="dim" data-i18n="cmp.r5b">設備離線</td><td class="us" data-i18n="cmp.r5c">線路、使用率、CPU、記憶體，門檻可調</td></tr>
+            <tr><th scope="row" data-i18n="cmp.r6">誤報</th><td class="dim">—</td><td class="dim" data-i18n="cmp.r6b">掉一個封包就叫人</td><td class="us" data-i18n="cmp.r6c">確認次數、flap 抑制、trap 等輪詢佐證</td></tr>
+            <tr><th scope="row" data-i18n="cmp.r7">設備端要改設定</th><td class="dim">—</td><td class="dim" data-i18n="cmp.r7b">看工具而定</td><td class="us" data-i18n="cmp.r7c">完全不用</td></tr>
+            <tr><th scope="row" data-i18n="cmp.r8">資料放哪</th><td class="dim" data-i18n="cmp.r8a">某個人的電腦裡</td><td class="dim" data-i18n="cmp.r8b">看工具而定</td><td class="us" data-i18n="cmp.r8c">你自己的機房，不離開</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 畫面長清單 -->
+  <div class="band band--dark" id="screens">
     <div class="wrap">
       <div class="head">
         <p class="kicker" data-i18n="screens.kicker">畫面</p>
         <h2 data-i18n="screens.h">實際的介面</h2>
         <p data-i18n="screens.p">以下都是系統真實的畫面，資料為示範用的網路。</p>
       </div>
+      <div class="rows">
 
-      <section class="showcase">
-        <div class="showcase-text">
-          <h3 data-i18n="s.1.h">拓樸圖</h3>
-          <p data-i18n="s.1.p">節點是設備，線是真的接著的線。線上標著協商速率與目前使用率，顏色會隨著壓力改變；點一下任何一台設備，就只看它和它的鄰居。</p>
-          <div class="tags"><span class="tag">overview</span><span class="tag">full map</span><span class="tag">group view</span></div>
-        </div>
-        <div class="shot">
-          <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/</span></div>
-          <img src="img/topology.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="拓樸畫面：兩台核心交換機連著匯聚層、防火牆與路由器，線上標示 10G 與使用率百分比">
-        </div>
-      </section>
+        <section class="row">
+          <div class="row-text">
+            <h3 data-i18n="s.1.h">設備清單</h3>
+            <p data-i18n="s.1.p">全部設備一頁看完：型號、廠牌、角色、CPU 與記憶體、最後一次回應是多久以前。狀態用顏色標，不用逐行讀。</p>
+            <div class="tags"><span class="tag">vendor</span><span class="tag">cpu / memory</span><span class="tag">last seen</span></div>
+          </div>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/devices</span></div>
+            <img src="img/devices.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="設備清單：主機名稱、IP、廠牌、類型、狀態、CPU 與記憶體長條、最後回應時間">
+          </div>
+        </section>
 
-      <section class="showcase showcase--flip">
-        <div class="showcase-text">
-          <h3 data-i18n="s.2.h">設備清單</h3>
-          <p data-i18n="s.2.p">全部設備一頁看完：型號、廠牌、角色、CPU 與記憶體、最後一次回應是多久以前。可以搜尋與篩選，也可以直接在這裡新增。</p>
-          <div class="tags"><span class="tag">search</span><span class="tag">filter</span><span class="tag">last seen</span></div>
-        </div>
-        <div class="shot">
-          <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/devices</span></div>
-          <img src="img/devices.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="設備清單：主機名稱、IP、廠牌、類型、狀態、CPU 與記憶體長條、最後回應時間">
-        </div>
-      </section>
+        <section class="row row--flip">
+          <div class="row-text">
+            <h3 data-i18n="s.2.h">搜尋與篩選</h3>
+            <p data-i18n="s.2.p">打幾個字就只剩下你要的那一批 —— 某一層樓、某個廠牌、只看離線的。設備多了之後，這是每天都會用到的一欄。</p>
+            <div class="tags"><span class="tag">search</span><span class="tag">status</span><span class="tag">vendor</span></div>
+          </div>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/devices</span></div>
+            <img src="img/devices-search.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="在設備清單搜尋 dist-sw 之後只剩下匯聚層交換機">
+          </div>
+        </section>
 
-      <section class="showcase">
-        <div class="showcase-text">
-          <h3 data-i18n="s.3.h">告警中心</h3>
-          <p data-i18n="s.3.p">分成嚴重與警告，可以逐筆確認或一次全部確認。右邊是最近發生了什麼 —— 不用從頭翻日誌就知道這段時間網路過得好不好。</p>
-          <div class="tags"><span class="tag">critical</span><span class="tag">warning</span><span class="tag">acknowledge</span></div>
-        </div>
-        <div class="shot">
-          <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/alerts</span></div>
-          <img src="img/alerts.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="告警中心：嚴重與警告的計數、告警卡片與右側的最近活動列表">
-        </div>
-      </section>
+        <section class="row">
+          <div class="row-text">
+            <h3 data-i18n="s.3.h">告警中心</h3>
+            <p data-i18n="s.3.p">分成嚴重與警告，可以逐筆確認或一次全部確認。右邊是最近發生了什麼 —— 不用翻日誌就知道這段時間網路過得好不好。</p>
+            <div class="tags"><span class="tag">critical</span><span class="tag">warning</span><span class="tag">acknowledge</span></div>
+          </div>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/alerts</span></div>
+            <img src="img/alerts.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="告警中心：嚴重與警告的計數、告警卡片與右側的最近活動列表">
+          </div>
+        </section>
 
-      <section class="showcase showcase--flip">
-        <div class="showcase-text">
-          <h3 data-i18n="s.4.h">群組</h3>
-          <p data-i18n="s.4.p">按樓層、按角色、按負責的人分群都可以。拓樸圖也能切成群組視圖，大網路不會變成一團看不懂的毛線球。</p>
-          <div class="tags"><span class="tag">floor</span><span class="tag">role</span><span class="tag">wireless</span></div>
-        </div>
-        <div class="shot">
-          <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/groups</span></div>
-          <img src="img/groups.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="群組頁：核心網路、樓層一到三、無線、資安、WAN 邊界等群組與各自的設備數">
-        </div>
-      </section>
+        <section class="row row--flip">
+          <div class="row-text">
+            <h3 data-i18n="s.4.h">告警設定檔</h3>
+            <p data-i18n="s.4.p">核心交換機要嚴一點、分公司的線本來就吃得滿、無線 AP 重開是常態 —— 同一套門檻套在全部設備上只會製造雜訊。這裡可以分開設，再指派給不同設備。</p>
+            <div class="tags"><span class="tag">threshold</span><span class="tag">per device</span><span class="tag">default</span></div>
+          </div>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/settings</span></div>
+            <img src="img/profiles.webp" width="1296" height="562" loading="lazy" decoding="async" alt="告警設定檔：核心交換機、分公司接取、無線 AP 三組不同的門檻">
+          </div>
+        </section>
 
-      <section class="showcase">
-        <div class="showcase-text">
-          <h3 data-i18n="s.5.h">它自己也看得見</h3>
-          <p data-i18n="s.5.p">收集器正在做什麼，不用去翻日誌：幾個行程在跑、多久回報一次、有幾台正在確認離線、哪幾條線被按住、收到多少 trap。監控系統最怕的是它自己悄悄停掉。</p>
-          <div class="tags"><span class="tag">collector</span><span class="tag">damping</span><span class="tag">traps</span></div>
-        </div>
-        <div class="shot shot--tall">
-          <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/settings</span></div>
-          <img src="img/collector.webp" width="1292" height="1284" loading="lazy" decoding="async" alt="設定頁的收集器狀態：行程、間隔、抑制中的項目與 SNMP trap 的統計">
-        </div>
-      </section>
+        <section class="row">
+          <div class="row-text">
+            <h3 data-i18n="s.5.h">群組</h3>
+            <p data-i18n="s.5.p">按樓層、按角色、按負責的人分群都可以。拓樸圖也能切成群組視圖，讓每個人只看自己那一區。</p>
+            <div class="tags"><span class="tag">floor</span><span class="tag">role</span><span class="tag">wireless</span></div>
+          </div>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/groups</span></div>
+            <img src="img/groups.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="群組頁：核心網路、樓層一到三、無線、資安、WAN 邊界等群組與各自的設備數">
+          </div>
+        </section>
 
-      <section class="showcase showcase--flip">
-        <div class="showcase-text">
-          <h3 data-i18n="s.6.h">換個語言、換個主題</h3>
-          <p data-i18n="s.6.p">同一個畫面，淺色主題與英文介面。繁體中文、簡體中文、English 三種語言整套都翻過，不是只翻選單。</p>
-          <div class="tags"><span class="tag">繁體中文</span><span class="tag">简体中文</span><span class="tag">English</span></div>
-        </div>
-        <div class="shot">
-          <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/?lang=en</span></div>
-          <img src="img/topology-light-en.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="同一張拓樸圖的淺色主題與英文介面">
-        </div>
-      </section>
+        <section class="row row--flip">
+          <div class="row-text">
+            <h3 data-i18n="s.6.h">它自己也看得見</h3>
+            <p data-i18n="s.6.p">收集器正在做什麼，不用去翻日誌：幾個行程在跑、多久回報一次、有幾台正在確認離線、哪幾條線被按住、收到多少 trap。監控系統最怕的就是它自己悄悄停掉。</p>
+            <div class="tags"><span class="tag">collector</span><span class="tag">damping</span><span class="tag">traps</span></div>
+          </div>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/settings</span></div>
+            <img src="img/collector.webp" width="1292" height="1284" loading="lazy" decoding="async" alt="設定頁的收集器狀態：行程、間隔、抑制中的項目與 SNMP trap 的統計">
+          </div>
+        </section>
+
+        <section class="row">
+          <div class="row-text">
+            <h3 data-i18n="s.7.h">SNMP 設定</h3>
+            <p data-i18n="s.7.p">預設 community、輪詢間隔、逾時與重試，還有自動發現要掃哪些網段 —— 以及一個「只准碰這些網段」的開關，免得掃到不該掃的地方。</p>
+            <div class="tags"><span class="tag">community</span><span class="tag">interval</span><span class="tag">subnets</span></div>
+          </div>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/settings</span></div>
+            <img src="img/snmp-config.webp" width="1296" height="1264" loading="lazy" decoding="async" alt="SNMP 設定區：預設 community、輪詢間隔、逾時、重試與允許的網段">
+          </div>
+        </section>
+
+        <section class="row row--flip">
+          <div class="row-text">
+            <h3 data-i18n="s.8.h">測試工具</h3>
+            <p data-i18n="s.8.p">加設備之前先問一句：這個 IP 用這組 community 回不回話、LLDP 鄰居讀不讀得到。十秒鐘分清楚是「設備沒開 LLDP」還是「community 打錯」。</p>
+            <div class="tags"><span class="tag">snmp test</span><span class="tag">lldp</span></div>
+          </div>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/settings</span></div>
+            <img src="img/snmp-test.webp" width="1296" height="1190" loading="lazy" decoding="async" alt="SNMP 測試工具：輸入 IP 與 community 後測試連線與 LLDP 鄰居">
+          </div>
+        </section>
+
+        <section class="row">
+          <div class="row-text">
+            <h3 data-i18n="s.9.h">換個語言、換個主題</h3>
+            <p data-i18n="s.9.p">同一個畫面的淺色主題與英文介面。繁體中文、簡體中文、English 都可以切，深淺色也是。</p>
+            <div class="tags"><span class="tag">繁體中文</span><span class="tag">简体中文</span><span class="tag">English</span></div>
+          </div>
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span>https://topomon.lan/?lang=en</span></div>
+            <img src="img/topology-light-en.webp" width="1760" height="1100" loading="lazy" decoding="async" alt="同一張拓樸圖的淺色主題與英文介面">
+          </div>
+        </section>
+
+      </div>
     </div>
   </div>
 
-  <!-- 運作方式 -->
-  <div class="band" id="how">
+  <!-- 部署形態 -->
+  <div class="band">
     <div class="wrap">
       <div class="head">
-        <p class="kicker" data-i18n="how.kicker">運作方式</p>
-        <h2 data-i18n="how.h">它只做三件事</h2>
-        <p data-i18n="how.p">沒有代理程式要裝在設備上，也沒有設定檔要發下去。全部透過你已經在用的 SNMP。</p>
+        <p class="kicker" data-i18n="modes.kicker">部署形態</p>
+        <h2 data-i18n="modes.h">從一台機器開始，長大了再說</h2>
       </div>
-      <div class="steps">
-        <div class="step">
-          <p class="n">1</p>
-          <h3 data-i18n="how.1.h">問</h3>
-          <p data-i18n="how.1.p">定期問每台設備三件事：你的鄰居是誰、哪些埠上面有線、那些線跑了多少流量。</p>
+      <div class="modes">
+        <div class="mode">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5" stroke="var(--accent)" stroke-width="1.6"/><rect x="3" y="13" width="18" height="7" rx="1.5" stroke="var(--line)" stroke-width="1.6"/><circle cx="6.5" cy="7.5" r="0.8" fill="var(--up)"/><circle cx="6.5" cy="16.5" r="0.8" fill="var(--line)"/></svg>
+          <h3 data-i18n="modes.1.h">一台就夠</h3>
+          <p data-i18n="modes.1.p">一般規模的園區網路，單機跑得很輕鬆。安裝腳本把資料庫、介面與收集器一起帶起來。</p>
         </div>
-        <div class="step">
-          <p class="n">2</p>
-          <h3 data-i18n="how.2.h">拼</h3>
-          <p data-i18n="how.2.p">同一條線兩端各報一次，用設備自己的名字把兩半拼成一條，畫成拓樸圖。</p>
+        <div class="mode">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="6" cy="7" r="2.5" stroke="var(--accent)" stroke-width="1.6"/><circle cx="18" cy="7" r="2.5" stroke="var(--accent)" stroke-width="1.6"/><circle cx="12" cy="17" r="2.5" stroke="var(--line)" stroke-width="1.6"/><path d="M7.6 9 10.8 14.8M16.4 9 13.2 14.8" stroke="var(--line)" stroke-width="1.4"/></svg>
+          <h3 data-i18n="modes.2.h">設備多了就加行程</h3>
+          <p data-i18n="modes.2.p">收集器可以切成幾份，各管一批設備。整機群只該做一次的事會自動由其中一個負責，掛掉會有人接手。</p>
         </div>
-        <div class="step">
-          <p class="n">3</p>
-          <h3 data-i18n="how.3.h">盯</h3>
-          <p data-i18n="how.3.p">用比較短的週期只盯那些有線的埠，狀態一變就告警；設備自己送來的 trap 會更快。</p>
+        <div class="mode">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 20 6.5v5c0 4.6-3.2 8.3-8 9.5-4.8-1.2-8-4.9-8-9.5v-5z" stroke="var(--accent)" stroke-width="1.6" stroke-linejoin="round"/><path d="M8.8 12.2 11.2 14.6 15.4 10" stroke="var(--up)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <h3 data-i18n="modes.3.h">全部在你的機房</h3>
+          <p data-i18n="modes.3.p">不連雲端、不回報任何東西。介面本身有密碼保護，而且只有反向代理對外，應用程式與資料庫只在本機聽。</p>
         </div>
-      </div>
-
-      <div class="diagram">
-        <svg viewBox="0 0 680 150" role="img" aria-label="設備透過 SNMP 回報鄰居與埠狀態，系統把兩端的回報拼成一條線，狀態改變時發出告警">
-          <!-- 設備 -->
-          <rect x="4" y="46" width="118" height="44" rx="4" fill="none" class="k-line" stroke-width="1.2"/>
-          <text class="d-ink" x="18" y="66">core-sw-01</text>
-          <text class="d-faint" x="18" y="82">Gi1/0/1 · Gi1/0/2</text>
-
-          <rect x="4" y="100" width="118" height="40" rx="4" fill="none" class="k-line" stroke-width="1.2"/>
-          <text class="d-ink" x="18" y="118">dist-sw-03</text>
-          <text class="d-faint" x="18" y="132">Gi1/0/1</text>
-
-          <!-- 箭頭 -->
-          <path d="M126 68 H212" class="k-accent" stroke-width="1.4" marker-end="url(#a)"/>
-          <path d="M126 118 H212" class="k-accent" stroke-width="1.4" marker-end="url(#a)"/>
-          <text class="d-faint" x="140" y="60">SNMP</text>
-          <defs>
-            <marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
-              <path d="M0 0 L7 3.5 L0 7 z" class="d-accent"/>
-            </marker>
-          </defs>
-
-          <!-- 拼 -->
-          <rect x="216" y="46" width="150" height="94" rx="4" fill="none" class="k-line" stroke-width="1.2"/>
-          <text class="d-ink" x="232" y="70">用 sysName 配對</text>
-          <text class="d-faint" x="232" y="90">core-sw-01 ↔ dist-sw-03</text>
-          <text class="d-faint" x="232" y="106">Gi1/0/1 ↔ Gi1/0/1</text>
-          <text class="d-faint" x="232" y="122">10 Gbps · 82%</text>
-
-          <path d="M370 93 H436" class="k-accent" stroke-width="1.4" marker-end="url(#a)"/>
-
-          <!-- 結果 -->
-          <rect x="440" y="46" width="236" height="44" rx="4" fill="none" class="k-up" stroke-width="1.2"/>
-          <circle cx="458" cy="68" r="4" class="d-up"/>
-          <text class="d-ink" x="470" y="72">拓樸圖上的一條線</text>
-
-          <rect x="440" y="100" width="236" height="40" rx="4" fill="none" class="k-line" stroke-width="1.2"/>
-          <circle cx="458" cy="120" r="4" class="d-down"/>
-          <text class="d-ink" x="470" y="124">狀態一變就告警</text>
-        </svg>
       </div>
     </div>
   </div>
 
-  <!-- 部署 -->
-  <div class="band band--alt" id="deploy">
-    <div class="wrap deploy">
+  <!-- 安裝 -->
+  <div class="band band--alt" id="install">
+    <div class="wrap install">
       <div class="head" style="margin-bottom:0">
-        <p class="kicker" data-i18n="deploy.kicker">部署</p>
-        <h2 data-i18n="deploy.h">一行裝完，之後都用同一個指令</h2>
-        <p data-i18n="deploy.p">一台乾淨的 Ubuntu 就夠。它會把需要的東西裝好、產生好密碼與憑證、把服務跑起來，然後把網址和帳密印給你。</p>
+        <p class="kicker" data-i18n="install.kicker">安裝</p>
+        <h2 data-i18n="install.h">一行裝完，之後都用同一個指令</h2>
+        <p data-i18n="install.p">一台乾淨的 Ubuntu 就夠。它會把需要的東西裝好、產生好密碼與憑證、把服務跑起來，然後把網址和帳密印給你。</p>
       </div>
       <pre><code><span class="c"># 在一台乾淨的 Ubuntu 上</span>
 curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh \
-  | sudo bash</code></pre>
-      <button class="copy" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash" data-i18n="deploy.copy">複製</button>
-      <p style="color:var(--ink-faint);font-size:0.85rem;margin-top:-0.6rem" data-i18n="deploy.note">原始碼目前是私有的，安裝時要附上存取權杖；完整寫法在部署文件裡。</p>
+  | sudo bash
+
+<span class="c"># 跑完會印出：</span>
+<span class="g">  Web UI    https://10.0.0.20/</span>
+<span class="g">  登入帳密（只會顯示這一次）：admin / ••••••••••••</span></code></pre>
+      <button class="copy" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash" data-i18n="install.copy">複製安裝指令</button>
+      <p style="color:var(--ink-faint);font-size:0.85rem" data-i18n="install.note">原始碼目前是私有的，安裝時要附上存取權杖；完整寫法在部署文件裡。</p>
+
       <div class="cmds">
         <div class="cmd">
           <code>topomon health</code>
-          <p data-i18n="deploy.c1">一次檢查每一層：服務、代理、認證、資料庫、收集器。全部正常才算通過，可以直接接到監控上。</p>
+          <p data-i18n="install.c1">一次檢查每一層：服務、代理、認證、資料庫、收集器。全部正常才算通過，可以直接接到監控上。</p>
         </div>
         <div class="cmd">
           <code>topomon update</code>
-          <p data-i18n="deploy.c2">更新到最新版並重新檢查。檢查沒過會自動退回更新前的版本，不會把你留在壞掉的狀態。</p>
+          <p data-i18n="install.c2">更新到最新版並重新檢查。檢查沒過會自動退回更新前的版本，不會把你留在壞掉的狀態。</p>
         </div>
         <div class="cmd">
           <code>topomon backup</code>
-          <p data-i18n="deploy.c3">備份資料庫，舊的備份會自動輪替。需要的時候可以還原回去。</p>
+          <p data-i18n="install.c3">備份資料庫，舊的備份自動輪替。需要的時候可以還原回去。</p>
         </div>
         <div class="cmd">
           <code>topomon logs</code>
-          <p data-i18n="deploy.c4">跟著看任何一個服務的日誌，查問題不用先去找檔案放在哪裡。</p>
+          <p data-i18n="install.c4">跟著看任何一個服務的日誌，查問題不用先去找檔案放在哪裡。</p>
         </div>
       </div>
-      <p style="color:var(--ink-soft);max-width:var(--measure)" data-i18n="deploy.sec"><strong>介面是有密碼的。</strong>對外只開反向代理，而且會轉到加密連線；應用程式與資料庫只在本機聽。連 API 的互動式文件頁都要登入 —— 因為從那裡可以直接操作整套系統。</p>
+
+      <pre><code><span class="c"># 每天會用到的就這幾個</span>
+sudo topomon health      <span class="c"># 全部正常嗎</span>
+sudo topomon update      <span class="c"># 更新（沒過會自己退回去）</span>
+sudo topomon backup      <span class="c"># 備份資料庫</span>
+sudo topomon logs collector</code></pre>
+      <p style="color:var(--ink-soft);max-width:var(--measure)" data-i18n="install.sec"><strong>介面是有密碼的。</strong>對外只開反向代理，而且會轉到加密連線；應用程式與資料庫只在本機聽。連 API 的互動式文件頁都要登入 —— 因為從那裡可以直接操作整套系統。</p>
     </div>
   </div>
 
@@ -715,7 +827,7 @@ curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/instal
           <ul>
             <li data-i18n="support.3.a">Ubuntu 22.04／24.04（或 Debian）</li>
             <li data-i18n="support.3.b">Docker Compose，安裝腳本會自己裝</li>
-            <li data-i18n="support.3.c">設備變多時，收集器可以多開幾個行程分攤</li>
+            <li data-i18n="support.3.c">瀏覽器：Chrome、Firefox、Edge、Safari</li>
             <li data-i18n="support.3.d">全程在你自己的機房，資料不離開</li>
           </ul>
         </div>
@@ -740,31 +852,31 @@ curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/instal
 
   var I18N = {
     "zh-CN": {
-      "nav.features": "功能", "nav.screens": "界面", "nav.how": "运作方式",
-      "nav.deploy": "部署", "nav.support": "支持范围",
+      "nav.features": "功能", "nav.topology": "拓扑图", "nav.compare": "对比",
+      "nav.screens": "界面", "nav.install": "安装",
       "hero.eyebrow": "LLDP / CDP 网络拓扑监控",
-      "hero.tagline": "你的网络长什么样，问设备就知道。",
-      "hero.sub": "自动画出交换机之间真正接着的线，逐条看它是通是断、跑多少流量，断掉的时候主动告诉你是哪一条。设备端不需要任何配置改动。",
+      "hero.h1": "别再用 Visio 画网络图了",
+      "hero.sub": "交换机自己就知道谁接谁。mf-topomon 把它们说的话画成图，逐条链路盯着，断掉的时候直接告诉你是哪一条 —— 设备端不用改任何配置。",
       "hero.cta1": "看看它能做什么", "hero.cta2": "一行就能装起来",
-      "value.1.h": "网络图不用再手动维护",
-      "value.1.p": "谁接谁是设备自己通过 LLDP／CDP 讲出来的。有人移了一条线，下一轮盘点就反映在图上，不必等谁想起来要更新文档。",
-      "value.2.h": "设备端一行配置都不用加",
-      "value.2.p": "用你本来就在用的管理地址与 community。连 SNMP trap 都不必在每台设备指定源地址 —— 它认得设备自己上报的每一个地址。",
-      "value.3.h": "线断了，它先告诉你",
-      "value.3.p": "不是「某台设备不见了」，而是「核心到三楼那条 10G 掉了」。收得到 trap 的话，就在事件发生的当下。",
-      "features.kicker": "功能",
-      "features.h": "一套工具，把「网络现在长什么样」这件事做完",
-      "features.p": "从发现设备、画出拓扑、逐条监看，到告警与抑制 —— 不需要再接三套东西。",
+      "hero.note": "LLDP / CDP · SNMP v1 / v2c / v3 · Docker · 繁中 / 简中 / English",
+      "p1.h": "给它一台设备，整张图自己长出来",
+      "p1.p": "不用填表、不用画图、不用在每台设备上加配置。它用你本来就在用的管理地址与 community，问设备一个它早就知道答案的问题：你的邻居是谁。",
+      "p1.a": "移了一条线，下一轮盘点就反映在图上。",
+      "p1.b": "新设备接上去，自己会被发现并接进拓扑。",
+      "p1.c": "拓扑靠设备名配对，换 IP、换网段都不影响。",
+      "features.kicker": "核心功能",
+      "features.h": "把「网络现在长什么样」这件事做完",
+      "features.p": "从发现设备、画出拓扑、逐条链路监看，到告警与抑制 —— 不需要再接三套东西。",
       "f.1.h": "自动发现",
       "f.1.p": "给它一台设备，它会顺着 LLDP／CDP 邻居一路长出整个网络；也可以让它定期扫过你指定的网段。",
       "f.2.h": "一条线只画一条",
-      "f.2.p": "同一条物理线两端都会上报一次。系统用设备名把两半配成一条，多条并接的线也会收成一条，图上不会有重复。",
+      "f.2.p": "同一条物理链路两端都会上报一次。系统用设备名把两半配成一条，多条并接的链路也会收成一条，图上不会有重复。",
       "f.3.h": "逐条链路监看",
-      "f.3.p": "每条线的 up／down、协商速率与双向流量都看得到，使用率高的线在图上就是另一个颜色。",
+      "f.3.p": "每条链路的 up／down、协商速率与双向流量都看得到，使用率高的链路在图上就是另一个颜色。",
       "f.4.h": "可调的告警",
       "f.4.p": "使用率、CPU、内存、设备离线、链路断线都有阈值，而且可以按设备套用不同的告警配置。",
       "f.5.h": "SNMP Trap",
-      "f.5.p": "线路一断，设备自己会通知 —— 界面与告警在当下就更新，不必等下一轮轮询。轮询仍然会再确认一次。",
+      "f.5.p": "链路一断，设备自己会通知 —— 界面与告警在当下就更新，不必等下一轮轮询。轮询仍然会再确认一次。",
       "f.6.h": "不会为了一个丢包吵你",
       "f.6.p": "可以要求连续几轮没响应才算离线、一直跳动的链路把告警按住不反复开关，以及让 trap 等轮询确认过再发。",
       "f.7.h": "分层与分组",
@@ -772,35 +884,72 @@ curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/instal
       "f.8.h": "多厂牌",
       "f.8.p": "Cisco、HP／Aruba、Fortinet、Palo Alto、Ruckus、Juniper 等等；厂牌自动识别，不用一台一台告诉它这是什么。",
       "f.9.h": "三语界面、深浅色主题",
-      "f.9.p": "繁体中文、简体中文与英文，整套界面都翻过；深色与浅色主题都可以用，跟着你的习惯走。",
+      "f.9.p": "界面支持繁体中文、简体中文与英文，深色与浅色主题都可以用，跟着你的习惯走。",
+      "flow.kicker": "上手流程", "flow.h": "从没有东西，到有一张会自己更新的图",
+      "flow.1.h": "安装", "flow.1.p": "一行命令，它会把需要的东西装好并跑起来。",
+      "flow.2.h": "给一台设备", "flow.2.p": "IP 加 community，从核心交换机开始最省事。",
+      "flow.3.h": "自己长出来", "flow.3.p": "沿着邻居把其他设备补齐，拓扑图自动成形。",
+      "flow.4.h": "持续盯着", "flow.4.p": "每条链路的状态与流量固定上报，不需要你再做什么。",
+      "flow.5.h": "出事通知你", "flow.5.p": "哪一条链路、哪个端口、什么时候、多严重。",
+      "topo.kicker": "拓扑图", "topo.h": "三种看法，从骨干到全貌",
+      "topo.p": "节点是设备，线是真的接着的线。线上标着协商速率与当前使用率，颜色会随着压力改变。",
+      "topo.1": "<b>总览</b>：只画核心与汇聚的骨干，一眼看出主干链路的状况。",
+      "topo.2": "<b>完整地图</b>：所有设备一次摊开，连无线 AP 都在上面。",
+      "topo.3": "<b>分组视图</b>：按楼层或角色切片，大网络不会变成毛线球。",
+      "topo.4": "<b>点一台设备</b>：右侧立刻列出它的状态、负载与当前的告警。",
+      "topo.5": "<b>线的颜色</b>：使用率越高越偏暖色，断掉的线一眼就找得到。",
+      "topo.c1.h": "完整地图", "topo.c1.p": "所有设备一次看完，含无线 AP。",
+      "topo.c2.h": "分组视图", "topo.c2.p": "按楼层或角色切片来看。",
+      "topo.c3.h": "设备详情", "topo.c3.p": "状态、负载与当前的告警。",
+      "p2.h": "设备端要改什么？什么都不用。",
+      "p2.p": "不必加 loopback、不必指定 trap 源地址、不必为了这套系统多开一组账号。拓扑靠设备自己上报的名字配对，跟 IP 无关；而 SNMP trap 会比对设备上报过的每一个地址，所以从任何一个接口送出来的通知都认得出来。",
+      "cmp.kicker": "对比", "cmp.h": "跟现在的做法比",
+      "cmp.p": "多数人今天就是靠这两种：一张画好就开始过期的图，加上一套只知道「整台设备在不在」的监控。",
+      "cmp.col1": "表格／手画图", "cmp.col2": "只 ping 的监控",
+      "cmp.r1": "知道谁接谁", "cmp.r1a": "要手动维护，一移线就过期", "cmp.r1b": "不知道", "cmp.r1c": "设备自己说的，每轮更新",
+      "cmp.r2": "链路断的时候", "cmp.r2a": "图上看不出来", "cmp.r2b": "只知道整台不见了", "cmp.r2c": "指到那一条链路与那个端口",
+      "cmp.r3": "新设备上线", "cmp.r3a": "要记得补上去", "cmp.r3b": "要手动加", "cmp.r3c": "沿着邻居自动发现",
+      "cmp.r4": "流量与使用率", "cmp.r4a": "没有", "cmp.r4b": "看得到接口，对不到链路", "cmp.r4c": "每条链路双向，直接画在图上",
+      "cmp.r5": "告警", "cmp.r5a": "没有", "cmp.r5b": "设备离线", "cmp.r5c": "链路、使用率、CPU、内存，阈值可调",
+      "cmp.r6": "误报", "cmp.r6b": "丢一个包就叫人", "cmp.r6c": "确认次数、flap 抑制、trap 等轮询佐证",
+      "cmp.r7": "设备端要改配置", "cmp.r7b": "看工具而定", "cmp.r7c": "完全不用",
+      "cmp.r8": "数据放哪", "cmp.r8a": "某个人的电脑里", "cmp.r8b": "看工具而定", "cmp.r8c": "你自己的机房，不离开",
       "screens.kicker": "界面", "screens.h": "实际的界面",
       "screens.p": "以下都是系统真实的界面，数据为演示用的网络。",
-      "s.1.h": "拓扑图",
-      "s.1.p": "节点是设备，线是真的接着的线。线上标着协商速率与当前使用率，颜色会随着压力改变；点一下任何一台设备，就只看它和它的邻居。",
-      "s.2.h": "设备列表",
-      "s.2.p": "全部设备一页看完：型号、厂牌、角色、CPU 与内存、最后一次响应是多久以前。可以搜索与筛选，也可以直接在这里新增。",
+      "s.1.h": "设备列表",
+      "s.1.p": "全部设备一页看完：型号、厂牌、角色、CPU 与内存、最后一次响应是多久以前。状态用颜色标，不用逐行读。",
+      "s.2.h": "搜索与筛选",
+      "s.2.p": "打几个字就只剩下你要的那一批 —— 某一层楼、某个厂牌、只看离线的。设备多了之后，这是每天都会用到的一栏。",
       "s.3.h": "告警中心",
-      "s.3.p": "分成严重与警告，可以逐条确认或一次全部确认。右边是最近发生了什么 —— 不用从头翻日志就知道这段时间网络过得好不好。",
-      "s.4.h": "分组",
-      "s.4.p": "按楼层、按角色、按负责人分组都可以。拓扑图也能切成分组视图，大网络不会变成一团看不懂的毛线球。",
-      "s.5.h": "它自己也看得见",
-      "s.5.p": "采集器正在做什么，不用去翻日志：几个进程在跑、多久上报一次、有几台正在确认离线、哪几条线被按住、收到多少 trap。监控系统最怕的是它自己悄悄停掉。",
-      "s.6.h": "换个语言、换个主题",
-      "s.6.p": "同一个界面，浅色主题与英文界面。繁体中文、简体中文、English 三种语言整套都翻过，不是只翻菜单。",
-      "how.kicker": "运作方式", "how.h": "它只做三件事",
-      "how.p": "没有代理程序要装在设备上，也没有配置文件要下发。全部通过你已经在用的 SNMP。",
-      "how.1.h": "问", "how.1.p": "定期问每台设备三件事：你的邻居是谁、哪些端口上面有线、那些线跑了多少流量。",
-      "how.2.h": "拼", "how.2.p": "同一条线两端各上报一次，用设备自己的名字把两半拼成一条，画成拓扑图。",
-      "how.3.h": "盯", "how.3.p": "用比较短的周期只盯那些有线的端口，状态一变就告警；设备自己送来的 trap 会更快。",
-      "deploy.kicker": "部署", "deploy.h": "一行装完，之后都用同一个命令",
-      "deploy.p": "一台干净的 Ubuntu 就够。它会把需要的东西装好、生成好密码与证书、把服务跑起来，然后把网址和账号密码打印给你。",
-      "deploy.copy": "复制",
-      "deploy.note": "源代码目前是私有的，安装时要附上访问令牌；完整写法在部署文档里。",
-      "deploy.c1": "一次检查每一层：服务、代理、认证、数据库、采集器。全部正常才算通过，可以直接接到监控上。",
-      "deploy.c2": "更新到最新版并重新检查。检查没过会自动回退到更新前的版本，不会把你留在坏掉的状态。",
-      "deploy.c3": "备份数据库，旧的备份会自动轮替。需要的时候可以还原回去。",
-      "deploy.c4": "跟着看任何一个服务的日志，查问题不用先去找文件放在哪里。",
-      "deploy.sec": "<strong>界面是有密码的。</strong>对外只开反向代理，而且会转到加密连接；应用程序与数据库只在本机监听。连 API 的交互式文档页都要登录 —— 因为从那里可以直接操作整套系统。",
+      "s.3.p": "分成严重与警告，可以逐条确认或一次全部确认。右边是最近发生了什么 —— 不用翻日志就知道这段时间网络过得好不好。",
+      "s.4.h": "告警配置档",
+      "s.4.p": "核心交换机要严一点、分公司的线本来就吃得满、无线 AP 重启是常态 —— 同一套阈值套在全部设备上只会制造噪音。这里可以分开设，再指派给不同设备。",
+      "s.5.h": "分组",
+      "s.5.p": "按楼层、按角色、按负责人分组都可以。拓扑图也能切成分组视图，让每个人只看自己那一区。",
+      "s.6.h": "它自己也看得见",
+      "s.6.p": "采集器正在做什么，不用去翻日志：几个进程在跑、多久上报一次、有几台正在确认离线、哪几条链路被按住、收到多少 trap。监控系统最怕的就是它自己悄悄停掉。",
+      "s.7.h": "SNMP 配置",
+      "s.7.p": "默认 community、轮询间隔、超时与重试，还有自动发现要扫哪些网段 —— 以及一个「只准碰这些网段」的开关，免得扫到不该扫的地方。",
+      "s.8.h": "测试工具",
+      "s.8.p": "加设备之前先问一句：这个 IP 用这组 community 回不回话、LLDP 邻居读不读得到。十秒钟分清楚是「设备没开 LLDP」还是「community 打错」。",
+      "s.9.h": "换个语言、换个主题",
+      "s.9.p": "同一个界面的浅色主题与英文界面。繁体中文、简体中文、English 都可以切，深浅色也是。",
+      "modes.kicker": "部署形态", "modes.h": "从一台机器开始，长大了再说",
+      "modes.1.h": "一台就够",
+      "modes.1.p": "一般规模的园区网络，单机跑得很轻松。安装脚本把数据库、界面与采集器一起带起来。",
+      "modes.2.h": "设备多了就加进程",
+      "modes.2.p": "采集器可以切成几份，各管一批设备。整个机群只该做一次的事会自动由其中一个负责，挂掉会有人接手。",
+      "modes.3.h": "全部在你的机房",
+      "modes.3.p": "不连云端、不回报任何东西。界面本身有密码保护，而且只有反向代理对外，应用程序与数据库只在本机监听。",
+      "install.kicker": "安装", "install.h": "一行装完，之后都用同一个命令",
+      "install.p": "一台干净的 Ubuntu 就够。它会把需要的东西装好、生成好密码与证书、把服务跑起来，然后把网址和账号密码打印给你。",
+      "install.copy": "复制安装命令",
+      "install.note": "源代码目前是私有的，安装时要附上访问令牌；完整写法在部署文档里。",
+      "install.c1": "一次检查每一层：服务、代理、认证、数据库、采集器。全部正常才算通过，可以直接接到监控上。",
+      "install.c2": "更新到最新版并重新检查。检查没过会自动回退到更新前的版本，不会把你留在坏掉的状态。",
+      "install.c3": "备份数据库，旧的备份自动轮替。需要的时候可以还原回去。",
+      "install.c4": "跟着看任何一个服务的日志，查问题不用先去找文件放在哪里。",
+      "install.sec": "<strong>界面是有密码的。</strong>对外只开反向代理，而且会转到加密连接；应用程序与数据库只在本机监听。连 API 的交互式文档页都要登录 —— 因为从那里可以直接操作整套系统。",
       "support.kicker": "支持范围", "support.h": "它跟什么东西讲话",
       "support.1.h": "设备",
       "support.1.a": "Cisco IOS／NX-OS", "support.1.b": "HP ProCurve、Aruba",
@@ -815,31 +964,31 @@ curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/instal
       "support.3.h": "运行环境",
       "support.3.a": "Ubuntu 22.04／24.04（或 Debian）",
       "support.3.b": "Docker Compose，安装脚本会自己装",
-      "support.3.c": "设备变多时，采集器可以多开几个进程分摊",
+      "support.3.c": "浏览器：Chrome、Firefox、Edge、Safari",
       "support.3.d": "全程在你自己的机房，数据不离开",
       "foot.1": "LLDP／CDP 网络拓扑自动发现与监控。",
       "foot.2": "界面取自系统实际运行结果，数据为演示用的网络。"
     },
     "en": {
-      "nav.features": "Features", "nav.screens": "Screens", "nav.how": "How it works",
-      "nav.deploy": "Deploy", "nav.support": "What it talks to",
+      "nav.features": "Features", "nav.topology": "Topology", "nav.compare": "Compare",
+      "nav.screens": "Screens", "nav.install": "Install",
       "hero.eyebrow": "LLDP / CDP network topology monitoring",
-      "hero.tagline": "Your switches already know how the network is wired. This asks them.",
-      "hero.sub": "It draws the cables that are actually there, watches each one for up, down and traffic, and tells you which cable went when one does. Nothing has to change on the devices.",
+      "hero.h1": "Stop drawing your network by hand",
+      "hero.sub": "Your switches already know what is plugged into what. mf-topomon draws what they say, watches every cable, and tells you which one went down when one does — with nothing to configure on the devices.",
       "hero.cta1": "See what it does", "hero.cta2": "Install it in one line",
-      "value.1.h": "No more hand-drawn network maps",
-      "value.1.p": "Which switch connects to which is something the devices announce over LLDP/CDP. Move a cable and the next sweep shows it — nobody has to remember to update a diagram.",
-      "value.2.h": "Nothing to configure on the devices",
-      "value.2.p": "It uses the management address and community you already have. Even SNMP traps need no per-device source address — it recognises every address a device reports for itself.",
-      "value.3.h": "It tells you which cable, not just which box",
-      "value.3.p": "Not \"a device went away\" but \"the 10G from core to floor 3 is down\". With traps enabled, at the moment it happens.",
+      "hero.note": "LLDP / CDP · SNMP v1 / v2c / v3 · Docker · 繁中 / 简中 / English",
+      "p1.h": "Give it one device and the whole map grows itself",
+      "p1.p": "No forms to fill in, no diagram to draw, nothing to add on the devices. It uses the management address and community you already have, and asks a question every switch can already answer: who are your neighbours?",
+      "p1.a": "Move a cable and the next sweep shows it.",
+      "p1.b": "Plug in a new switch and it is discovered and placed on the map.",
+      "p1.c": "The map is built from device names, so changing an address changes nothing.",
       "features.kicker": "Features",
-      "features.h": "One tool for the whole question of what the network looks like right now",
+      "features.h": "The whole question of what the network looks like right now",
       "features.p": "Discovery, topology, per-cable monitoring, alerting and damping — without wiring three products together.",
       "f.1.h": "Automatic discovery",
       "f.1.p": "Give it one device and it follows the LLDP/CDP neighbours outwards until the network is there. It can also sweep the subnets you name, on a schedule.",
       "f.2.h": "One cable, one line",
-      "f.2.p": "Both ends report the same cable. It pairs the two halves by device name, and several cables between the same pair collapse into one line — no duplicates on the map.",
+      "f.2.p": "Both ends report the same cable. It pairs the halves by device name, and several cables between the same pair collapse into one line — no duplicates on the map.",
       "f.3.h": "Per-cable monitoring",
       "f.3.p": "Up/down, negotiated speed and traffic in both directions for every cable, with busy links drawn in a different colour.",
       "f.4.h": "Alerts you can tune",
@@ -847,41 +996,78 @@ curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/instal
       "f.5.h": "SNMP traps",
       "f.5.p": "When a link drops, the device says so. The map and the alert update at that moment instead of at the next poll — and the poll still confirms it afterwards.",
       "f.6.h": "It will not wake you for one lost packet",
-      "f.6.p": "Require several silent cycles before calling a device offline, hold the alert on a link that keeps flapping instead of reopening it each time, and make a trap wait for a poll to agree.",
+      "f.6.p": "Require several silent cycles before calling a device offline, hold the alert on a link that keeps flapping, and make a trap wait for a poll to agree.",
       "f.7.h": "Layers and groups",
       "f.7.p": "Core, distribution and access are worked out for you; you can also make your own groups — \"Floor 3\", \"Wireless\", \"WAN edge\" — and look only at what you own.",
       "f.8.h": "Many vendors",
       "f.8.p": "Cisco, HP/Aruba, Fortinet, Palo Alto, Ruckus, Juniper and more, recognised automatically — you do not have to tell it what each box is.",
       "f.9.h": "Three languages, light and dark",
-      "f.9.p": "The whole interface is translated into Traditional Chinese, Simplified Chinese and English, and works in either theme.",
+      "f.9.p": "The interface comes in Traditional Chinese, Simplified Chinese and English, and works in either theme.",
+      "flow.kicker": "Getting started", "flow.h": "From nothing to a map that keeps itself current",
+      "flow.1.h": "Install", "flow.1.p": "One command. It installs what it needs and starts everything.",
+      "flow.2.h": "Add one device", "flow.2.p": "An address and a community. A core switch is the easiest place to start.",
+      "flow.3.h": "It grows", "flow.3.p": "Neighbours are followed outwards until the map is complete.",
+      "flow.4.h": "It keeps watching", "flow.4.p": "Every cable's state and traffic, reported on a schedule, with nothing more from you.",
+      "flow.5.h": "It tells you", "flow.5.p": "Which cable, which port, when, and how bad.",
+      "topo.kicker": "Topology", "topo.h": "Three views, from backbone to everything",
+      "topo.p": "Nodes are devices, lines are real cables. Each line carries its speed and current utilisation, and changes colour under load.",
+      "topo.1": "<b>Overview</b> — core and distribution only, so the backbone is readable at a glance.",
+      "topo.2": "<b>Full map</b> — every device at once, access points included.",
+      "topo.3": "<b>Group view</b> — sliced by floor or role, so a large network is not a ball of string.",
+      "topo.4": "<b>Click a device</b> — its state, load and current alerts appear on the right.",
+      "topo.5": "<b>Line colour</b> — warmer as utilisation rises; a cable that is down is immediately visible.",
+      "topo.c1.h": "Full map", "topo.c1.p": "Every device at once, access points included.",
+      "topo.c2.h": "Group view", "topo.c2.p": "Sliced by floor or by role.",
+      "topo.c3.h": "Device detail", "topo.c3.p": "State, load and current alerts.",
+      "p2.h": "What has to change on the devices? Nothing.",
+      "p2.p": "No loopback to add, no trap source address to set, no extra account to create. The map is built from the names the devices report, so addressing is irrelevant; and an SNMP trap is matched against every address a device has reported for itself, so a notification from any interface is still recognised.",
+      "cmp.kicker": "Compare", "cmp.h": "Against how it is done today",
+      "cmp.p": "Most sites run on two things: a diagram that started going out of date the day it was drawn, and a monitor that only knows whether a whole box answers.",
+      "cmp.col1": "Spreadsheet / hand-drawn", "cmp.col2": "Ping-only monitoring",
+      "cmp.r1": "Knows what connects to what", "cmp.r1a": "Maintained by hand; stale as soon as a cable moves", "cmp.r1b": "No", "cmp.r1c": "From the devices themselves, every cycle",
+      "cmp.r2": "When a cable fails", "cmp.r2a": "Invisible", "cmp.r2b": "Only that a whole device went away", "cmp.r2c": "Names the cable and the port",
+      "cmp.r3": "A new device appears", "cmp.r3a": "Someone has to remember", "cmp.r3b": "Added by hand", "cmp.r3c": "Discovered through its neighbours",
+      "cmp.r4": "Traffic and utilisation", "cmp.r4a": "None", "cmp.r4b": "Per interface, not matched to cables", "cmp.r4c": "Both directions per cable, drawn on the map",
+      "cmp.r5": "Alerting", "cmp.r5a": "None", "cmp.r5b": "Device offline", "cmp.r5c": "Link, utilisation, CPU, memory — with thresholds you set",
+      "cmp.r6": "False alarms", "cmp.r6b": "One lost packet wakes somebody", "cmp.r6c": "Confirmation cycles, flap damping, traps corroborated by polling",
+      "cmp.r7": "Device-side configuration", "cmp.r7b": "Depends on the tool", "cmp.r7c": "None at all",
+      "cmp.r8": "Where the data lives", "cmp.r8a": "On somebody's laptop", "cmp.r8b": "Depends on the tool", "cmp.r8c": "Your racks; it does not leave",
       "screens.kicker": "Screens", "screens.h": "The actual interface",
       "screens.p": "Real screens from a running system, with a demonstration network in them.",
-      "s.1.h": "Topology",
-      "s.1.p": "Nodes are devices, lines are real cables. Each line carries its speed and current utilisation and changes colour under load; click a device to see just it and its neighbours.",
-      "s.2.h": "Device list",
-      "s.2.p": "Every device on one page: model, vendor, role, CPU and memory, and how long ago it last answered. Search, filter, and add new ones here.",
+      "s.1.h": "Device list",
+      "s.1.p": "Every device on one page: model, vendor, role, CPU and memory, and how long ago it last answered. State is colour-coded, so you do not read row by row.",
+      "s.2.h": "Search and filter",
+      "s.2.p": "A few characters and you are down to the set you want — one floor, one vendor, only the ones that are offline. Once there are a few hundred devices, this is the field you use every day.",
       "s.3.h": "Alerts",
       "s.3.p": "Critical and warning, acknowledged one at a time or all at once. Recent activity is on the right, so you can see how the week went without reading logs.",
-      "s.4.h": "Groups",
-      "s.4.p": "Group by floor, by role, by whoever looks after them. The map can be drawn per group, so a large network does not become a ball of string.",
-      "s.5.h": "It can see itself",
-      "s.5.p": "What the collector is doing, without reading logs: how many processes, how recently each reported, how many devices are being confirmed offline, which links are held, how many traps arrived. The worst thing a monitor can do is stop quietly.",
-      "s.6.h": "Another language, another theme",
-      "s.6.p": "The same screen in the light theme and in English. All three languages cover the whole interface, not just the menus.",
-      "how.kicker": "How it works", "how.h": "It does three things",
-      "how.p": "No agent to install on the devices and no config to push. All of it over the SNMP you already run.",
-      "how.1.h": "Ask", "how.1.p": "Ask each device three things on a schedule: who your neighbours are, which ports have a cable, and how much traffic those cables carry.",
-      "how.2.h": "Pair", "how.2.p": "Each cable is reported by both ends. The two halves are paired by the devices' own names and become one line on the map.",
-      "how.3.h": "Watch", "how.3.p": "A shorter cycle watches only the ports that have cables and alerts the moment one changes. A trap from the device itself is faster still.",
-      "deploy.kicker": "Deploy", "deploy.h": "One line to install, one command after that",
-      "deploy.p": "A clean Ubuntu machine is enough. It installs what it needs, generates the passwords and certificate, starts everything, and prints the address and credentials.",
-      "deploy.copy": "Copy",
-      "deploy.note": "The source is private for now, so the install needs an access token; the deployment guide has the full command.",
-      "deploy.c1": "Checks every layer at once: services, proxy, authentication, database, collector. It passes only when all of them do, so you can wire it straight into monitoring.",
-      "deploy.c2": "Updates and re-checks. If the check fails it rolls back to the previous version by itself rather than leaving you broken.",
-      "deploy.c3": "Backs up the database and rotates old backups. Restore when you need to.",
-      "deploy.c4": "Follow the logs of any service without hunting for where the files are.",
-      "deploy.sec": "<strong>The interface has a password.</strong> Only the reverse proxy is exposed, and it redirects to an encrypted connection; the application and the database listen on localhost only. Even the interactive API documentation needs a login — anyone there can drive the whole system.",
+      "s.4.h": "Alert profiles",
+      "s.4.p": "Core switches should be strict, branch uplinks run full by design, and an access point rebooting is normal. One set of thresholds for everything only makes noise; here you keep several and assign them.",
+      "s.5.h": "Groups",
+      "s.5.p": "Group by floor, by role, by whoever looks after them. The map can be drawn per group so everyone sees their own part.",
+      "s.6.h": "It can see itself",
+      "s.6.p": "What the collector is doing, without reading logs: how many processes, how recently each reported, how many devices are being confirmed offline, which links are held, how many traps arrived. The worst thing a monitor can do is stop quietly.",
+      "s.7.h": "SNMP settings",
+      "s.7.p": "Default community, poll interval, timeout and retries, and which subnets discovery may sweep — including a switch that keeps it inside them, so nothing gets probed that should not be.",
+      "s.8.h": "Test tools",
+      "s.8.p": "Before adding a device, ask: does this address answer with this community, and can its LLDP neighbours be read? Ten seconds to tell \"LLDP is off\" from \"wrong community\".",
+      "s.9.h": "Another language, another theme",
+      "s.9.p": "The same screen in the light theme and in English. All three languages and both themes are switchable.",
+      "modes.kicker": "Deployment", "modes.h": "Start on one machine; grow when you need to",
+      "modes.1.h": "One machine is enough",
+      "modes.1.p": "A normal campus network runs comfortably on a single host. The installer brings up the database, the interface and the collector together.",
+      "modes.2.h": "More devices, more processes",
+      "modes.2.p": "The collector can be split into several processes, each taking a share of the fleet. The work that must happen once is done by one of them, and another takes over if it dies.",
+      "modes.3.h": "All of it in your racks",
+      "modes.3.p": "No cloud, nothing phoned home. The interface is password-protected, only the reverse proxy is exposed, and the application and database listen on localhost.",
+      "install.kicker": "Install", "install.h": "One line to install, one command after that",
+      "install.p": "A clean Ubuntu machine is enough. It installs what it needs, generates the passwords and certificate, starts everything, and prints the address and credentials.",
+      "install.copy": "Copy the command",
+      "install.note": "The source is private for now, so the install needs an access token; the deployment guide has the full command.",
+      "install.c1": "Checks every layer at once: services, proxy, authentication, database, collector. It passes only when all of them do, so you can wire it straight into monitoring.",
+      "install.c2": "Updates and re-checks. If the check fails it rolls back to the previous version by itself rather than leaving you broken.",
+      "install.c3": "Backs up the database and rotates old backups. Restore when you need to.",
+      "install.c4": "Follow the logs of any service without hunting for where the files are.",
+      "install.sec": "<strong>The interface has a password.</strong> Only the reverse proxy is exposed, and it redirects to an encrypted connection; the application and the database listen on localhost only. Even the interactive API documentation needs a login — anyone there can drive the whole system.",
       "support.kicker": "What it talks to", "support.h": "Devices, protocols, environment",
       "support.1.h": "Devices",
       "support.1.a": "Cisco IOS / NX-OS", "support.1.b": "HP ProCurve, Aruba",
@@ -896,16 +1082,16 @@ curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/instal
       "support.3.h": "Where it runs",
       "support.3.a": "Ubuntu 22.04 / 24.04, or Debian",
       "support.3.b": "Docker Compose — the installer sets it up",
-      "support.3.c": "More devices: run the collector as several processes",
+      "support.3.c": "Browsers: Chrome, Firefox, Edge, Safari",
       "support.3.d": "Entirely in your own racks; nothing leaves",
       "foot.1": "Automatic network topology discovery and monitoring over LLDP/CDP.",
       "foot.2": "Screens are from a running system; the network in them is a demonstration."
     }
   };
 
-  // 把頁面原本寫的繁體當成 zh-TW 的字典，這樣切回去不用再抄一份
-  var base = {};
+  // 頁面原本寫的繁體就是 zh-TW 的字典，切回來不用再抄一份
   var nodes = document.querySelectorAll("[data-i18n]");
+  var base = {};
   nodes.forEach(function (el) { base[el.getAttribute("data-i18n")] = el.innerHTML; });
   I18N["zh-TW"] = base;
 
@@ -926,20 +1112,16 @@ curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/instal
 
   // 來源依序：網址的 ?lang=、上次選的、瀏覽器語言
   var wanted = null;
-  try {
-    wanted = new URLSearchParams(window.location.search).get("lang");
-  } catch (e) { /* 某些內嵌環境讀不到查詢字串 */ }
+  try { wanted = new URLSearchParams(window.location.search).get("lang"); } catch (e) { /* 內嵌環境 */ }
   if (!wanted) {
     try { wanted = localStorage.getItem("mf-topomon-lang"); } catch (e) { /* 同上 */ }
   }
   if (!wanted) {
-    var nav = (navigator.language || "zh-TW");
-    wanted = /^zh\b/.test(nav)
-      ? (/(CN|Hans|SG)/i.test(nav) ? "zh-CN" : "zh-TW")
-      : "en";
+    var nav = navigator.language || "zh-TW";
+    wanted = /^zh/i.test(nav) ? (/(CN|Hans|SG)/i.test(nav) ? "zh-CN" : "zh-TW") : "en";
   }
   if (!I18N[wanted]) { wanted = "zh-TW"; }
-  if (wanted !== "zh-TW") { apply(wanted); } else { apply("zh-TW"); }
+  apply(wanted);
 
   buttons.forEach(function (b) {
     b.addEventListener("click", function () { apply(b.getAttribute("data-lang")); });
@@ -962,7 +1144,7 @@ curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/instal
       }
       function select() {
         // 剪貼簿被拒絕時，改成把指令選起來讓人自己複製
-        var pre = document.querySelector("#deploy pre");
+        var pre = document.querySelector("#install pre");
         if (!pre) { return; }
         var range = document.createRange();
         range.selectNodeContents(pre);
