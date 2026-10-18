@@ -288,7 +288,13 @@ cmd_update() {
     （.env 與 auth/ 不在版控裡，不會被更新碰到。）"
     fi
 
-    git fetch --quiet origin "$BRANCH" || fail "git fetch 失敗（網路？）"
+    git fetch --quiet origin "$BRANCH" || fail "git fetch 失敗。網路？或者這個
+    checkout 的 origin 沒有可用的憑證 —— 這個 repo 是私有的，install.sh 會把
+    權杖寫進 .git/config，被覆蓋掉的話重新設一次：
+        sudo git -C $DIR remote set-url origin \
+            https://x-access-token:<TOKEN>@github.com/nox913106/net-lldp-topo.git
+        sudo chmod 600 $DIR/.git/config
+    唯讀 deploy key 的做法見 docs/DEPLOYMENT.md。"
     if ! git merge --ff-only "origin/$BRANCH" 2>/dev/null; then
         fail "無法 fast-forward 到 origin/$BRANCH —— 這個 checkout 有自己的
     commit。要丟掉本地的改動用：
@@ -649,9 +655,12 @@ ${BOLD}topomon${NC} —— LLDP/CDP 拓撲監控的部署與維護
   ${BOLD}topomon version${NC}             版本與路徑
   ${BOLD}topomon uninstall [--purge]${NC} 移除容器（--purge 連資料一起）
 
-第一次安裝（在一台乾淨的 Ubuntu 上）：
+第一次安裝（在一台乾淨的 Ubuntu 上）—— 這個 repo 是私有的，所以要帶權杖：
 
-  curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
+  export GITHUB_TOKEN=ghp_xxx
+  curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \\
+    https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh \\
+    | sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash
 
 文件：docs/DEPLOYMENT.md（部署）、docs/CONFIGURATION.md（設定）、
       docs/USER_MANUAL.md（使用）、docs/TROUBLESHOOTING_LLDP.md（收不到鄰居）

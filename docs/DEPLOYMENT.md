@@ -2,11 +2,52 @@
 
 ## 一鍵安裝
 
-一台乾淨的 Ubuntu 22.04／24.04（或 Debian），一行：
+一台乾淨的 Ubuntu 22.04／24.04（或 Debian），一行。**這個 repo 目前是私
+有的**，所以權杖要給兩次 —— 一次拿這個腳本（`curl` 用），一次給腳本
+clone（`sudo` 傳進去）：
+
+```bash
+export GITHUB_TOKEN=ghp_xxx          # 要有這個 repo 的 Contents: Read
+curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh \
+  | sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash
+```
+
+repo 若轉成公開，就是乾淨的一行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
 ```
+
+> **私有 repo 的 raw 內容對未認證的請求回 404，不是 401。** 所以「curl 回
+> 404」第一個要懷疑的是權杖，不是路徑打錯。
+
+### 權杖要留在機器上嗎
+
+預設會留：git 會把它寫進 `/opt/topomon/.git/config`，而 install.sh 把那個
+檔案收成 `600`（只有 root 讀得到）。這是取捨 —— 留著，`topomon update` 才
+能自己去 fetch；不留，每次更新都要手動帶一次權杖。
+
+**不想留權杖**就用唯讀的 deploy key：
+
+```bash
+# 在這台機器上產生一把，公鑰貼到 GitHub 的 repo → Settings → Deploy keys
+sudo ssh-keygen -t ed25519 -N '' -f /root/.ssh/topomon_deploy -C topomon@$(hostname)
+sudo cat /root/.ssh/topomon_deploy.pub         # 貼上去，不要勾 write access
+
+sudo tee -a /root/.ssh/config >/dev/null <<'EOF'
+Host github.com
+  IdentityFile /root/.ssh/topomon_deploy
+  IdentitiesOnly yes
+EOF
+
+# 然後用 SSH 的來源安裝（不需要 GITHUB_TOKEN）
+sudo TOPOMON_REPO=git@github.com:nox913106/net-lldp-topo.git bash install.sh
+```
+
+deploy key 綁單一 repo、可以隨時撤銷、而且不會出現在任何 `.git/config`
+裡 —— 代價是 install.sh 本身要先用別的方法弄到這台機器上（`scp` 或
+`gh api ... /contents/install.sh`）。
 
 跑完會印出網址與一組登入帳密 —— **那組密碼只會出現這一次**（忘了就
 `sudo topomon password` 重設一組）。

@@ -118,6 +118,54 @@ def test_install_hands_over_to_the_cli():
     assert "read -r" not in text
 
 
+# -- the private repository ------------------------------------------------
+
+
+def test_the_install_one_liner_can_authenticate():
+    """
+    The repository is private, and raw.githubusercontent.com answers 404 (not
+    401) to an unauthenticated request for a private file - so the plain
+    `curl | sudo bash` from the README failed with a message that looks like a
+    wrong path. The token has to be passed twice: once to fetch this script,
+    once for the clone it does.
+    """
+    text = INSTALL.read_text()
+    assert "TOPOMON_TOKEN" in text
+    # Authorization header in the documented command, not ?token= in a URL
+    # (a query parameter ends up in shell history and in proxy logs)
+    assert "Authorization: Bearer" in text
+    assert "?token=" not in text
+
+    for doc in (ROOT / "README.md", ROOT / "docs" / "DEPLOYMENT.md"):
+        assert "Authorization: Bearer" in doc.read_text(), doc.name
+
+
+def test_the_token_goes_through_one_function_and_is_not_printed():
+    """
+    Every git URL is built by repo_url(), so there is one place that knows
+    about the token - and nothing echoes it. A token in the install output
+    ends up in a terminal scrollback, a ticket, or a screenshot.
+    """
+    text = INSTALL.read_text()
+    assert "repo_url()" in text
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if any(stripped.startswith(cmd) for cmd in ("echo ", "info ", "warn ", "step ")):
+            assert "$TOPOMON_TOKEN" not in stripped, line
+            assert "$GITHUB_TOKEN" not in stripped.replace('\\$GITHUB_TOKEN', ""), line
+
+
+def test_the_credential_file_is_not_world_readable():
+    """git writes the token into .git/config, which is 644 by default."""
+    text = INSTALL.read_text()
+    # Both paths that can put it there: the first clone and a re-run that
+    # replaces the remote URL
+    assert text.count('chmod 600 "$TOPOMON_DIR/.git/config"') == 2
+
+
 # -- what docker-compose.yml must keep being ------------------------------
 
 

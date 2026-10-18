@@ -2,7 +2,19 @@
 #
 # topomon 一鍵安裝（Ubuntu / Debian）
 #
+# 這個 repo 是私有的，所以兩種寫法：
+#
+#   # 私有（現在）—— token 要給兩次：一次拿這個腳本，一次讓它 clone
+#   export GITHUB_TOKEN=ghp_xxx
+#   curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+#     https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh \
+#     | sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash
+#
+#   # 如果哪天 repo 轉成公開
 #   curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
+#
+# 未認證對私有 repo 的 raw 內容一律是 404（不是 401），所以「curl 回 404」
+# 第一個要懷疑的是 token，不是路徑打錯。
 #
 # 這個腳本只做「把機器準備好」：裝 docker、把 repo 放到 /opt/topomon，然後
 # 把後面的事交給 repo 裡的 tools/topomon。日常維護都用那一個：
@@ -25,6 +37,9 @@ set -euo pipefail
 TOPOMON_DIR="${TOPOMON_DIR:-/opt/topomon}"
 TOPOMON_REPO="${TOPOMON_REPO:-https://github.com/nox913106/net-lldp-topo.git}"
 TOPOMON_BRANCH="${TOPOMON_BRANCH:-main}"
+# 私有 repo 用的讀取權杖。TOPOMON_TOKEN 優先，因為 GITHUB_TOKEN 在很多 CI
+# 環境裡本來就有值，而那個值未必有這個 repo 的權限。
+TOPOMON_TOKEN="${TOPOMON_TOKEN:-${GITHUB_TOKEN:-}}"
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; BOLD=$'\033[1m'; NC=$'\033[0m'
 info() { echo "${GREEN}[INFO]${NC} $*"; }
@@ -115,11 +130,51 @@ https://download.docker.com/linux/$distro $codename stable" \
     info "docker $(docker --version | sed 's/Docker version //')"
 }
 
+# clone / fetch 用的 URL。有 token 就塞進去 —— 它會被 git 寫進
+# .git/config，所以 fetch_source 會把那個檔案收成 600。這是私有 repo 部署的
+# 標準取捨：要嘛權杖留在機器上（root 才讀得到）讓 `topomon update` 之後還能
+# 自己更新，要嘛每次更新都手動帶一次。想完全不留，用唯讀的 deploy key
+# （docs/DEPLOYMENT.md）。
+repo_url() {
+    if [[ -n "$TOPOMON_TOKEN" && "$TOPOMON_REPO" == https://github.com/* ]]; then
+        echo "https://x-access-token:${TOPOMON_TOKEN}@${TOPOMON_REPO#https://}"
+    else
+        echo "$TOPOMON_REPO"
+    fi
+}
+
+# git 失敗之後的那一句話。私有 repo 最常見的死法就是這個，而 git 的訊息
+# （"Authentication failed" / "repository not found"）不會告訴你要做什麼。
+auth_hint() {
+    if [[ -z "$TOPOMON_TOKEN" ]]; then
+        echo "
+    這個 repo 是私有的，而你沒有給權杖。三個選擇：
+
+      1. 帶一個有 repo:read 的權杖再跑一次：
+           export GITHUB_TOKEN=ghp_xxx
+           curl -fsSL -H \"Authorization: Bearer \$GITHUB_TOKEN\" \\
+             ${TOPOMON_REPO%.git}/raw/main/install.sh | sudo GITHUB_TOKEN=\"\$GITHUB_TOKEN\" bash
+      2. 用唯讀的 deploy key（SSH），見 docs/DEPLOYMENT.md
+      3. 把 repo 轉成公開"
+    else
+        echo "
+    權杖被拒絕了。確認它沒過期、而且有 ${TOPOMON_REPO} 的讀取權限
+    （fine-grained token 要勾 Contents: Read）。"
+    fi
+}
+
 fetch_source() {
     if [[ -d "$TOPOMON_DIR/.git" ]]; then
         step "更新 $TOPOMON_DIR"
-        git -C "$TOPOMON_DIR" remote set-url origin "$TOPOMON_REPO"
-        git -C "$TOPOMON_DIR" fetch --quiet origin "$TOPOMON_BRANCH"
+        # 只有在帶了新權杖（或換了來源）的時候才覆寫 —— 不然會把既有的
+        # 權杖洗掉，`topomon update` 就不能自己更新了。
+        if [[ -n "$TOPOMON_TOKEN" ]] || \
+           [[ "$(git -C "$TOPOMON_DIR" remote get-url origin)" != *"@github.com/"* ]]; then
+            git -C "$TOPOMON_DIR" remote set-url origin "$(repo_url)"
+            chmod 600 "$TOPOMON_DIR/.git/config"
+        fi
+        git -C "$TOPOMON_DIR" fetch --quiet origin "$TOPOMON_BRANCH" \
+            || fail "git fetch 失敗。$(auth_hint)"
         if [[ -n "$(git -C "$TOPOMON_DIR" status --porcelain --untracked-files=no)" ]]; then
             warn "$TOPOMON_DIR 有未提交的改動，跳過更新程式碼（設定與資料不受影響）"
         else
@@ -134,8 +189,10 @@ fetch_source() {
     TOPOMON_DIR=/opt/topomon2 curl ... | sudo bash"
     else
         step "取得原始碼到 $TOPOMON_DIR"
-        git clone --quiet --branch "$TOPOMON_BRANCH" "$TOPOMON_REPO" "$TOPOMON_DIR" \
-            || fail "git clone 失敗（網路？分支名稱？）"
+        git clone --quiet --branch "$TOPOMON_BRANCH" "$(repo_url)" "$TOPOMON_DIR" \
+            || fail "git clone 失敗。$(auth_hint)"
+        # 權杖現在在 .git/config 裡
+        chmod 600 "$TOPOMON_DIR/.git/config"
     fi
     info "版本 $(git -C "$TOPOMON_DIR" rev-parse --short HEAD)"
 }

@@ -2609,8 +2609,19 @@ nginx 跟 snmpsim 同一個規矩：`NGINX_BIN` 找不到就 skip，CI 設
 ### 41.3 一行部署，以及更新失敗會自己退回去
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
+export GITHUB_TOKEN=ghp_xxx
+curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh \
+  | sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash
 ```
+
+權杖要給兩次是因為**這個 repo 是私有的**：一次給 `curl` 拿這個腳本，一次給
+腳本自己 clone。這一點是寫完文件之後去打那個 URL 才發現的 ——
+`raw.githubusercontent.com` 對未認證的私有檔案回的是 **404 而不是 401**，
+所以原本那個乾淨的一行不但不能用，失敗訊息還會讓人以為是路徑打錯
+（41.5 的最後一段）。權杖由 git 寫進 `/opt/topomon/.git/config`，install.sh
+把那個檔案收成 600；不想留權杖的做法（唯讀 deploy key）寫在
+docs/DEPLOYMENT.md。
 
 `install.sh` 只做「把機器準備好」：裝 docker、clone 到 `/opt/topomon`、然後
 `exec tools/topomon deploy`。真正做事的是 `tools/topomon`，它也是之後維護用
@@ -2652,12 +2663,21 @@ exit 0，所以可以直接丟進 cron 或監控。
 
 | | |
 |---|---|
-| 全部測試 | **183 項通過**（原本 153，新增 30：代理 8、HTTP 介面 7、部署 15） |
+| 全部測試 | **186 項通過**（原本 153，新增 33：代理 8、HTTP 介面 7、部署 18） |
 | 代理那 8 項 | 對真的 nginx 1.24，跑部署用的那份設定 |
 | `deploy/nginx.conf` | `nginx -t` 通過（`http2 on;` 在 1.24 上要註解掉，那是 1.25.1 才有的寫法） |
 | `docker-compose.yml` | `docker compose config` 解析通過，五個服務 |
 | 兩個腳本 | `bash -n` 通過；`topomon` 的 dispatch、usage 與 `cmd_*` 三份清單一致（測試在守） |
 | CI | tests 工作多裝一個 nginx，`REQUIRE_NGINX=1`；PostgreSQL 從 16 改成 **15**，跟部署出去的那一版對齊 |
+
+還有一個是「驗了才知道」的：文件上那個乾淨的一行**不能用**。寫完之後去
+`curl` 那個 URL，回的是 404 —— repo 是私有的，而私有檔案對未認證的請求回
+404 不回 401，所以錯誤訊息會把人帶往「路徑打錯了嗎」。install.sh 現在吃
+`GITHUB_TOKEN`／`TOPOMON_TOKEN`，所有 git URL 都由一個 `repo_url()` 組出來，
+失敗時印的是「三個選擇」而不是 git 的原話，而且有三項測試守著（權杖只經過
+那一個函式、沒有任何輸出會印到它、`.git/config` 兩條路徑都 chmod 600）。
+教訓跟第 38 節同一個形狀：沒有去打那個 URL，這份文件就會是一句很有自信的
+假話。
 
 **沒有驗到的：一次真的部署。** 這個開發容器裡沒有 docker daemon
 （`/var/run/docker.sock` 不存在），所以 `install.sh` 的 apt 與 docker 安裝

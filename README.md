@@ -35,7 +35,21 @@ PostgreSQL、Redis、Python 都在容器裡，主機上不用先裝。
 
 ## 一鍵部署
 
-一台乾淨的 Ubuntu，一行：
+一台乾淨的 Ubuntu，一行。**這個 repo 是私有的**，所以權杖要給兩次 —— 一次
+拿這個腳本，一次讓它 clone：
+
+```bash
+export GITHUB_TOKEN=ghp_xxx          # 要有這個 repo 的 Contents: Read
+curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh \
+  | sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash
+```
+
+權杖會被寫進 `/opt/topomon/.git/config`（chmod 600，只有 root 讀得到），
+`topomon update` 之後才能自己更新。不想留權杖的話用唯讀 deploy key，
+見 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+
+repo 轉成公開之後就不用權杖：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
@@ -234,7 +248,7 @@ pip-compile --generate-hashes --strip-extras --no-header requirements.in
 ```
 
 `.github/workflows/ci.yml` 跑三個工作：**tests**（照 lock 安裝，起一個 SNMP
-模擬器與一個 nginx，跑 183 項測試 —— 而且跑兩次，一次 SQLite、一次
+模擬器與一個 nginx，跑 186 項測試 —— 而且跑兩次，一次 SQLite、一次
 `postgres:15`，因為有兩類錯只在 PostgreSQL 發作，見
 [docs/PERFORMANCE.md 第 39.3 節](docs/PERFORMANCE.md)）、
 **lock**（就地重編三份 lock 再 `git diff --exit-code`，抓「改了 `.in` 沒重編」
@@ -242,7 +256,7 @@ pip-compile --generate-hashes --strip-extras --no-header requirements.in
 fail，但 CI 設 `REQUIRE_SNMPSIM=1` 把那個 skip 變成失敗 —— 否則 CI 會在什麼
 都沒測的情況下變綠。
 
-那 183 項裡有 22 項是端對端的：真的跑一輪盤點與快迴圈、真的 trap 封包進真的
+那 186 項裡有 22 項是端對端的：真的跑一輪盤點與快迴圈、真的 trap 封包進真的
 接收器、租約與分片心跳對真的資料庫（`tests/test_*_e2e.py`，說明在
 `tests/README.md`）。在那之前這些證明都只活在開發容器的腳本裡。
 
