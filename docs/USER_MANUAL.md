@@ -1,4 +1,4 @@
-# DEV-lldp-topomon 系統使用說明書
+# mf-topomon 系統使用說明書
 
 > **版本**: 1.1  
 > **最後更新**: 2025-12-13  
@@ -23,7 +23,7 @@
 
 ## 1. 系統概述
 
-**DEV-lldp-topomon** 是一個基於 LLDP（Link Layer Discovery Protocol）的網路拓撲監控系統，提供：
+**mf-topomon** 是一個基於 LLDP（Link Layer Discovery Protocol）的網路拓撲監控系統，提供：
 
 - 🗺️ **即時拓撲圖** - 視覺化網路設備連接關係
 - 📊 **設備監控** - CPU、記憶體、連接狀態監控
@@ -526,4 +526,4 @@ API 文件：`http://localhost:8080/docs`
 
 ---
 
-*© 2025 DEV-lldp-topomon. All rights reserved.*
+*© 2025 mf-topomon. All rights reserved.*

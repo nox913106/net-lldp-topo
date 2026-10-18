@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>mf-topomon</title>
+<!--
+  mf-topomon 的介紹頁。單一檔案、沒有建置步驟 —— 直接用瀏覽器打開，或是丟到
+  任何一台 web server 上。字型從 Google Fonts 來，離線環境會退回系統字型。
+
+  裡面每一個數字都出自 docs/PERFORMANCE.md 與 README.md，改了那邊記得改這裡。
+-->
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<style>
+/* 版面：單欄文件式長頁，左側一條 mono 的「埠位標」當段落索引；
+   色彩沿用這個領域自己的訊號色（up / flap / down），不另外發明強調色。 */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --ink: #15181d;
+  --ink-soft: #525b6a;
+  --ink-faint: #7d8694;
+  --line: #dde1e8;
+  --accent: #0a6a72;
+  --accent-wash: #e6f1f2;
+  --up: #1b7a48;
+  --flap: #8a6100;
+  --down: #b02a21;
+
+  --sans: "IBM Plex Sans", "Noto Sans TC", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --measure: 34rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1218;
+    --panel: #161a22;
+    --ink: #e8ebf1;
+    --ink-soft: #a3acbb;
+    --ink-faint: #76808f;
+    --line: #262c38;
+    --accent: #58b6bd;
+    --accent-wash: #15282b;
+    --up: #4cb87a;
+    --flap: #d6a428;
+    --down: #e4716a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1218;
+  --panel: #161a22;
+  --ink: #e8ebf1;
+  --ink-soft: #a3acbb;
+  --ink-faint: #76808f;
+  --line: #262c38;
+  --accent: #58b6bd;
+  --accent-wash: #15282b;
+  --up: #4cb87a;
+  --flap: #d6a428;
+  --down: #e4716a;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+}
+
+.band { width: 100%; }
+.band--panel { background: var(--panel); border-block: 1px solid var(--line); }
+.wrap {
+  max-width: 62rem;
+  margin-inline: auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 3.25rem;
+}
+.wrap--tight { padding-block: 2.25rem; }
+
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; margin: 0; font-weight: 700; }
+p { margin: 0; max-width: var(--measure); }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* ---------- 開頭 ---------- */
+.hero { display: grid; gap: 1.5rem; }
+.wordmark {
+  font-family: var(--mono);
+  font-size: clamp(2.1rem, 7vw, 3.1rem);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+.wordmark span { color: var(--accent); }
+.tagline {
+  font-size: clamp(1.1rem, 3.4vw, 1.4rem);
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 30rem;
+  font-weight: 600;
+}
+.lede { color: var(--ink-soft); }
+.chips { display: flex; flex-wrap: wrap; gap: 0.4rem; list-style: none; padding: 0; margin: 0; }
+.chip {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.2rem 0.5rem;
+  color: var(--ink-soft);
+  background: var(--bg);
+}
+
+/* ---------- 段落 ---------- */
+.section { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 0 1.75rem; }
+.section + .section { margin-top: 3.25rem; }
+.rail {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding-top: 0.45rem;
+  border-top: 2px solid var(--accent);
+  align-self: start;
+}
+.section > .body { display: grid; gap: 1rem; min-width: 0; }
+.section h2 { font-size: clamp(1.25rem, 3.6vw, 1.5rem); }
+.section h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-top: 0.5rem;
+  color: var(--ink);
+}
+@media (max-width: 640px) {
+  .section { grid-template-columns: minmax(0, 1fr); gap: 0.65rem; }
+  .rail { border-top: none; padding-top: 0; }
+}
+
+ul.plain { margin: 0; padding-left: 1.15rem; max-width: var(--measure); }
+ul.plain li + li { margin-top: 0.35rem; }
+ul.plain li::marker { color: var(--ink-faint); }
+code, kbd { font-family: var(--mono); font-size: 0.88em; }
+:not(pre) > code {
+  background: var(--accent-wash);
+  padding: 0.08em 0.3em;
+  border-radius: 2px;
+  color: var(--ink);
+}
+
+/* ---------- 數字表 ---------- */
+.scroller { overflow-x: auto; min-width: 0; }
+table { border-collapse: collapse; width: 100%; min-width: 30rem; font-size: 0.93rem; }
+caption {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding-bottom: 0.6rem;
+}
+th, td { text-align: left; padding: 0.55rem 0.75rem 0.55rem 0; border-bottom: 1px solid var(--line); vertical-align: baseline; }
+thead th { font-size: 0.74rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; }
+td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.after { color: var(--accent); font-weight: 500; }
+
+/* ---------- 圖 ---------- */
+figure { margin: 0.5rem 0 0; display: grid; gap: 0.6rem; }
+figure svg { display: block; width: 100%; height: auto; max-width: 100%; }
+figcaption { font-size: 0.84rem; color: var(--ink-soft); max-width: var(--measure); }
+.svg-label { font-family: var(--mono); font-size: 10px; fill: var(--ink-faint); }
+.svg-strong { font-family: var(--mono); font-size: 11px; fill: var(--ink); }
+/* 顏色走 class 而不是 fill="var(…)" 屬性：presentation attribute 裡的 var()
+   不是每個瀏覽器都吃，而吃不下的結果是圖整片變黑。 */
+.s-accent { fill: var(--accent); }
+.s-up { fill: var(--up); }
+.s-down { fill: var(--down); }
+.s-panel { fill: var(--panel); }
+.k-up { stroke: var(--up); }
+.k-down { stroke: var(--down); }
+
+/* ---------- 指令 ---------- */
+pre {
+  margin: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: 2px;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  font-size: 0.84rem;
+  line-height: 1.65;
+  color: var(--ink);
+}
+pre .c { color: var(--ink-faint); }
+.copy {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink-soft);
+  border-radius: 2px;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  justify-self: start;
+}
+.copy:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---------- 狀態標 ---------- */
+.state { display: inline-flex; align-items: baseline; gap: 0.4rem; font-family: var(--mono); font-size: 0.8rem; }
+.dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; display: inline-block; transform: translateY(-1px); }
+.dot--up { background: var(--up); }
+.dot--flap { background: var(--flap); }
+.dot--down { background: var(--down); }
+
+.cards { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
+.card {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.9rem 1rem;
+  background: var(--panel);
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.card h3 { margin: 0; font-family: var(--mono); font-size: 0.8rem; letter-spacing: 0.02em; color: var(--accent); }
+.card p { font-size: 0.9rem; color: var(--ink-soft); max-width: none; }
+
+.limits { border-top: 1px solid var(--line); padding-top: 1rem; }
+.limits dt { font-weight: 600; margin-top: 0.9rem; }
+.limits dd { margin: 0.1rem 0 0; color: var(--ink-soft); max-width: var(--measure); }
+.limits dt:first-of-type { margin-top: 0; }
+
+footer .wrap { padding-block: 2rem; }
+.foot { font-size: 0.84rem; color: var(--ink-faint); display: grid; gap: 0.35rem; }
+</style>
+</head>
+<body>
+<header class="band">
+  <div class="wrap hero">
+    <p class="wordmark">mf<span>-</span>topomon</p>
+    <p class="tagline">網路拓撲是設備自己說出來的。這套東西只負責問對問題、問得夠勤，並且在它壞掉的時候講實話。</p>
+    <p class="lede">
+      以 LLDP／CDP 自動發現與繪製交換機之間的實際佈線，逐條線路監看 up／down 與流量，
+      並在設備端<strong>不需要任何設定改動</strong>的前提下接收 SNMP trap。
+      設計目標是 500 台規模下仍然可解釋：每一個延遲、每一次 CPU 佔用，都量過並寫在文件裡。
+    </p>
+    <ul class="chips">
+      <li class="chip">LLDP / CDP</li>
+      <li class="chip">SNMP v1 / v2c / v3</li>
+      <li class="chip">FastAPI + PostgreSQL</li>
+      <li class="chip">Docker Compose</li>
+      <li class="chip">zh-TW / zh-CN / EN</li>
+    </ul>
+  </div>
+</header>
+
+<main>
+  <div class="band band--panel">
+    <div class="wrap">
+
+      <section class="section">
+        <p class="rail">問題</p>
+        <div class="body">
+          <h2>一張靠人維護的網路圖，從畫完的那一刻就開始過期</h2>
+          <p>
+            交換機之間誰接誰、接在哪個埠、那條線現在是不是通的 —— 這些事設備本來就透過
+            LLDP／CDP 互相廣告。問題從來不是資料不存在，而是沒有人持續去問，
+            以及問到的東西沒有被拿去跟告警對上。
+          </p>
+          <p>
+            mf-topomon 把這件事收斂成兩個週期不同的輪詢迴圈，加上一個可選的 trap 接收器。
+            拓樸由設備回報的 <code>sysName</code> 配對出來，所以它跟 IP、跟 DNS、
+            跟誰在哪個網段都無關。
+          </p>
+        </div>
+      </section>
+
+      <section class="section">
+        <p class="rail">核心</p>
+        <div class="body">
+          <h2>兩個迴圈，因為「誰接誰」和「它還活著嗎」不該同一個頻率</h2>
+          <p>
+            有人去機房移一條線，那是以天或週計的事件；一條 uplink 掛掉，是以秒計的事件。
+            用同一個間隔去問這兩件事，只會讓其中一個又慢又貴。
+          </p>
+
+          <figure>
+            <svg viewBox="0 0 640 186" role="img" aria-label="盤點迴圈每 300 秒一次，快迴圈每 60 秒一次，trap 在事件發生的瞬間抵達">
+              <!-- 盤點軌 -->
+              <text class="svg-strong" x="0" y="22">盤點 300s</text>
+              <text class="svg-label" x="0" y="38">LLDP／CDP、介面表、自動發現</text>
+              <line x1="0" y1="56" x2="640" y2="56" stroke="currentColor" stroke-width="1" opacity="0.22"/>
+              <g class="s-accent">
+                <rect x="0" y="48" width="3" height="16" rx="1.5"/>
+                <rect x="212" y="48" width="3" height="16" rx="1.5"/>
+                <rect x="424" y="48" width="3" height="16" rx="1.5"/>
+                <rect x="636" y="48" width="3" height="16" rx="1.5"/>
+              </g>
+
+              <!-- 快迴圈軌 -->
+              <text class="svg-strong" x="0" y="104">快迴圈 60s</text>
+              <text class="svg-label" x="0" y="120">只問已知有線的埠：每台約 61 個 varbind，不是 500</text>
+              <line x1="0" y1="138" x2="640" y2="138" stroke="currentColor" stroke-width="1" opacity="0.22"/>
+              <g class="s-up">
+                <rect x="0" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="42" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="85" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="127" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="170" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="212" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="254" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="297" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="339" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="382" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="424" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="466" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="509" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="551" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="594" y="132" width="3" height="12" rx="1.5"/>
+                <rect x="636" y="132" width="3" height="12" rx="1.5"/>
+              </g>
+
+              <!-- trap -->
+              <g>
+                <line class="k-down" x1="330" y1="72" x2="330" y2="128" stroke-width="1.5" stroke-dasharray="3 3"/>
+                <circle class="s-down" cx="330" cy="72" r="3.5"/>
+                <text class="svg-strong s-down" x="340" y="76">linkDown trap：毫秒</text>
+                <text class="svg-label" x="340" y="91">狀態與告警立刻更新，下一輪快迴圈再確認一次</text>
+              </g>
+              <text class="svg-label" x="0" y="172">時間 →　一格 ≈ 20 秒</text>
+            </svg>
+            <figcaption>
+              盤點那一輪記下每條線的 <code>ifIndex</code>，所以快迴圈不必再走訪整張介面表 ——
+              它只問那幾個埠。告警檢查跟著快迴圈走，因為告警不會比評估它的迴圈新。
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="section">
+        <p class="rail">合併</p>
+        <div class="body">
+          <h2>一條線會被兩端各報一次，圖上只該有一條</h2>
+          <figure>
+            <svg viewBox="0 0 640 170" role="img" aria-label="兩台交換機之間三條實體線，合併成一條帶三組埠對的邏輯線路">
+              <!-- 左右兩台設備 -->
+              <rect class="s-panel" x="2" y="40" width="132" height="62" rx="3" stroke="currentColor" stroke-opacity="0.28"/>
+              <text class="svg-strong" x="14" y="64">core-sw-1</text>
+              <text class="svg-label" x="14" y="80">sysName 配對</text>
+
+              <rect class="s-panel" x="506" y="40" width="132" height="62" rx="3" stroke="currentColor" stroke-opacity="0.28"/>
+              <text class="svg-strong" x="518" y="64">dist-sw-2</text>
+              <text class="svg-label" x="518" y="80">兩端都是受管設備</text>
+
+              <!-- 三條線 -->
+              <g class="k-up" stroke-width="2" fill="none">
+                <path d="M134 56 C 300 56, 340 56, 506 56"/>
+                <path d="M134 71 C 300 71, 340 71, 506 71"/>
+                <path d="M134 86 C 300 86, 340 86, 506 86"/>
+              </g>
+              <text class="svg-label" x="238" y="40">Gi1/0/1 ↔ Gi1/0/1</text>
+              <text class="svg-label" x="238" y="108">Gi1/0/2 ↔ Gi1/0/2　Gi1/0/3 ↔ Gi1/0/3</text>
+
+              <!-- 結果 -->
+              <text class="svg-strong s-accent" x="238" y="136">1 條 merged_link</text>
+              <text class="svg-label" x="238" y="152">3 組 port_pairs　總頻寬 3000 Mbps</text>
+            </svg>
+            <figcaption>
+              鄰居只有一端受管時不會產生合併線路 —— 那是正確的，
+              也是為什麼測試裡要有兩台互相報鄰居的模擬交換機。
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <div class="band">
+    <div class="wrap">
+
+      <section class="section">
+        <p class="rail">實測</p>
+        <div class="body">
+          <h2>500 台規模下，改動前後</h2>
+          <p>
+            下面每一個數字都是量出來的，不是估的；過程與方法寫在
+            <code>docs/PERFORMANCE.md</code>（目前 42 節）。其中一次的結論被推翻過 ——
+            一個在吵雜主機上做的不成對 A／B 把 5% 的成本量成 10%，後來重做並把錯的那張表
+            劃掉保留。
+          </p>
+          <div class="scroller">
+            <table>
+              <caption>500 台設備，單一主機</caption>
+              <thead>
+                <tr><th scope="col">項目</th><th scope="col" class="num">之前</th><th scope="col" class="num">現在</th></tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">使用率告警平均延遲</th><td class="num">6.4 分</td><td class="num after">1.3 分</td></tr>
+                <tr><th scope="row">能觸發 70% 門檻的最短事件</th><td class="num">210 s</td><td class="num after">42 s</td></tr>
+                <tr><th scope="row">設備斷線告警</th><td class="num">平均 190 s</td><td class="num after">平均 45 s</td></tr>
+                <tr><th scope="row">單一線路 up／down</th><td class="num">沒有這個告警</td><td class="num after">毫秒（trap）／≤ 60 s</td></tr>
+                <tr><th scope="row">CPU 佔用</th><td class="num">39%</td><td class="num after">24%</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            CPU 會下降是因為 SNMP engine 改成依憑證共用（每台省 162 ms），
+            而且請求的 OID 不再每輪重新對 MIB 解析一次。無回應的設備依連續失敗次數退避，
+            不再每輪都等滿逾時。
+          </p>
+
+          <h3>再往上長：收集器分片</h3>
+          <div class="scroller">
+            <table>
+              <caption>一輪盤點的 CPU 時間（400 台實測，外推至 500）</caption>
+              <thead>
+                <tr><th scope="col">行程數</th><th scope="col" class="num">每個行程</th><th scope="col" class="num">加速</th></tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">1</th><td class="num">33 s</td><td class="num">—</td></tr>
+                <tr><th scope="row">2</th><td class="num">18 s</td><td class="num after">1.86×</td></tr>
+                <tr><th scope="row">4</th><td class="num">11 s</td><td class="num after">3.05×</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            一輪的成本是 SNMP 解碼，而 GIL 讓執行緒幫不上忙，所以水平長的方式是多個行程
+            各管 <code>id % N</code> 的設備。整機群只該做一次的事（重建合併線路、跑告警檢查）
+            由資料庫裡的一個 lease 選出唯一一個行程去做；拿到的那個掛掉，會有別人接手，
+            而接手次數是看得見的 —— 每輪都在換手表示有兩個行程在打架。
+          </p>
+        </div>
+      </section>
+
+      <section class="section">
+        <p class="rail">Trap</p>
+        <div class="body">
+          <h2>設備端不用加任何設定</h2>
+          <p>
+            trap 最常見的卡關是來源位址：設備從出口介面送出通知，來源位址不是你輪詢它的那個
+            管理位址，於是收到的人認不出是誰送的。慣例做法是去每一台設備上加
+            <code>snmp-server trap-source</code>。
+          </p>
+          <p>
+            這裡的做法是反過來：盤點時順便走訪設備<strong>自己回報的所有 IP 位址</strong>，
+            所以從任何一個介面送出的 trap 都認得出來。那次走訪量過是一次輪詢的
+            <strong>5.2%</strong>（5.01 ms 對 95.6 ms），而每台設備最多每小時走訪一次，
+            所以平均每輪只付十二分之一。
+          </p>
+          <ul class="plain">
+            <li>比對順序是<strong>封包來源位址</strong>優先，v1 的 <code>snmpTrapAddress</code> 只是最後手段 —— 偽造的宣稱蓋不過真實來源。</li>
+            <li>位址只從輪詢學來，沒有人宣稱得到。</li>
+            <li>trap 永遠不是唯一的事實來源：快迴圈仍然會重新確認一次。</li>
+          </ul>
+
+          <h3>告警抑制：三個旋鈕，用「晚一點但確定」換「掉包一次就叫人起床」</h3>
+          <div class="cards">
+            <div class="card">
+              <h3>ALERT_OFFLINE_CONFIRM_CYCLES</h3>
+              <p>連續幾輪沒回應才算離線。設 3 配 60 秒快迴圈 ≈ 要安靜三分鐘，一次擁塞吃掉三個 SNMP 嘗試就不再叫人。</p>
+            </div>
+            <div class="card">
+              <h3>ALERT_LINK_FLAP_TRANSITIONS</h3>
+              <p>一條線在時間窗內跳動超過這個次數就算 flapping：告警被按住不反覆開關，而且會說它在跳。第一次 down 永不延遲。</p>
+            </div>
+            <div class="card">
+              <h3>ALERT_TRAP_REQUIRES_POLL</h3>
+              <p>trap 要不要等下一輪輪詢同意才告警。開了之後，遺失、過期或偽造的 trap 都叫不動人，代價是最多一個快迴圈。</p>
+            </div>
+          </div>
+          <p style="margin-top:0.5rem">
+            <span class="state"><span class="dot dot--up"></span>up</span>
+            <span class="state"><span class="dot dot--flap"></span>flapping（抑制中）</span>
+            <span class="state"><span class="dot dot--down"></span>down</span>
+            <br><span style="color:var(--ink-soft);font-size:0.9rem">抑制狀態留在收集器行程的記憶體裡，但會寫進它自己的 heartbeat，所以設定頁看得到「現在有幾台在確認中、幾條線被按住」。</span>
+          </p>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <div class="band band--panel">
+    <div class="wrap">
+
+      <section class="section">
+        <p class="rail">部署</p>
+        <div class="body">
+          <h2>一行裝完，之後都用一個指令</h2>
+          <pre><code><span class="c"># 私有 repo：權杖給兩次，一次拿腳本、一次讓它 clone</span>
+export GITHUB_TOKEN=ghp_xxx
+curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh \
+  | sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash</code></pre>
+          <button class="copy" type="button" data-copy="curl -fsSL -H &quot;Authorization: Bearer $GITHUB_TOKEN&quot; https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo GITHUB_TOKEN=&quot;$GITHUB_TOKEN&quot; bash">複製安裝指令</button>
+          <p>
+            裝 docker、取原始碼、產生隨機密鑰與登入密碼、起服務、等到
+            <code>/health/ready</code> 回答「資料庫也連得上」為止，然後印出網址與帳密。
+            重複執行等同一次更新，不會動到設定、憑證與資料庫。
+          </p>
+          <div class="cards">
+            <div class="card">
+              <h3>topomon health</h3>
+              <p>逐層檢查容器、代理、認證、資料庫、收集器心跳，全過才 exit 0 —— 可以直接丟給 cron 或監控。</p>
+            </div>
+            <div class="card">
+              <h3>topomon update</h3>
+              <p>拉最新版、重建、健康檢查。<strong>沒過就自動回滾</strong>到更新前那個 commit 再起一次，並印出失敗日誌。</p>
+            </div>
+            <div class="card">
+              <h3>topomon backup / restore</h3>
+              <p>資料庫 dump 與復原（復原要打字確認）。預設保留最近 14 份。</p>
+            </div>
+            <div class="card">
+              <h3>topomon logs / status / password</h3>
+              <p>跟著看任一服務的日誌、看收集器完整回報、重設介面密碼（立即生效，不用重啟）。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <p class="rail">安全</p>
+        <div class="body">
+          <h2>認證在反向代理上，而且有測試守著</h2>
+          <p>
+            這套系統<strong>沒有使用者的概念</strong>，也刻意不發明一套 ——
+            要保護的是「誰連得到這個管理介面」，因為 API 讀得到每一台設備的明文 community。
+            一層 HTTP basic auth 就夠，而放在代理上意味著應用程式之後怎麼改都不會把這層弄丟。
+          </p>
+          <ul class="plain">
+            <li>應用程式的 8080 與資料庫的 5432 只綁 <code>127.0.0.1</code>，唯一入口是代理的 443。</li>
+            <li>80 一律轉到 443，而且在問密碼之前就轉 —— basic auth 是 base64，不是加密。</li>
+            <li><code>/docs</code> 也要密碼：那是可以直接打 API 的表單。</li>
+            <li>只有 <code>/health</code> 與 <code>/health/ready</code> 免認證，給負載平衡器與健康檢查用。</li>
+          </ul>
+          <p>
+            這個設定檔是整個專案的認證，而「只有人會讀的設定檔」是最容易漂掉的東西。
+            所以有 8 項測試會起一個<strong>真的 nginx</strong>、餵它部署出去的那一份設定、
+            後面接一個會記錄「我被要求了什麼路徑」的假應用程式，用來證明
+            <strong>沒帶密碼的請求根本到不了應用程式</strong> —— 不只是「回了 401」。
+          </p>
+        </div>
+      </section>
+
+      <section class="section">
+        <p class="rail">證據</p>
+        <div class="body">
+          <h2>這個專案被依賴漂移咬過一次，所以測試的是筆數</h2>
+          <p>
+            部署出去的某個版本在 pysnmp 的 asyncio 進入點換掉之後，LLDP 走訪變成
+            <strong>回傳 0 筆、不丟任何錯誤</strong> —— 從外面看就只是拓撲圖空白。
+            型別檢查抓不到那件事，鎖定版本能讓它不再自己變動，
+            但真正能證明「走訪還活著」的只有一個會去問真 agent 的測試。
+          </p>
+          <div class="cards">
+            <div class="card"><h3>189 項測試</h3><p>CI 每次跑兩遍：一次 SQLite、一次真的 PostgreSQL。有兩類錯只在 PostgreSQL 發作。</p></div>
+            <div class="card"><h3>22 項端對端</h3><p>真的跑一輪盤點與快迴圈、真的 UDP trap 封包、租約與分片心跳對真資料庫。</p></div>
+            <div class="card"><h3>8 項反向代理</h3><p>真的 nginx 跑部署用的設定檔。</p></div>
+            <div class="card"><h3>鎖定依賴</h3><p>每個套件釘到確切版本並帶 hash，CI 會重編 lock 再比對。</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <p class="rail">支援</p>
+        <div class="body">
+          <h2>廠牌與協定</h2>
+          <ul class="plain">
+            <li>Cisco IOS / NX-OS、HP ProCurve、Aruba、Fortinet FortiGate、Palo Alto Networks、Ruckus（AP／SmartZone／Unleashed）</li>
+            <li>SNMP v1 / v2c / v3（含 SHA-512 與 AES-256）</li>
+            <li>LLDP 為主，CDP 作為補充；鄰居沒有廣告管理位址時會退回用 sysName 查 DNS</li>
+            <li>Log 可輸出至 Elasticsearch 或 Graylog（GELF）</li>
+            <li>介面三語：繁體中文、簡體中文、English</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="section">
+        <p class="rail">限制</p>
+        <div class="body">
+          <h2>還沒做到的事</h2>
+          <p>這一節跟上面幾節一樣重要：不寫下來的限制，使用者會在最糟的時候自己發現。</p>
+          <dl class="limits">
+            <dt>沒有在真設備上跑過</dt>
+            <dd>所有證據都來自 snmpsim 的錄製（錄製本身取自真設備）。「某家廠商的韌體在某個 OID 回了奇怪的東西」這類事，只有接上真設備才會知道。</dd>
+
+            <dt>沒有真正的 schema migration</dt>
+            <dd>啟動時會自動補上新增的<strong>可為 NULL 欄位</strong>與<strong>索引</strong>；改型別、刪欄位、加 NOT NULL 欄位不會自動做，只會在日誌留一行警告。</dd>
+
+            <dt>即時推送尚未實作</dt>
+            <dd>前端是輪詢的。WebSocket 要成立缺的不是端點，而是一條從收集器行程到 API 行程的路。</dd>
+
+            <dt>Redis 還沒被用到</dt>
+            <dd>它在 compose 裡，但程式目前沒有在用它。拓樸回應快取是下一步之一。</dd>
+
+            <dt>整個部署流程沒有被端對端跑過一次</dt>
+            <dd>安裝腳本的語法、設定檔、compose 都被測過，但「在一台真機器上從零裝到好」還沒有。第一次上線請先在測試機跑一遍。</dd>
+          </dl>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</main>
+
+<footer class="band">
+  <div class="wrap">
+    <p class="foot">
+      <span>mf-topomon —— LLDP／CDP 網路拓撲監控</span>
+      <span>文件：部署與維護、設定說明、使用手冊、收不到鄰居的排查、效能與記憶體評估（42 節）。</span>
+      <span>這份介紹裡的每個數字都出自專案自己的量測文件；被推翻過的那一次也留在裡面。</span>
+    </p>
+  </div>
+</footer>
+
+<script>
+  document.querySelectorAll(".copy").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var text = button.getAttribute("data-copy") || "";
+      var done = function () {
+        var original = button.textContent;
+        button.textContent = "已複製";
+        setTimeout(function () { button.textContent = original; }, 1600);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, fallback);
+      } else {
+        fallback();
+      }
+      function fallback() {
+        // 剪貼簿被拒絕（有些桌面版與內嵌檢視會）：改成把指令選起來讓人自己複製
+        var pre = button.previousElementSibling;
+        if (!pre) { return; }
+        var range = document.createRange();
+        range.selectNodeContents(pre);
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        button.textContent = "已選取，請自行複製";
+      }
+    });
+  });
+</script>
+</body>
+</html>

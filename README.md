@@ -1,4 +1,4 @@
-# DEV-lldp-topomon
+# mf-topomon
 
 LLDP/CDP Topology Monitor - 網路拓撲監控系統
 
@@ -100,6 +100,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ## 文件
 
+- [專案介紹（單頁 HTML）](docs/INTRO.html) —— 給還沒看過這套東西的人：它解決什麼、量到什麼、還沒做到什麼
 - [部署與維護](docs/DEPLOYMENT.md) —— 一鍵安裝、`topomon` 每一個指令、認證與憑證、備份
 - [設定說明](docs/CONFIGURATION.md) —— 每個環境變數，以及設備端要不要改（不用）
 - [使用手冊](docs/USER_MANUAL.md) —— 介面怎麼用

@@ -1,4 +1,4 @@
-# DEV-lldp-topomon 系統設計文件 (SDD)
+# mf-topomon 系統設計文件 (SDD)
 
 **版本**：1.1  
 **日期**：2025-12-12  
@@ -10,7 +10,7 @@
 
 ### 1.1 目的
 
-本文件描述 DEV-lldp-topomon 系統的軟體設計，包含系統架構、模組設計、資料庫結構、API 規格等技術細節。
+本文件描述 mf-topomon 系統的軟體設計，包含系統架構、模組設計、資料庫結構、API 規格等技術細節。
 
 ### 1.2 範圍
 
@@ -276,7 +276,7 @@ services:
 ## 10. 專案目錄結構
 
 ```
-DEV-lldp-topomon/
+mf-topomon/
 ├── app/
 │   ├── api/           # API 路由
 │   ├── core/          # 核心服務

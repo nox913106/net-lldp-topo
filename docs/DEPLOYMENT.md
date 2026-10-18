@@ -525,7 +525,7 @@ nano .env
 
 ```env
 # 應用程式
-APP_NAME=DEV-lldp-topomon
+APP_NAME=mf-topomon
 APP_DEBUG=false
 APP_LOG_LEVEL=INFO
 APP_SECRET_KEY=your-random-secret-key-here
@@ -620,6 +620,7 @@ sudo journalctl -u topomon-collector -f
 
 ## 另外幾份文件
 
+* [專案介紹](INTRO.html) —— 單頁 HTML，可以直接給別人看
 * [設定說明](CONFIGURATION.md) —— 每一個環境變數，以及設備端要不要改
 * [使用手冊](USER_MANUAL.md) —— 介面怎麼用
 * [收不到 LLDP 鄰居](TROUBLESHOOTING_LLDP.md) —— 拓撲空白時從這裡查

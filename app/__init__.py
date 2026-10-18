@@ -1,3 +1,3 @@
 """
-DEV-lldp-topomon - LLDP/CDP Topology Monitor
+mf-topomon - LLDP/CDP Topology Monitor
 """

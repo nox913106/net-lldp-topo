@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
     
     # Application
-    app_name: str = "DEV-lldp-topomon"
+    app_name: str = "mf-topomon"
     app_debug: bool = False
     app_log_level: str = "INFO"
     app_secret_key: str = "change-this-to-random-string"

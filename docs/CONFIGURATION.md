@@ -1,4 +1,4 @@
-# DEV-lldp-topomon 設定說明
+# mf-topomon 設定說明
 
 ## 1. 環境變數
 
@@ -17,7 +17,7 @@ cp .env.example .env
 
 ```env
 # 應用程式
-APP_NAME=DEV-lldp-topomon
+APP_NAME=mf-topomon
 APP_DEBUG=false
 # DEBUG 會多出「為什麼這個鄰居沒被自動發現」那一類的行（見
 # docs/TROUBLESHOOTING_LLDP.md 第 6 種情況）。認不得的值退回 INFO
@@ -193,7 +193,7 @@ ELASTICSEARCH_URL=http://localhost:9200
 
 ```yaml
 app:
-  name: "DEV-lldp-topomon"
+  name: "mf-topomon"
   debug: false
   log_level: "INFO"
 
