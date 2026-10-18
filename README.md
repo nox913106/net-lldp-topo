@@ -248,7 +248,7 @@ pip-compile --generate-hashes --strip-extras --no-header requirements.in
 ```
 
 `.github/workflows/ci.yml` 跑三個工作：**tests**（照 lock 安裝，起一個 SNMP
-模擬器與一個 nginx，跑 186 項測試 —— 而且跑兩次，一次 SQLite、一次
+模擬器與一個 nginx，跑 189 項測試 —— 而且跑兩次，一次 SQLite、一次
 `postgres:15`，因為有兩類錯只在 PostgreSQL 發作，見
 [docs/PERFORMANCE.md 第 39.3 節](docs/PERFORMANCE.md)）、
 **lock**（就地重編三份 lock 再 `git diff --exit-code`，抓「改了 `.in` 沒重編」
@@ -256,7 +256,7 @@ pip-compile --generate-hashes --strip-extras --no-header requirements.in
 fail，但 CI 設 `REQUIRE_SNMPSIM=1` 把那個 skip 變成失敗 —— 否則 CI 會在什麼
 都沒測的情況下變綠。
 
-那 186 項裡有 22 項是端對端的：真的跑一輪盤點與快迴圈、真的 trap 封包進真的
+那 189 項裡有 22 項是端對端的：真的跑一輪盤點與快迴圈、真的 trap 封包進真的
 接收器、租約與分片心跳對真的資料庫（`tests/test_*_e2e.py`，說明在
 `tests/README.md`）。在那之前這些證明都只活在開發容器的腳本裡。
 

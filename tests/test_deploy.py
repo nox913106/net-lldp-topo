@@ -19,6 +19,7 @@ What is *not* here: a real deployment. That needs a docker daemon and several
 minutes, and it is the one thing CI cannot do for free. docs/DEPLOYMENT.md
 says what was and was not exercised.
 """
+import os
 import re
 import shutil
 import subprocess
@@ -33,6 +34,21 @@ INSTALL = ROOT / "install.sh"
 COMPOSE = ROOT / "docker-compose.yml"
 
 needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
+
+# The scripts run with `set -u`, so a variable they forgot to guard is a hard
+# error - but only on a machine where it is unset. This session's shell had
+# GITHUB_TOKEN exported, which made `topomon --help` work here and fail in CI
+# with "GITHUB_TOKEN: unbound variable". So the CLI is always run with a
+# deliberately bare environment: PATH and HOME, nothing else.
+CLEAN_ENV = {
+    "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+    "HOME": os.environ.get("HOME", "/root"),
+}
+
+
+def run_cli(*args, env=None):
+    return subprocess.run([str(TOPOMON), *args], capture_output=True, text=True,
+                          cwd=str(ROOT), timeout=60, env=env or CLEAN_ENV)
 
 
 @pytest.fixture(scope="module")
@@ -90,17 +106,66 @@ def test_every_command_is_reachable_and_documented():
     (["version"], 0),           # the one informational command that needs no docker
 ])
 def test_the_dispatcher_exits_the_way_a_script_would_expect(args, expected):
-    result = subprocess.run([str(TOPOMON), *args], capture_output=True, text=True,
-                            cwd=str(ROOT), timeout=60)
+    result = run_cli(*args)
     assert result.returncode == expected, result.stdout + result.stderr
 
 
 @needs_bash
 def test_version_names_the_checkout():
-    result = subprocess.run([str(TOPOMON), "version"], capture_output=True,
-                            text=True, cwd=str(ROOT), timeout=60)
+    result = run_cli("version")
     assert "commit" in result.stdout
     assert str(ROOT) in result.stdout
+
+
+@needs_bash
+def test_nothing_depends_on_a_variable_the_developer_happens_to_have():
+    """
+    The bug this exists for, in full: the usage text is a heredoc with an
+    unquoted delimiter, so `$GITHUB_TOKEN` inside the documented install
+    command was *expanded* rather than printed - and under `set -u` an unset
+    variable there aborts the script. `topomon --help` therefore exited 1 on
+    every machine that did not happen to have GITHUB_TOKEN exported. It
+    passed locally and failed in CI.
+
+    So: the two commands that need no docker must work with nothing in the
+    environment but PATH and HOME.
+    """
+    for args in (["--help"], ["version"]):
+        result = run_cli(*args)
+        assert result.returncode == 0, (
+            f"topomon {' '.join(args)} needs something from the environment: "
+            f"{result.stderr.strip()}"
+        )
+        assert "unbound variable" not in result.stderr
+
+
+@pytest.mark.parametrize("script", [TOPOMON, INSTALL], ids=lambda p: p.name)
+def test_a_token_is_never_expanded_unguarded(script):
+    """
+    Every live reference to the token variables is either guarded with :- or
+    escaped (printed, not expanded). This is the static half of the test
+    above - it also covers the places only a real install reaches.
+
+    Two things are not a finding: comment lines (the install command in the
+    header is documentation, and `$GITHUB_TOKEN` there is what the operator
+    types), and a name the script assigns itself before using it - which is
+    how install.sh makes TOPOMON_TOKEN always set.
+    """
+    text = script.read_text()
+    for name in ("GITHUB_TOKEN", "TOPOMON_TOKEN"):
+        if re.search(rf"^\s*{name}=", text, re.MULTILINE):
+            continue   # the script gives it a value of its own
+        for number, line in enumerate(text.splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for match in re.finditer(r"(.?)\$\{?" + name, line):
+                rest = line[match.end():match.end() + 2]
+                guarded = rest.startswith(":-") or rest.startswith("}")
+                escaped = match.group(1) == "\\"
+                assert guarded or escaped, (
+                    f"{script.name}:{number}: ${name} is expanded unguarded - "
+                    f"set -u turns that into an abort where it is unset\n  {line}"
+                )
 
 
 def test_install_hands_over_to_the_cli():

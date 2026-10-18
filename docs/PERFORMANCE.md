@@ -2663,14 +2663,14 @@ exit 0，所以可以直接丟進 cron 或監控。
 
 | | |
 |---|---|
-| 全部測試 | **186 項通過**（原本 153，新增 33：代理 8、HTTP 介面 7、部署 18） |
+| 全部測試 | **189 項通過**（原本 153，新增 36：代理 8、HTTP 介面 7、部署 21） |
 | 代理那 8 項 | 對真的 nginx 1.24，跑部署用的那份設定 |
 | `deploy/nginx.conf` | `nginx -t` 通過（`http2 on;` 在 1.24 上要註解掉，那是 1.25.1 才有的寫法） |
 | `docker-compose.yml` | `docker compose config` 解析通過，五個服務 |
 | 兩個腳本 | `bash -n` 通過；`topomon` 的 dispatch、usage 與 `cmd_*` 三份清單一致（測試在守） |
 | CI | tests 工作多裝一個 nginx，`REQUIRE_NGINX=1`；PostgreSQL 從 16 改成 **15**，跟部署出去的那一版對齊 |
 
-還有一個是「驗了才知道」的：文件上那個乾淨的一行**不能用**。寫完之後去
+還有兩個是「驗了才知道」的。第一個：文件上那個乾淨的一行**不能用**。寫完之後去
 `curl` 那個 URL，回的是 404 —— repo 是私有的，而私有檔案對未認證的請求回
 404 不回 401，所以錯誤訊息會把人帶往「路徑打錯了嗎」。install.sh 現在吃
 `GITHUB_TOKEN`／`TOPOMON_TOKEN`，所有 git URL 都由一個 `repo_url()` 組出來，
@@ -2678,6 +2678,36 @@ exit 0，所以可以直接丟進 cron 或監控。
 那一個函式、沒有任何輸出會印到它、`.git/config` 兩條路徑都 chmod 600）。
 教訓跟第 38 節同一個形狀：沒有去打那個 URL，這份文件就會是一句很有自信的
 假話。
+
+第二個更難看，而且是 CI 抓到的、不是我抓到的：修好上面那件事的同一個
+commit 讓 `topomon --help` 在 CI 兩條腿都紅了，而我在這台機器上跑是綠的。
+原因是 usage 的 heredoc 用的是**不加引號的分隔符**，所以我寫進說明裡的
+`$GITHUB_TOKEN` 不是被印出來而是被**展開**，而 `set -u` 遇到沒設定的變數會
+直接中止 —— 於是任何沒有 export `GITHUB_TOKEN` 的機器上，
+`topomon --help`、`topomon`（不帶指令）與打錯指令全部回 1。
+
+我這台有那個變數（這個開發環境的 GitHub 憑證），所以本地測試一路綠燈。這是
+一個很典型的「測試跑在作者的環境裡」：
+
+```
+$ ./tools/topomon --help            ; echo $?     # 我這台
+0
+$ env -u GITHUB_TOKEN ./tools/topomon --help ; echo $?
+./tools/topomon: line 640: GITHUB_TOKEN: unbound variable
+1
+```
+
+修法是把那兩個 `$` 轉義。守它的有兩層，而且兩層都先確認「把 bug 放回去會
+變紅」：
+
+* 所有執行 CLI 的測試改成在**刻意貧瘠的環境**下跑（只有 `PATH` 與 `HOME`），
+  所以作者 shell 裡的任何變數都不可能再遮住這類錯誤；
+* 一個靜態檢查：兩個腳本裡對 `GITHUB_TOKEN`／`TOPOMON_TOKEN` 的每一次引用，
+  要嘛加了 `:-` 預設值、要嘛被轉義、要嘛那個名字是腳本自己賦值過的
+  （install.sh 的 `TOPOMON_TOKEN` 就是），註解行不算。
+
+把那個轉義拿掉之後，五項測試會紅（三個 dispatcher、一個貧瘠環境、一個靜態
+檢查）—— 在修之前它們只有靜態那一個會紅，另外四個是加了貧瘠環境才會。
 
 **沒有驗到的：一次真的部署。** 這個開發容器裡沒有 docker daemon
 （`/var/run/docker.sock` 不存在），所以 `install.sh` 的 apt 與 docker 安裝

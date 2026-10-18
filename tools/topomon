@@ -658,9 +658,9 @@ ${BOLD}topomon${NC} —— LLDP/CDP 拓撲監控的部署與維護
 第一次安裝（在一台乾淨的 Ubuntu 上）—— 這個 repo 是私有的，所以要帶權杖：
 
   export GITHUB_TOKEN=ghp_xxx
-  curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \\
+  curl -fsSL -H "Authorization: Bearer \$GITHUB_TOKEN" \\
     https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh \\
-    | sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash
+    | sudo GITHUB_TOKEN="\$GITHUB_TOKEN" bash
 
 文件：docs/DEPLOYMENT.md（部署）、docs/CONFIGURATION.md（設定）、
       docs/USER_MANUAL.md（使用）、docs/TROUBLESHOOTING_LLDP.md（收不到鄰居）
