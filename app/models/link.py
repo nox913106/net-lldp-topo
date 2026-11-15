@@ -2,12 +2,13 @@
 Link models - Raw and merged link information
 """
 from sqlalchemy import (
-    Column, Integer, String, Float, BigInteger, Boolean, DateTime,
+    Column, Integer, String, Float, BigInteger, Boolean,
     ForeignKey, JSON, Index
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.database import Base
+from app.db.types import UTCDateTime
 
 
 class RawLink(Base):
@@ -36,7 +37,7 @@ class RawLink(Base):
     out_octets = Column(BigInteger)
     in_bps = Column(BigInteger)
     out_bps = Column(BigInteger)
-    sampled_at = Column(DateTime(timezone=True))
+    sampled_at = Column(UTCDateTime)
 
     # ifOperStatus of the local port (RFC 2863): 1 up, 2 down, 7 lowerLayerDown,
     # and the rest mean the device is not telling us anything useful. NULL is
@@ -48,10 +49,10 @@ class RawLink(Base):
     # milliseconds of the event, by the trap receiver
     # (app/core/trap_receiver.py). The inventory poll never touches it.
     oper_status = Column(Integer)
-    oper_status_at = Column(DateTime(timezone=True))
+    oper_status_at = Column(UTCDateTime)
 
-    discovered_at = Column(DateTime(timezone=True), server_default=func.now())
-    last_seen = Column(DateTime(timezone=True), server_default=func.now())
+    discovered_at = Column(UTCDateTime, server_default=func.now())
+    last_seen = Column(UTCDateTime, server_default=func.now())
 
     # Relationships
     local_device = relationship("Device", back_populates="raw_links")
@@ -96,7 +97,7 @@ class MergedLink(Base):
     port_pairs = Column(JSON)  # Changed from port_details, use JSON for SQLite compat
 
     is_excluded = Column(Boolean, default=False)
-    last_updated = Column(DateTime(timezone=True), server_default=func.now())
+    last_updated = Column(UTCDateTime, server_default=func.now())
 
     # Relationships
     device_a = relationship("Device", foreign_keys=[device_a_id])
@@ -121,4 +122,4 @@ class ExcludeRule(Base):
     pattern = Column(String(255))
     device_a_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"))
     device_b_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(UTCDateTime, server_default=func.now())

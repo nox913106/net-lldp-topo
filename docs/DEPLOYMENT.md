@@ -88,9 +88,12 @@ curl -fsSL .../install.sh | sudo TOPOMON_DIR=/srv/topomon TOPOMON_REPO=https://g
 5. 之後交給 `tools/topomon deploy`，它才是真正做事的那一個：
    * 從 `.env.example` 產生 `.env`，裡面放**隨機**的 `APP_SECRET_KEY` 與
      資料庫密碼；
-   * 產生 `auth/htpasswd`（隨機密碼）與自簽 TLS 憑證；
+   * 產生 `auth/htpasswd`（隨機密碼）與自簽 TLS 憑證，並把 `auth/` 與
+     `htpasswd` 交給 nginx 映像的 worker 群組讀（750 / 640，群組 101）。
+     不這樣做的話 worker 讀不到密碼檔，**對的密碼也會得到 500**；
    * `docker compose up -d --build`；
    * 等 `/health/ready` 回答「資料庫也連得上」為止，最多 180 秒；
+   * 帶一組錯的帳密去問一次，確認代理真的驗得了密碼（要 401，不是 500）；
    * 把自己連到 `/usr/local/bin/topomon`。
 
 沒有互動式問題 —— 它要能從管線被餵進 bash。
@@ -131,13 +134,14 @@ topomon health  (/opt/topomon @ a1b2c3d)
   [ OK ] 代理在聽 :80
   [ OK ] 應用程式就緒，資料庫連得上
   [ OK ] 認證有在要求（/ 回 401）
+  [ OK ] 代理驗得了密碼（錯的帳密被拒絕，而不是 500）
   [ OK ] 收集器 live=1/1
      shard 0/1  12.3s 前回報  盤點 300s / 快 60s / 位址 3600s
 
 一切正常
 ```
 
-五條都是「會無聲壞掉」的東西：
+六條都是「會無聲壞掉」的東西：
 
 * **容器** —— 少了 `collector`，UI 還是會好好地顯示一份越來越舊的拓撲；
 * **代理在聽** —— 設定寫錯 nginx 會起不來，而 app 還活著；
@@ -145,6 +149,11 @@ topomon health  (/opt/topomon @ a1b2c3d)
   `SELECT 1`；
 * **認證有在要求** —— 一個沒有密碼的管理介面長得跟有密碼的一模一樣，直到
   有人逛進來。這一條直接去打 `/` 看是不是 401；
+* **代理驗得了密碼** —— 上一條分不出「會驗密碼」與「讀不到密碼檔」：沒帶
+  帳密的請求在 nginx 打開 `htpasswd` 之前就回 401 了。所以這一條帶一組一定
+  錯的帳密去問，401 才是對的；500 表示 nginx 讀不到 `auth/htpasswd`，這時候
+  **沒有任何人登入得進去**，而其他每一條都還是綠的。跑一次
+  `sudo topomon deploy` 會把權限修好；
 * **收集器在回報** —— API 與收集器是兩個行程，`live=0/1` 表示沒有人在輪詢，
   而那時候畫面上什麼都不會變紅（docs/SDD-API.md 第 8 節）。
 
@@ -246,8 +255,8 @@ sudo topomon restore /opt/topomon/backups/topomon-20260101-030000.sql.gz
 0 3 * * * root /usr/local/bin/topomon backup >/dev/null 2>&1
 ```
 
-**備份裡沒有 `.env` 與 `auth/`**（密鑰、資料庫密碼、憑證、htpasswd）。那兩個
-目錄要自己另外收好，否則復原之後連不上資料庫、也進不了介面：
+**備份裡沒有 `.env`、`auth/` 與 `settings.json`**（密鑰、資料庫密碼、憑證、
+htpasswd，以及在設定頁存的 SNMP 設定）。這些要自己另外收好，否則復原之後連不上資料庫、也進不了介面：
 
 ```bash
 sudo tar czf /mnt/nas/topomon-secrets.tgz -C /opt/topomon .env auth

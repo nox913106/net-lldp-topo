@@ -37,6 +37,7 @@ from app.core.snmp_oids import (
     IF_OPER_STATUS,
     INET_ADDRESS_TYPE_IPV4, IP_ADDRESS_IF_INDEX, IP_AD_ENT_ADDR,
     SYS_NAME, SYS_DESCR, SYS_UPTIME,
+    HR_STORAGE_RAM, HR_STORAGE_SIZE, HR_STORAGE_TYPE, HR_STORAGE_USED,
     VENDOR_OIDS, detect_vendor
 )
 
@@ -44,6 +45,11 @@ logger = logging.getLogger(__name__)
 
 # Default row cap for a single walk
 _DEFAULT_MAX_ROWS = 10000
+
+# CPU and memory tables have one row per supervisor, stack member, core or
+# memory pool - a handful. The cap is only there so that a device answering
+# with something unexpected cannot turn a metric read into a long walk.
+_METRIC_MAX_ROWS = 256
 
 # Tables that more than one collection step needs inside a single poll.
 # Only these are cached, so the saving does not come at the price of pinning
@@ -291,9 +297,15 @@ class InterfaceStats:
 
 @dataclass
 class DeviceMetrics:
-    """Device CPU/Memory metrics"""
-    cpu_percent: float
-    memory_percent: float
+    """
+    Device CPU/Memory metrics.
+
+    None is "could not be read", and it is stored as NULL: a metric that was
+    not measured must not look like 0%, which is what an idle device reports
+    and what an alert recovers on.
+    """
+    cpu_percent: Optional[float]
+    memory_percent: Optional[float]
 
 
 @dataclass
@@ -1009,36 +1021,73 @@ class SNMPCollector:
 
         return stats
 
+    async def _column_numbers(self, ip: str, oid: str) -> Dict[str, int]:
+        """A table column as {instance: number}, without the rows that are not one"""
+        numbers: Dict[str, int] = {}
+        for index, value in (
+            await self._snmp_walk(ip, oid, max_rows=_METRIC_MAX_ROWS)
+        ).items():
+            number = snmp_value_to_int_or_none(value)
+            if number is not None:
+                numbers[index] = number
+        return numbers
+
+    async def _percent_scalar(self, ip: str, oid: str) -> Optional[float]:
+        value = await self._snmp_get(ip, oid)
+        number = snmp_value_to_int_or_none(value) if value is not None else None
+        return float(number) if number is not None else None
+
     async def get_device_metrics(self, ip: str, vendor: str) -> Optional[DeviceMetrics]:
-        """Get device CPU and memory metrics"""
+        """
+        CPU and memory as percentages, or None for whichever could not be read.
+
+        The vendor table (app/core/snmp_oids.py) says for each metric whether
+        it is a scalar or a table column. That distinction is the whole job
+        here: a column has no value of its own, so reading it with a GET
+        answers noSuchInstance on every device - and that used to be turned
+        into 0.0, which is how Cisco, HP and Palo Alto devices came to report
+        an idle CPU and empty memory for ever.
+        """
         if vendor not in VENDOR_OIDS:
             return None
 
         oids = VENDOR_OIDS[vendor]
-        cpu_percent = 0.0
-        memory_percent = 0.0
+        cpu_percent: Optional[float] = None
+        memory_percent: Optional[float] = None
 
         try:
             if "cpu" in oids:
-                cpu_val = await self._snmp_get(ip, oids["cpu"])
-                if cpu_val is not None:
-                    cpu_percent = float(snmp_value_to_int(cpu_val))
-            elif "cpu_5min" in oids:
-                cpu_val = await self._snmp_get(ip, oids["cpu_5min"])
-                if cpu_val is not None:
-                    cpu_percent = float(snmp_value_to_int(cpu_val))
+                cpu_percent = await self._percent_scalar(ip, oids["cpu"])
+            elif "cpu_table" in oids:
+                loads = list((await self._column_numbers(ip, oids["cpu_table"])).values())
+                if loads:
+                    cpu_percent = float(
+                        max(loads) if oids.get("cpu_reduce") == "max"
+                        else sum(loads) / len(loads)
+                    )
 
             if "memory" in oids:
-                mem_val = await self._snmp_get(ip, oids["memory"])
-                if mem_val is not None:
-                    memory_percent = float(snmp_value_to_int(mem_val))
-            elif "memory_used" in oids and "memory_free" in oids:
-                used = snmp_value_to_int(await self._snmp_get(ip, oids["memory_used"]))
-                free = snmp_value_to_int(await self._snmp_get(ip, oids["memory_free"]))
-                total = used + free
+                memory_percent = await self._percent_scalar(ip, oids["memory"])
+            elif "memory_used_table" in oids:
+                used = await self._column_numbers(ip, oids["memory_used_table"])
+                if "memory_free_table" in oids:
+                    free = await self._column_numbers(ip, oids["memory_free_table"])
+                    # Only the pools that answered both questions
+                    pools = used.keys() & free.keys()
+                    total = sum(used[i] + free[i] for i in pools)
+                    in_use = sum(used[i] for i in pools)
+                else:
+                    size = await self._column_numbers(ip, oids["memory_total_table"])
+                    pools = used.keys() & size.keys()
+                    total = sum(size[i] for i in pools)
+                    in_use = sum(used[i] for i in pools)
                 if total > 0:
-                    memory_percent = (used / total) * 100
+                    memory_percent = (in_use / total) * 100
+            elif oids.get("host_resources"):
+                memory_percent = await self._host_resources_memory(ip)
 
+            if cpu_percent is None and memory_percent is None:
+                return None
             return DeviceMetrics(
                 cpu_percent=cpu_percent,
                 memory_percent=memory_percent
@@ -1047,6 +1096,28 @@ class SNMPCollector:
         except Exception as e:
             logger.error(f"Failed to get metrics for {ip}: {e}")
             return None
+
+    async def _host_resources_memory(self, ip: str) -> Optional[float]:
+        """
+        RAM in use from HOST-RESOURCES-MIB.
+
+        hrStorageTable lists disks, swap and buffers alongside RAM, in
+        allocation units of their own, so the rows have to be filtered by
+        hrStorageType rather than summed - used/size is a ratio, so the unit
+        cancels out as long as both come from the same row.
+        """
+        types = await self._snmp_walk(ip, HR_STORAGE_TYPE, max_rows=_METRIC_MAX_ROWS)
+        ram = [
+            index for index, value in types.items()
+            if snmp_value_to_text(value).strip(".") == HR_STORAGE_RAM
+        ]
+        if not ram:
+            return None
+        size = await self._column_numbers(ip, HR_STORAGE_SIZE)
+        used = await self._column_numbers(ip, HR_STORAGE_USED)
+        total = sum(size.get(i, 0) for i in ram if i in used)
+        in_use = sum(used[i] for i in ram if i in size)
+        return (in_use / total) * 100 if total > 0 else None
 
     async def _snmp_get_many(
         self, ip: str, oids: List[str]

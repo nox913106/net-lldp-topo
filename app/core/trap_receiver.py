@@ -60,6 +60,7 @@ from app.db.database import async_session_maker
 from app.models.alert import AlertProfile
 from app.models.device import Device, DeviceAddress
 from app.models.link import RawLink
+from app.core.clock import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -503,7 +504,7 @@ class TrapReceiver:
                 .where(RawLink.local_port_index.in_({i for _, i in wanted}))
             )).all()
 
-            now = datetime.utcnow()
+            now = utcnow()
             updates: List[Dict[str, Any]] = []
             touched: List[int] = []
             deferred: List[int] = []

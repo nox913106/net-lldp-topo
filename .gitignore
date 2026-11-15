@@ -77,3 +77,8 @@ coverage.xml
 # 部署產生的，不進版控
 /auth/
 /backups/
+
+# Settings saved from the web UI (app/core/app_settings.py). They hold the
+# default SNMP community and belong to the installation, not to the code.
+/settings.json
+/settings.json.tmp

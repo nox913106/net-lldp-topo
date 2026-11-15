@@ -82,6 +82,10 @@ class _Upstream(BaseHTTPRequestHandler):
         pass
 
 
+# Paths inside the running proxy's directory that a test needs to reach
+_PROXY_FILES = {}
+
+
 @pytest.fixture(scope="session")
 def proxy(tmp_path_factory):
     """
@@ -177,6 +181,8 @@ http {{
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         _wait_until_listening(https_port, proc, root / "error.log")
+        # The password file, for the one test that makes it unreadable
+        _PROXY_FILES["htpasswd"] = auth / "htpasswd"
         yield http_port, https_port
     finally:
         proc.terminate()
@@ -340,3 +346,42 @@ def test_the_config_under_test_is_the_one_that_ships(proxy):
 
 if __name__ == "__main__":  # pragma: no cover - convenience
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# -- a password file nginx cannot read ---------------------------------------
+
+
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="root can read a file whatever its mode, so this proves nothing as root",
+)
+def test_an_unreadable_password_file_looks_healthy_until_someone_logs_in(proxy):
+    """
+    What shipped: auth/ was 0700 and htpasswd 0600, both owned by root, and
+    the nginx worker that checks passwords is not root. So nobody could log
+    in - and every probe said the deployment was fine, because nginx answers
+    a request with *no* credentials with a 401 before it ever opens the file.
+
+    This is that state, reproduced by taking the read bit away, and it is
+    why `topomon health` and `topomon deploy` now probe with a wrong
+    password (tools/topomon, auth_probe): 401 means the file was read and
+    the password refused, 500 means nobody can get in.
+    """
+    _, https = proxy
+    htpasswd = _PROXY_FILES["htpasswd"]
+    mode = htpasswd.stat().st_mode
+    htpasswd.chmod(0)
+    try:
+        without, _ = get(f"https://127.0.0.1:{https}/")
+        wrong, _ = get(f"https://127.0.0.1:{https}/", "probe", "not-the-password")
+        right, _ = get(f"https://127.0.0.1:{https}/", USER, PASSWORD)
+    finally:
+        htpasswd.chmod(mode)
+
+    assert without == 401, "the unauthenticated probe cannot tell anything is wrong"
+    assert wrong == 500, "a wrong password is what exposes it"
+    assert right == 500, "and the right password does not get in either"
+
+    # Readable again: the same probe now gets the answer that means "works"
+    again, _ = get(f"https://127.0.0.1:{https}/", "probe", "not-the-password")
+    assert again == 401

@@ -299,6 +299,7 @@
 
 <body>
     <script src="/static/js/i18n.js"></script>
+    <script src="/static/js/util.js"></script>
     <div class="app-container">
         <!-- Header -->
         <header class="header">
@@ -390,12 +391,17 @@
 
     <script>
         const API_BASE = '/api/v1';
+        const UNASSIGNED = 'unassigned';
         let groups = [];
         let selectedGroupId = null;
         let editingGroupId = null;
+        let unassignedTotal = null;
+
+        const t = key => i18n.t(key);
 
         // Load groups on page load
         document.addEventListener('DOMContentLoaded', () => {
+            i18n.init();
             loadGroups();
             setupEventListeners();
         });
@@ -406,7 +412,7 @@
             document.getElementById('btn-modal-cancel').addEventListener('click', closeModal);
             document.getElementById('btn-modal-save').addEventListener('click', saveGroup);
             document.getElementById('btn-edit-group').addEventListener('click', () => {
-                if (selectedGroupId) openModal(selectedGroupId);
+                if (selectedGroupId && selectedGroupId !== UNASSIGNED) openModal(selectedGroupId);
             });
             document.getElementById('btn-delete-group').addEventListener('click', deleteGroup);
             document.getElementById('btn-move').addEventListener('click', moveDevices);
@@ -415,138 +421,145 @@
 
         async function loadGroups() {
             try {
-                const response = await fetch(`${API_BASE}/groups`);
-                groups = await response.json();
-                renderGroups();
-                updateParentSelect();
+                groups = await apiRequest(`${API_BASE}/groups`);
+                // Only the count: the devices themselves are loaded when the
+                // entry is opened.
+                const loose = await apiRequest(`${API_BASE}/devices?ungrouped=true&limit=1`);
+                unassignedTotal = loose.total;
             } catch (error) {
                 console.error('Error loading groups:', error);
             }
+            renderGroups();
+            updateParentSelect();
+            updateActions();
         }
 
         function renderGroups() {
             const container = document.getElementById('groups-tree');
 
-            // Add regular groups
             let html = groups.map(g => `
-                <div class="group-item ${selectedGroupId === g.id ? 'active' : ''}" 
+                <div class="group-item ${selectedGroupId === g.id ? 'active' : ''}"
                      data-id="${g.id}" onclick="selectGroup(${g.id})">
-                    <span class="group-icon" style="color: ${g.color || '#58a6ff'}">📁</span>
-                    <span class="group-name">${g.name}</span>
+                    <span class="group-icon" style="color: ${escapeHtml(g.color || '#58a6ff')}">📁</span>
+                    <span class="group-name">${escapeHtml(g.name)}</span>
                     <span class="group-count">${g.device_count}</span>
                 </div>
             `).join('');
 
-            // Add "Unassigned" pseudo-group
+            // Devices that are in no group. This is where every device
+            // starts, so it is also the only way into a group: pick devices
+            // here and move them.
             html += `
-                <div class="group-item unassigned ${selectedGroupId === 'unassigned' ? 'active' : ''}" 
-                     onclick="selectGroup('unassigned')">
+                <div class="group-item unassigned ${selectedGroupId === UNASSIGNED ? 'active' : ''}"
+                     onclick="selectGroup('${UNASSIGNED}')">
                     <span class="group-icon">📦</span>
-                    <span class="group-name">Unassigned</span>
-                    <span class="group-count" id="unassigned-count">-</span>
+                    <span class="group-name">${escapeHtml(t('unassigned'))}</span>
+                    <span class="group-count" id="unassigned-count">${unassignedTotal ?? '-'}</span>
                 </div>
             `;
 
             container.innerHTML = html;
         }
 
+        function updateActions() {
+            const real = selectedGroupId !== null && selectedGroupId !== UNASSIGNED;
+            document.getElementById('btn-edit-group').style.display = real ? '' : 'none';
+            document.getElementById('btn-delete-group').style.display = real ? '' : 'none';
+            // Nothing to remove a device from when it is in no group
+            document.getElementById('btn-remove').style.display = real ? '' : 'none';
+            document.getElementById('assignment-toolbar').style.display =
+                selectedGroupId === null ? 'none' : 'flex';
+        }
+
         async function selectGroup(groupId) {
             selectedGroupId = groupId;
             renderGroups();
+            updateActions();
 
             const title = document.getElementById('group-title');
-            const toolbar = document.getElementById('assignment-toolbar');
+            // The static heading carries data-i18n; once a group is chosen
+            // the title is that group's name and must not be translated back.
+            title.removeAttribute('data-i18n');
 
-            if (groupId === 'unassigned') {
-                title.textContent = '📦 Unassigned Devices';
-                await loadUnassignedDevices();
-                toolbar.style.display = 'flex';
+            if (groupId === UNASSIGNED) {
+                title.textContent = `📦 ${t('unassigned')}`;
+                await loadDevicesInto(`${API_BASE}/devices?ungrouped=true&limit=0`, t('noUnassignedDevices'));
             } else {
                 const group = groups.find(g => g.id === groupId);
-                title.textContent = `📁 ${group?.name || 'Unknown'}`;
-                await loadGroupDevices(groupId);
-                toolbar.style.display = 'flex';
+                title.textContent = `📁 ${group?.name || ''}`;
+                await loadDevicesInto(`${API_BASE}/groups/${groupId}/devices`, t('noDevicesHere'));
             }
 
             updateMoveToSelect();
         }
 
-        async function loadGroupDevices(groupId) {
+        async function loadDevicesInto(url, emptyText) {
             try {
-                const response = await fetch(`${API_BASE}/groups/${groupId}/devices`);
-                const data = await response.json();
-                renderDevices(data.devices);
+                const data = await apiRequest(url);
+                renderDevices(data.devices, emptyText);
             } catch (error) {
                 console.error('Error loading devices:', error);
+                renderDevices([], `${t('error')}: ${error.message}`);
             }
         }
 
-        async function loadUnassignedDevices() {
-            // This would need a backend endpoint
-            // For now, show placeholder
-            document.getElementById('device-list').innerHTML = `
-                <p style="color: var(--text-secondary); text-align: center; padding: 2rem;">
-                    Use the Devices page to view unassigned devices
-                </p>
-            `;
-        }
-
-        function renderDevices(devices) {
+        function renderDevices(devices, emptyText) {
             const container = document.getElementById('device-list');
 
             if (!devices || devices.length === 0) {
                 container.innerHTML = `
                     <p style="color: var(--text-secondary); text-align: center; padding: 2rem;">
-                        No devices in this group
+                        ${escapeHtml(emptyText)}
                     </p>
                 `;
                 return;
             }
 
-            container.innerHTML = devices.map(d => `
-                <div class="device-row">
+            container.innerHTML = devices.map(d => {
+                const status = d.status || 'unknown';
+                // The stylesheet's class for a device that answers is "online"
+                const css = status === 'managed' ? 'online' : status;
+                const label = status === 'managed' ? t('online') : t(status);
+                return `
+                <label class="device-row" style="cursor: pointer;">
                     <input type="checkbox" value="${d.id}">
                     <div class="device-info">
-                        <div class="device-hostname">${d.hostname}</div>
-                        <div class="device-ip">${d.ip_address}</div>
+                        <div class="device-hostname">${escapeHtml(d.hostname)}</div>
+                        <div class="device-ip">${escapeHtml(d.ip_address)}</div>
                     </div>
-                    <span class="device-status ${d.status || 'online'}">${d.status || 'unknown'}</span>
-                </div>
-            `).join('');
+                    <span class="device-status ${escapeHtml(css)}">${escapeHtml(label)}</span>
+                </label>`;
+            }).join('');
         }
 
         function updateParentSelect() {
             const select = document.getElementById('group-parent');
-            select.innerHTML = '<option value="">None (Top Level)</option>' +
-                groups.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
+            select.innerHTML = `<option value="">${escapeHtml(t('noneTopLevel'))}</option>` +
+                groups
+                    // A group cannot be its own parent
+                    .filter(g => g.id !== editingGroupId)
+                    .map(g => `<option value="${g.id}">${escapeHtml(g.name)}</option>`).join('');
         }
 
         function updateMoveToSelect() {
             const select = document.getElementById('move-to-group');
-            select.innerHTML = '<option value="">Move selected to...</option>' +
+            select.innerHTML = `<option value="">${escapeHtml(t('moveSelectedTo'))}</option>` +
                 groups.filter(g => g.id !== selectedGroupId)
-                    .map(g => `<option value="${g.id}">${g.name}</option>`).join('');
+                    .map(g => `<option value="${g.id}">${escapeHtml(g.name)}</option>`).join('');
         }
 
         function openModal(groupId = null) {
             editingGroupId = groupId;
+            updateParentSelect();
             const modal = document.getElementById('group-modal');
             const title = document.getElementById('modal-title');
+            const group = groupId ? groups.find(g => g.id === groupId) : null;
 
-            if (groupId) {
-                const group = groups.find(g => g.id === groupId);
-                title.textContent = 'Edit Group';
-                document.getElementById('group-name').value = group?.name || '';
-                document.getElementById('group-description').value = group?.description || '';
-                document.getElementById('group-parent').value = group?.parent_id || '';
-                document.getElementById('group-color').value = group?.color || '#58a6ff';
-            } else {
-                title.textContent = 'New Group';
-                document.getElementById('group-name').value = '';
-                document.getElementById('group-description').value = '';
-                document.getElementById('group-parent').value = '';
-                document.getElementById('group-color').value = '#58a6ff';
-            }
+            title.textContent = group ? t('editGroup') : t('newGroup');
+            document.getElementById('group-name').value = group?.name || '';
+            document.getElementById('group-description').value = group?.description || '';
+            document.getElementById('group-parent').value = group?.parent_id || '';
+            document.getElementById('group-color').value = group?.color || '#58a6ff';
 
             modal.style.display = 'flex';
         }
@@ -557,47 +570,51 @@
         }
 
         async function saveGroup() {
+            const parent = document.getElementById('group-parent').value;
             const data = {
-                name: document.getElementById('group-name').value,
-                description: document.getElementById('group-description').value,
-                parent_id: document.getElementById('group-parent').value || null,
+                name: document.getElementById('group-name').value.trim(),
+                description: document.getElementById('group-description').value.trim() || null,
+                parent_id: parent ? Number(parent) : null,
                 color: document.getElementById('group-color').value
             };
+            if (!data.name) {
+                alert(t('groupNameRequired'));
+                return;
+            }
 
             try {
-                const url = editingGroupId
-                    ? `${API_BASE}/groups/${editingGroupId}`
-                    : `${API_BASE}/groups`;
-                const method = editingGroupId ? 'PUT' : 'POST';
-
-                await fetch(url, {
-                    method,
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
-
+                if (editingGroupId) {
+                    await apiRequest(`${API_BASE}/groups/${editingGroupId}`, apiJson('PUT', data));
+                } else {
+                    await apiRequest(`${API_BASE}/groups`, apiJson('POST', data));
+                }
+                const reopen = editingGroupId;
                 closeModal();
                 await loadGroups();
+                // The title shows the group's name, which may just have changed
+                if (reopen && reopen === selectedGroupId) await selectGroup(reopen);
             } catch (error) {
                 console.error('Error saving group:', error);
-                alert('Failed to save group');
+                alert(`${t('saveFailed')}: ${error.message}`);
             }
         }
 
         async function deleteGroup() {
-            if (!selectedGroupId || selectedGroupId === 'unassigned') return;
+            if (!selectedGroupId || selectedGroupId === UNASSIGNED) return;
+            const group = groups.find(g => g.id === selectedGroupId);
 
-            if (!confirm('Are you sure you want to delete this group?')) return;
+            if (!confirm(t('confirmDeleteGroup').replace('{name}', group?.name || ''))) return;
 
             try {
-                await fetch(`${API_BASE}/groups/${selectedGroupId}`, { method: 'DELETE' });
+                await apiRequest(`${API_BASE}/groups/${selectedGroupId}`, { method: 'DELETE' });
                 selectedGroupId = null;
                 await loadGroups();
-                document.getElementById('group-title').textContent = 'Select a Group';
+                const title = document.getElementById('group-title');
+                title.textContent = t('selectAGroup');
                 document.getElementById('device-list').innerHTML = '';
-                document.getElementById('assignment-toolbar').style.display = 'none';
             } catch (error) {
                 console.error('Error deleting group:', error);
+                alert(`${t('deleteFailed')}: ${error.message}`);
             }
         }
 
@@ -608,57 +625,46 @@
 
         async function moveDevices() {
             const targetGroupId = document.getElementById('move-to-group').value;
-            if (!targetGroupId) return alert('Select a target group');
+            if (!targetGroupId) return alert(t('selectTargetGroup'));
 
             const deviceIds = getSelectedDeviceIds();
-            if (deviceIds.length === 0) return alert('Select devices to move');
+            if (deviceIds.length === 0) return alert(t('selectDevicesFirst'));
 
             try {
-                await fetch(`${API_BASE}/groups/${targetGroupId}/devices`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ device_ids: deviceIds })
-                });
+                await apiRequest(`${API_BASE}/groups/${targetGroupId}/devices`,
+                    apiJson('POST', { device_ids: deviceIds }));
 
-                // Remove from current group
-                if (selectedGroupId !== 'unassigned') {
-                    await fetch(`${API_BASE}/groups/${selectedGroupId}/devices`, {
-                        method: 'DELETE',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ device_ids: deviceIds })
-                    });
+                // From a real group this is a move; from "unassigned" there
+                // is nothing to take them out of.
+                if (selectedGroupId !== UNASSIGNED) {
+                    await apiRequest(`${API_BASE}/groups/${selectedGroupId}/devices`,
+                        apiJson('DELETE', { device_ids: deviceIds }));
                 }
 
                 await loadGroups();
-                selectGroup(selectedGroupId);
+                await selectGroup(selectedGroupId);
             } catch (error) {
                 console.error('Error moving devices:', error);
+                alert(`${t('saveFailed')}: ${error.message}`);
             }
         }
 
         async function removeDevices() {
-            if (selectedGroupId === 'unassigned') return;
+            if (selectedGroupId === UNASSIGNED) return;
 
             const deviceIds = getSelectedDeviceIds();
-            if (deviceIds.length === 0) return alert('Select devices to remove');
+            if (deviceIds.length === 0) return alert(t('selectDevicesFirst'));
 
             try {
-                await fetch(`${API_BASE}/groups/${selectedGroupId}/devices`, {
-                    method: 'DELETE',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ device_ids: deviceIds })
-                });
+                await apiRequest(`${API_BASE}/groups/${selectedGroupId}/devices`,
+                    apiJson('DELETE', { device_ids: deviceIds }));
 
                 await loadGroups();
-                selectGroup(selectedGroupId);
+                await selectGroup(selectedGroupId);
             } catch (error) {
                 console.error('Error removing devices:', error);
+                alert(`${t('saveFailed')}: ${error.message}`);
             }
-        }
-
-        // Initialize i18n
-        if (window.i18n) {
-            i18n.init();
         }
     </script>
 </body>

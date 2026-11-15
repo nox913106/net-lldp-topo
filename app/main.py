@@ -16,8 +16,8 @@ from app.api import (
     alerts, collector, devices, discovery, groups, profiles, settings, snmp,
     topology
 )
-from app.core.discovery_scheduler import start_discovery_scheduler
-from app.api.settings import load_settings as load_app_settings
+from app.core.discovery_scheduler import stop_discovery_scheduler
+from app.api.settings import apply_discovery, load_settings as load_app_settings
 
 # Configure logging. The level is APP_LOG_LEVEL; see app/config.py for why an
 # unknown value falls back to INFO instead of failing to start.
@@ -41,19 +41,16 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
     
-    # Start discovery scheduler if enabled
+    # The subnet sweep, if the saved settings ask for one
     app_settings = load_app_settings()
+    await apply_discovery(app_settings)
     if app_settings.discovery_enabled and app_settings.allowed_subnets:
-        await start_discovery_scheduler(
-            subnets=app_settings.allowed_subnets,
-            community=app_settings.default_community,
-            interval=app_settings.discovery_interval
-        )
         logger.info("Discovery Scheduler started")
-    
+
     yield
     
     # Shutdown
+    stop_discovery_scheduler()
     logger.info(f"Shutting down {settings_config.app_name}...")
 
 

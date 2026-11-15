@@ -14,6 +14,7 @@ from app.models.device import Device
 from app.models.link import RawLink, MergedLink
 from app.models.group import DeviceGroupMember
 from app.core.traffic import utilization_percent
+from app.core.clock import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +239,7 @@ class TopologyEngine:
                 merged_link.utilization_in_percent = link_info.utilization_in_percent
                 merged_link.utilization_out_percent = link_info.utilization_out_percent
                 merged_link.port_pairs = port_details_json
-                merged_link.last_updated = datetime.utcnow()
+                merged_link.last_updated = utcnow()
             else:
                 # Create new
                 merged_link = MergedLink(
@@ -305,7 +306,7 @@ class TopologyEngine:
         device_ids = [m[0] for m in members.all()]
         
         if not device_ids:
-            return {"nodes": [], "links": [], "last_updated": datetime.utcnow().isoformat()}
+            return {"nodes": [], "links": [], "last_updated": utcnow().isoformat()}
         
         # Get the devices
         result = await self.db.execute(
@@ -416,7 +417,7 @@ class TopologyEngine:
         return {
             "nodes": nodes,
             "links": links,
-            "last_updated": datetime.utcnow().isoformat()
+            "last_updated": utcnow().isoformat()
         }
     
     # Interface name prefix -> speed in Mbps, most specific prefix first.

@@ -1,10 +1,11 @@
 """
 Device group models
 """
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.database import Base
+from app.db.types import UTCDateTime
 
 
 class DeviceGroup(Base):
@@ -18,7 +19,7 @@ class DeviceGroup(Base):
     color = Column(String(20))
     icon = Column(String(50))
     display_order = Column(Integer)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(UTCDateTime, server_default=func.now())
     
     # Self-referential relationship for nested groups
     children = relationship("DeviceGroup", backref="parent", remote_side=[id])

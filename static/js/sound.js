@@ -82,4 +82,32 @@ const AlertSound = {
 };
 
 // Export for use
+// The ids already seen. null until the first list arrives: whatever is
+// already open when a page loads is not news, so the first call only records.
+AlertSound._seen = null;
+
+/**
+ * Tell the sound module what is active now. It plays once when the list
+ * contains an alert that was not in the previous one - critical if any of
+ * the new ones is, a warning tone otherwise.
+ *
+ * The toggle on the Settings page has always stored its choice, and nothing
+ * ever read it: this file was only loaded by that page's Test button.
+ */
+AlertSound.notify = function (alerts) {
+    const ids = new Set((alerts || []).map(a => a.id));
+    const fresh = this._seen === null
+        ? []
+        : (alerts || []).filter(a => !this._seen.has(a.id));
+    this._seen = ids;
+    if (!fresh.length || !this.isEnabled()) return;
+    try {
+        if (fresh.some(a => a.severity === 'critical')) this.playCritical();
+        else this.playWarning();
+    } catch (e) {
+        // Browsers refuse audio until the page has been clicked on; that is
+        // not worth an error in the console every minute.
+    }
+};
+
 window.AlertSound = AlertSound;

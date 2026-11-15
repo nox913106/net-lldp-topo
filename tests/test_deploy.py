@@ -284,3 +284,66 @@ def test_the_proxy_waits_for_the_application(compose_file):
         "condition": "service_healthy"
     }
     assert "healthcheck" in compose_file["services"]["app"]
+
+
+# -- the password file ----------------------------------------------------
+#
+# Found by deploying for real and trying to log in: `topomon deploy` reported
+# success, `topomon health` said everything was fine, and the right password
+# got a 500. tests/test_proxy_auth.py reproduces the mechanism under a real
+# nginx; these pin the three things the tool does about it.
+
+
+def test_the_proxy_worker_is_given_the_password_file():
+    """
+    htpasswd is read by the nginx worker on every request, and the worker is
+    not root. 0600 root in a 0700 directory - what this used to create - is
+    a file it cannot open.
+    """
+    text = TOPOMON.read_text()
+    body = text[text.index("secure_auth_dir() {"):text.index("print_new_credentials() {")]
+    assert 'chown "root:$NGINX_GID" "$AUTH_DIR"' in body
+    assert 'chmod 750 "$AUTH_DIR"' in body
+    assert 'chown "root:$NGINX_GID" "$AUTH_DIR/htpasswd"' in body
+    assert 'chmod 640 "$AUTH_DIR/htpasswd"' in body
+    # Group-readable, not world-readable: it holds password hashes
+    assert not re.search(r"chmod (644|755|777) \"\$AUTH_DIR(/htpasswd)?\"", text)
+    # ...and nothing puts it back the way it was
+    assert 'chmod 700 "$AUTH_DIR"' not in text
+    assert 'chmod 600 "$AUTH_DIR/htpasswd"' not in text
+    # Both writers of the file fix its ownership afterwards
+    for function in ("ensure_auth() {", "cmd_password() {"):
+        start = text.index(function)
+        assert "secure_auth_dir" in text[start:text.index("\n}\n", start)], function
+
+
+def test_the_worker_group_matches_the_image_the_compose_file_pins(compose_file):
+    """101 is nginx's group in the nginx:1.27 images; another image, another id"""
+    assert compose_file["services"]["proxy"]["image"].startswith("nginx:1.27")
+    assert 'NGINX_GID="${TOPOMON_NGINX_GID:-101}"' in TOPOMON.read_text()
+
+
+def test_health_and_deploy_try_a_password_not_just_the_absence_of_one():
+    text = TOPOMON.read_text()
+    probe = text[text.index("auth_probe() {"):text.index("# 指令", text.index("auth_probe() {"))]
+    assert "-u " in probe, "the probe has to send credentials"
+    for function in ("cmd_health() {", "require_login_works() {"):
+        start = text.index(function)
+        assert "auth_probe" in text[start:text.index("\n}\n", start)], function
+    deploy = text[text.index("cmd_deploy() {"):text.index("\n}\n", text.index("cmd_deploy() {"))]
+    assert "require_login_works" in deploy
+    update = text[text.index("cmd_update() {"):text.index("\n}\n", text.index("cmd_update() {"))]
+    assert "auth_probe" in update, "an update that breaks login must roll back"
+
+
+def test_a_generated_password_is_shown_even_when_the_deploy_fails():
+    """
+    The password is written to htpasswd before the containers are built. A
+    first deploy that failed after that point exited without printing it,
+    and the next run found htpasswd already there and generated nothing -
+    so the password "shown only once" was shown zero times.
+    """
+    text = TOPOMON.read_text()
+    for function in ("cmd_deploy() {", "cmd_update() {"):
+        start = text.index(function)
+        assert "trap print_new_credentials EXIT" in text[start:text.index("\n}\n", start)], function

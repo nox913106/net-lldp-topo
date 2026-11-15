@@ -11,6 +11,7 @@ from enum import Enum
 import httpx
 
 from app.config import get_settings
+from app.core.clock import utcnow
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -57,7 +58,7 @@ class ElasticsearchExporter:
     
     def _get_index_name(self) -> str:
         """Get index name with date suffix"""
-        date_suffix = datetime.utcnow().strftime("%Y.%m.%d")
+        date_suffix = utcnow().strftime("%Y.%m.%d")
         return f"{self.index_prefix}{date_suffix}"
     
     async def send(self, entry: LogEntry) -> bool:
@@ -230,7 +231,7 @@ class LogExporter:
     ) -> LogEntry:
         """Create a log entry"""
         return LogEntry(
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
             level=level.value,
             source=source,
             message=message,

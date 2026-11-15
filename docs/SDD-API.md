@@ -13,6 +13,14 @@
 | `/api/v1/alerts/{id}/acknowledge` | POST | 確認告警 |
 | `/api/v1/profiles` | GET, POST | Profile 管理 |
 | `/api/v1/profiles/{id}` | GET, PUT, DELETE | 單一 Profile |
+| `/api/v1/groups` | GET, POST | 群組列表（含設備數）、建立 |
+| `/api/v1/groups/{id}` | PUT, DELETE | 改名／搬移、刪除（設備保留，子群組上移一層） |
+| `/api/v1/groups/{id}/devices` | GET, POST, DELETE | 群組成員：列出、加入、移除 |
+| `/api/v1/settings` | GET, POST | 設定頁存的 SNMP／發現設定（`settings.json`） |
+| `/api/v1/settings/runtime` | GET | `.env` 裡的啟動設定，唯讀（逾時、重試、日誌匯出） |
+| `/api/v1/settings/discovery/status` | GET | 網段掃描是否在跑、上次結果 |
+| `/api/v1/snmp/test` | POST | 對一個 IP 做 SNMP GET／WALK |
+| `/api/v1/snmp/lldp` | POST | 讀一台設備的 LLDP／CDP 鄰居並說明缺了什麼 |
 | `/api/v1/discovery/manual` | POST | 從一個 IP 開始手動發現 |
 | `/api/v1/collector/status` | GET | 收集器狀態：分片、告警抑制、trap |
 
@@ -34,6 +42,7 @@
 | `search` | string | 搜尋 hostname 或 IP (伺服器端) |
 | `sort_by` | string | 排序欄位 (hostname/ip_address/vendor/status/last_seen) |
 | `sort_order` | string | 排序方向 (asc/desc) |
+| `ungrouped` | bool | 只列出不在任何群組裡的設備 |
 
 **Response:**
 ```json
@@ -410,3 +419,22 @@ API 行程**不會**用自己的環境變數去填這些值：docker-compose 裡
 | `shards_disagree` | 各行程的 `COLLECTOR_SHARDS` 不一致，會有設備被輪詢兩次、有些完全沒人輪詢 |
 | `damping_disagree` | 各片的抑制設定不一致，同一個機群裡的設備判斷標準不同 |
 | `trap_unknown_sources` | 有 trap 從不是受管設備的位址送來 —— 幾乎都是 trap 來源位址的問題，見 CONFIGURATION 第 5.3 節 |
+
+---
+
+## 9. 這份 API 與介面的對照
+
+介面呼叫的每一個端點都必須存在 —— 這句話曾經不成立三次（`/snmp/test` 掛在
+`/snmp/snmp/test`、`PUT /groups/{id}` 不存在、`/alerts?device_id=` 沒有這個
+參數而被靜靜忽略），三次都沒有任何錯誤訊息，只有一個看起來正常但沒作用的
+畫面。`tests/test_ui_contract.py` 現在會讀 `static/` 裡每一個 `fetch`，逐一
+對照實際註冊的路由。
+
+`GET /api/v1/alerts` 多了 `device_id`（只列那台設備的告警），回應裡每一筆
+多了 `hostname`、`ip_address`、`is_suppressed`、`suppress_until`、
+`acknowledge_reason`。
+
+允許網段的限制（`enable_subnet_restriction`）由伺服器執行：
+`/snmp/test`、`/snmp/lldp`、`/discovery/manual` 對網段外的位址回
+`{"success": false, "error": "... is outside the allowed subnets ..."}`，
+收集器的鄰居自動發現也讀同一個檔案。

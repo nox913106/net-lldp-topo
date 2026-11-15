@@ -21,6 +21,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Run in the time zone the product is deployed in, not in CI's.
+#
+# docker-compose.yml sets TZ=Asia/Taipei on the app and the collector, and CI
+# runs in UTC - the one zone where "naive local time" and "UTC" are the same
+# thing. So a naive datetime.utcnow() written to a timestamptz column was
+# eight hours wrong in every deployment and exactly right in every test run:
+# no link ever had a traffic rate, and nothing here could see it
+# (app/db/types.py). UTC is the degenerate case; a zone that is not UTC is
+# the one that checks anything, so the whole suite runs in it.
+os.environ["TZ"] = "Asia/Taipei"
+time.tzset()
+
 # app/db/database.py builds its engine at import time from DATABASE_URL, so
 # the test database has to be chosen before anything imports it - and it must
 # never be the developer's own topomon.db, which the default URL points at.
@@ -97,8 +109,49 @@ def _dispose_engine():
     _asyncio.run(engine.dispose())
 
 
+# CPU and memory as each vendor's agent really serves them. Everything here
+# except the HP CPU is a table column with an instance under it - which is
+# the point: the collector used to GET the bare column, which no agent
+# answers, and stored the resulting nothing as 0%.
+METRIC_ROWS = {
+    # cpmCPUTotal5minRev for two stack members (12% and 37%), and two
+    # memory pools: 600+200 used, 400+800 free -> 800 of 2000 = 40%
+    "cisco": [
+        "1.3.6.1.4.1.9.9.109.1.1.1.1.8.1|66|12",
+        "1.3.6.1.4.1.9.9.109.1.1.1.1.8.2|66|37",
+        "1.3.6.1.4.1.9.9.48.1.1.1.5.1|66|600",
+        "1.3.6.1.4.1.9.9.48.1.1.1.5.2|66|200",
+        "1.3.6.1.4.1.9.9.48.1.1.1.6.1|66|400",
+        "1.3.6.1.4.1.9.9.48.1.1.1.6.2|66|800",
+    ],
+    # hpSwitchCpuStat is a scalar; memory is total 4000 / allocated 3000
+    "hp": [
+        "1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0|2|22",
+        "1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.5.1|2|4000",
+        "1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.7.1|2|3000",
+    ],
+    # HOST-RESOURCES-MIB: four cores (10, 20, 30, 100 -> mean 40), and a
+    # storage table where only row 1 is RAM (250 of 1000 units); row 2 is a
+    # disk that is 90% full and must not leak into the answer.
+    "hostres": [
+        "1.3.6.1.2.1.25.3.3.1.2.1|2|10",
+        "1.3.6.1.2.1.25.3.3.1.2.2|2|20",
+        "1.3.6.1.2.1.25.3.3.1.2.3|2|30",
+        "1.3.6.1.2.1.25.3.3.1.2.4|2|100",
+        "1.3.6.1.2.1.25.2.3.1.2.1|6|1.3.6.1.2.1.25.2.1.2",
+        "1.3.6.1.2.1.25.2.3.1.2.2|6|1.3.6.1.2.1.25.2.1.4",
+        "1.3.6.1.2.1.25.2.3.1.5.1|2|1000",
+        "1.3.6.1.2.1.25.2.3.1.5.2|2|5000",
+        "1.3.6.1.2.1.25.2.3.1.6.1|2|250",
+        "1.3.6.1.2.1.25.2.3.1.6.2|2|4500",
+    ],
+}
+HP_COMMUNITY = "hpmetrics"
+HOSTRES_COMMUNITY = "hostres"
+
+
 def _snmprec(modern: bool = False, own=OWN_ADDRESSES, sys_name="sim-local",
-             peer=PEER, peer_ip=PEER_IP) -> str:
+             peer=PEER, peer_ip=PEER_IP, metrics="cisco") -> str:
     """
     The agent's whole MIB as snmpsim's record format.
 
@@ -119,6 +172,7 @@ def _snmprec(modern: bool = False, own=OWN_ADDRESSES, sys_name="sim-local",
         "1.3.6.1.2.1.1.3.0|67|123456789",
         f"1.3.6.1.2.1.1.5.0|4|{sys_name}",
     ]
+    rows += METRIC_ROWS.get(metrics, [])
     for i in CABLED:
         # lldpLocPortId / lldpLocPortDesc
         rows += [
@@ -227,10 +281,19 @@ def snmp_agent(tmp_path_factory):
     (data_dir / f"{TRAP_PEER_COMMUNITY}.snmprec").write_text(
         _snmprec(own=(), sys_name=TRAP_PEER_SYS_NAME), encoding="utf-8"
     )
-    # The other end of the default recording's cables
+    # The other end of the default recording's cables. It serves no CPU or
+    # memory rows at all, which makes it the device whose metrics cannot be
+    # read.
     (data_dir / f"{PEER_COMMUNITY}.snmprec").write_text(
-        _snmprec(own=(), sys_name=PEER, peer="sim-local", peer_ip="127.0.0.1"),
+        _snmprec(own=(), sys_name=PEER, peer="sim-local", peer_ip="127.0.0.1",
+                 metrics=None),
         encoding="utf-8"
+    )
+    (data_dir / f"{HP_COMMUNITY}.snmprec").write_text(
+        _snmprec(own=(), sys_name="hp-sim", metrics="hp"), encoding="utf-8"
+    )
+    (data_dir / f"{HOSTRES_COMMUNITY}.snmprec").write_text(
+        _snmprec(own=(), sys_name="pan-sim", metrics="hostres"), encoding="utf-8"
     )
     log = data_dir / "agent.log"
     port = _free_port()

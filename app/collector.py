@@ -28,12 +28,15 @@ from app.core.discovery_cache import DiscoveryCache
 from app.core.lease import (
     Coverage, FLEET_LEASE, Lease, coordination_ttl, member_lease
 )
+from app.core.app_settings import address_allowed
+from app.core.device_type import guess_device_type
 from app.core.device_addresses import AddressWalkSchedule, DeviceAddressIndex
 from app.core.link_index import LinkWriteBuffer, RawLinkIndex
 from app.core.sharding import Shard
 from app.core.traffic import sample_values
 from app.core.log_exporter import get_log_exporter, LogLevel
 from app.models.device import Device, DeviceStatus
+from app.core.clock import utcnow
 
 settings = get_settings()
 
@@ -291,6 +294,18 @@ async def auto_discover_neighbor(
             discovery_cache.mark_dead_end(advertised)
             return
 
+        if not address_allowed(neighbor_ip):
+            # Outside the subnets the operator allows SNMP to be sent to
+            # (Settings > SNMP). A neighbour is whatever is on the other end
+            # of a cable - an ISP router, a tenant's switch - and probing it
+            # means offering it this network's community string.
+            logger.debug(
+                f"Neighbor {advertised} ({neighbor_ip}) is outside the "
+                f"allowed subnets, not probed"
+            )
+            discovery_cache.mark_dead_end(advertised)
+            return
+
         # Validate the device over SNMP before adding it
         device_info = await collector.get_device_info(neighbor_ip)
         if not device_info:
@@ -307,12 +322,12 @@ async def auto_discover_neighbor(
             hostname=hostname,
             ip_address=neighbor_ip,
             snmp_community=collector.community,
-            device_type="access",
+            device_type=guess_device_type(hostname, device_info.vendor),
             vendor=device_info.vendor,
             status="managed",
             auto_discover=True,
             parent_device_id=parent_device_id,
-            last_seen=datetime.utcnow()
+            last_seen=utcnow()
         )
 
         async with _discovery_writers:
@@ -662,11 +677,15 @@ async def store_poll_result(
             # Update device info
             previous_status = device.status
             device.status = DeviceStatus.MANAGED
-            device.last_seen = datetime.utcnow()
+            device.last_seen = utcnow()
 
-            if result["metrics"]:
-                device.cpu_percent = result["metrics"].cpu_percent
-                device.memory_percent = result["metrics"].memory_percent
+            # Both are None when the device answered but the metric could
+            # not be read, and that is what gets stored: the last reading
+            # left in place would go on being displayed, and alerted on, as
+            # if it were current.
+            metrics = result["metrics"]
+            device.cpu_percent = metrics.cpu_percent if metrics else None
+            device.memory_percent = metrics.memory_percent if metrics else None
 
             if result["device_info"]:
                 device.vendor = result["device_info"].vendor
@@ -685,7 +704,7 @@ async def store_poll_result(
             # The interface table, ready to be matched against each neighbour's
             # local port, so every cable gets the port's real speed and rate
             by_index, by_name = _index_interface_stats(result["interface_stats"])
-            sampled_at = datetime.utcnow()
+            sampled_at = utcnow()
             matched = 0
 
             # One buffer per device: the cables are written as two statements

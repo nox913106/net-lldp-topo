@@ -3,12 +3,14 @@ Alert Profiles API endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
+from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 
 from app.db.database import get_db
 from app.models.alert import AlertProfile
+from app.models.device import Device
 
 router = APIRouter()
 
@@ -64,7 +66,14 @@ async def create_profile(
         is_default=profile.is_default
     )
     db.add(db_profile)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A profile named '{profile.name}' already exists"
+        )
     await db.refresh(db_profile)
     return db_profile
 
@@ -110,8 +119,15 @@ async def update_profile(
     update_data = profile_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(profile, field, value)
-    
-    await db.commit()
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A profile named '{profile_update.name}' already exists"
+        )
     await db.refresh(profile)
     return profile
 
@@ -133,5 +149,11 @@ async def delete_profile(
             detail=f"Profile with id {profile_id} not found"
         )
     
+    # Devices using it go back to the default thresholds; without this the
+    # foreign key refuses to delete any profile that is in use.
+    await db.execute(
+        update(Device).where(Device.alert_profile_id == profile_id)
+        .values(alert_profile_id=None)
+    )
     await db.delete(profile)
     await db.commit()

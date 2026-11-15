@@ -24,8 +24,11 @@ import logging
 import socket
 
 from app.config import get_settings
+from app.core.app_settings import address_allowed, refusal
+from app.core.device_type import guess_device_type
 from app.core.snmp_collector import SNMPCollector
 from app.db.database import get_db
+from app.core.clock import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +79,9 @@ async def manual_discover(request: ManualDiscoveryRequest, db: AsyncSession = De
     from sqlalchemy import select
     from app.models.device import Device
 
+    if not address_allowed(request.ip):
+        return ManualDiscoveryResponse(success=False, error=refusal(request.ip))
+
     settings = get_settings()
     collector = SNMPCollector(
         community=request.community,
@@ -112,11 +118,11 @@ async def manual_discover(request: ManualDiscoveryRequest, db: AsyncSession = De
                     hostname=hostname,
                     ip_address=ip,
                     snmp_community=request.community,
-                    device_type="access",
+                    device_type=guess_device_type(hostname, device_info.vendor),
                     vendor=device_info.vendor,
                     status="managed",
                     parent_device_id=parent.id if parent else None,
-                    last_seen=datetime.utcnow()
+                    last_seen=utcnow()
                 )
                 db.add(device)
                 added_count += 1
@@ -124,7 +130,7 @@ async def manual_discover(request: ManualDiscoveryRequest, db: AsyncSession = De
                 device.hostname = hostname
                 device.vendor = device_info.vendor
                 device.status = "managed"
-                device.last_seen = datetime.utcnow()
+                device.last_seen = utcnow()
 
             await db.commit()
             await db.refresh(device)
@@ -164,6 +170,16 @@ async def manual_discover(request: ManualDiscoveryRequest, db: AsyncSession = De
                 if neighbor_ip in seen_ips:
                     continue
                 seen_ips.add(neighbor_ip)
+
+                if not address_allowed(neighbor_ip):
+                    # The seed is inside the allowed subnets; what it is
+                    # cabled to need not be, and the community is not
+                    # offered to it.
+                    logger.info(
+                        "Neighbor %s (%s) is outside the allowed subnets, skipped",
+                        neighbor.remote_hostname, neighbor_ip
+                    )
+                    continue
 
                 await upsert_device(neighbor_ip, parent=seed)
 

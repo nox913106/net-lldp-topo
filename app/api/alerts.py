@@ -3,13 +3,15 @@ Alerts API endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel
 
 from app.db.database import get_db
 from app.models.alert import Alert, AlertHistory
+from app.models.device import Device
+from app.core.clock import utcnow
 
 router = APIRouter()
 
@@ -29,10 +31,36 @@ class AlertResponse(BaseModel):
     recovered_at: Optional[datetime]
     acknowledged_at: Optional[datetime]
     acknowledged_by: Optional[str]
+    acknowledge_reason: Optional[str] = None
+    is_suppressed: Optional[bool] = None
+    suppress_until: Optional[datetime] = None
     details: Optional[dict] = None  # Contains is_root_cause, is_suppressed, etc.
-    
+    # The device the alert is about, for display. An alert stores only the
+    # id, and the pages were reading alert.hostname, which was never sent.
+    hostname: Optional[str] = None
+    ip_address: Optional[str] = None
+
     class Config:
         from_attributes = True
+
+
+async def _with_devices(db: AsyncSession, alerts) -> List[AlertResponse]:
+    """Alerts as responses, each carrying its device's name and address"""
+    device_ids = {a.device_id for a in alerts if a.device_id is not None}
+    names = {}
+    if device_ids:
+        rows = await db.execute(
+            select(Device.id, Device.hostname, Device.ip_address)
+            .where(Device.id.in_(device_ids))
+        )
+        names = {row.id: (row.hostname, row.ip_address) for row in rows}
+
+    responses = []
+    for alert in alerts:
+        response = AlertResponse.model_validate(alert)
+        response.hostname, response.ip_address = names.get(alert.device_id, (None, None))
+        responses.append(response)
+    return responses
 
 
 class AlertListResponse(BaseModel):
@@ -67,31 +95,33 @@ async def list_alerts(
     limit: int = 100,
     is_active: Optional[bool] = None,
     severity: Optional[str] = None,
+    device_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """List all alerts with optional filtering"""
-    query = select(Alert)
-    
+    filters = []
     if is_active is not None:
-        query = query.where(Alert.is_active == is_active)
+        filters.append(Alert.is_active == is_active)
     if severity:
-        query = query.where(Alert.severity == severity)
-    
-    query = query.order_by(Alert.triggered_at.desc()).offset(skip).limit(limit)
-    result = await db.execute(query)
-    alerts = result.scalars().all()
-    
-    # Get total count
-    from sqlalchemy import func
-    count_query = select(func.count(Alert.id))
-    if is_active is not None:
-        count_query = count_query.where(Alert.is_active == is_active)
-    if severity:
-        count_query = count_query.where(Alert.severity == severity)
-    count_result = await db.execute(count_query)
-    total = count_result.scalar()
-    
-    return AlertListResponse(alerts=alerts, total=total)
+        filters.append(Alert.severity == severity)
+    if device_id is not None:
+        # The device panel on the map asks for one device's alerts. This
+        # parameter did not exist, an unknown query parameter is ignored,
+        # and so every device's panel listed the whole fleet's alerts.
+        filters.append(Alert.device_id == device_id)
+
+    query = (
+        select(Alert).where(*filters)
+        .order_by(Alert.triggered_at.desc(), Alert.id.desc())
+        .offset(max(skip, 0)).limit(limit if limit > 0 else None)
+    )
+    alerts = (await db.execute(query)).scalars().all()
+
+    total = (await db.execute(
+        select(func.count(Alert.id)).where(*filters)
+    )).scalar()
+
+    return AlertListResponse(alerts=await _with_devices(db, alerts), total=total)
 
 
 @router.get("/active", response_model=AlertListResponse)
@@ -99,11 +129,13 @@ async def list_active_alerts(
     db: AsyncSession = Depends(get_db)
 ):
     """List all active alerts"""
-    query = select(Alert).where(Alert.is_active == True).order_by(Alert.triggered_at.desc())
-    result = await db.execute(query)
-    alerts = result.scalars().all()
-    
-    return AlertListResponse(alerts=alerts, total=len(alerts))
+    query = (
+        select(Alert).where(Alert.is_active == True)
+        .order_by(Alert.triggered_at.desc(), Alert.id.desc())
+    )
+    alerts = (await db.execute(query)).scalars().all()
+
+    return AlertListResponse(alerts=await _with_devices(db, alerts), total=len(alerts))
 
 
 @router.get("/{alert_id}", response_model=AlertResponse)
@@ -122,8 +154,8 @@ async def get_alert(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Alert with id {alert_id} not found"
         )
-    
-    return alert
+
+    return (await _with_devices(db, [alert]))[0]
 
 
 @router.post("/{alert_id}/acknowledge")
@@ -146,7 +178,7 @@ async def acknowledge_alert(
             detail=f"Alert with id {alert_id} not found"
         )
     
-    now = datetime.utcnow()
+    now = utcnow()
     alert.acknowledged_at = now
     alert.acknowledged_by = request.acknowledged_by
     alert.acknowledge_reason = request.reason
@@ -335,7 +367,7 @@ async def delete_history_reason(
     
     # Soft delete
     history.is_deleted = True
-    history.deleted_at = datetime.utcnow()
+    history.deleted_at = utcnow()
     history.deleted_by = request.deleted_by
     history.delete_reason = request.delete_reason
     

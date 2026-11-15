@@ -40,6 +40,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.database import async_session_maker, engine
 from app.models.collector import CollectorLease
+from app.core.clock import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ class _Clock:
         """Bound times for the fallback path, empty when the database has it"""
         if self.database_clock:
             return {}
-        now = datetime.utcnow()
+        now = utcnow()
         return {"_now": now, "_expiry": now + timedelta(seconds=int(seconds))}
 
 

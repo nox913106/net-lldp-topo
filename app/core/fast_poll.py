@@ -48,6 +48,7 @@ from app.core.topology_engine import TopologyEngine
 from app.core.traffic import sample_values
 from app.db.database import async_session_maker
 from app.models.device import Device, DeviceStatus
+from app.core.clock import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ class FastPoller:
             logger.error(f"Fast sample of {device.hostname} raised: {e}")
             samples = None
 
-        sampled_at = datetime.utcnow()
+        sampled_at = utcnow()
         outcome = _DeviceOutcome(
             device_id=device.id,
             reachable=samples is not None,

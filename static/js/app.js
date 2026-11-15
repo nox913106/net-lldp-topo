@@ -220,6 +220,7 @@ class App {
 
             const data = await response.json();
             this.renderAlerts(data.alerts);
+            if (window.AlertSound) AlertSound.notify(data.alerts);
 
         } catch (error) {
             console.error('Error loading alerts:', error);
@@ -248,7 +249,7 @@ class App {
         if (listEl) {
             listEl.innerHTML = alerts.map(alert => `
                 <div class="alert-item ${alert.severity}">
-                    <span class="alert-message">${alert.message || alert.alert_type}</span>
+                    <span class="alert-message">${escapeHtml(alert.message || alert.alert_type)}</span>
                     <span class="alert-time">${this.formatTime(alert.triggered_at)}</span>
                 </div>
             `).join('') || `<p style="padding: 0.5rem; color: var(--text-secondary);">${t('noActiveAlerts')}</p>`;
@@ -260,7 +261,7 @@ class App {
         if (!select) return;
 
         select.innerHTML = `<option value="">${t('selectGroup')}</option>` +
-            groups.map(g => `<option value="${g.id}">${g.name} (${g.device_count})</option>`).join('');
+            groups.map(g => `<option value="${g.id}">${escapeHtml(g.name)} (${g.device_count})</option>`).join('');
     }
 
     showNodeDetails(node) {
@@ -276,7 +277,7 @@ class App {
                 <h4>${t('deviceInfo')}</h4>
                 <div class="detail-row">
                     <span class="detail-label">${t('ipAddress')}</span>
-                    <span class="detail-value">${node.ip_address}</span>
+                    <span class="detail-value">${escapeHtml(node.ip_address)}</span>
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">${t('type')}</span>
@@ -284,7 +285,7 @@ class App {
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">${t('vendor')}</span>
-                    <span class="detail-value">${node.vendor || t('unknown')}</span>
+                    <span class="detail-value">${escapeHtml(node.vendor || t('unknown'))}</span>
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">${t('status')}</span>
@@ -295,11 +296,11 @@ class App {
                 <h4>${t('metrics')}</h4>
                 <div class="detail-row">
                     <span class="detail-label">${t('cpu')}</span>
-                    <span class="detail-value">${node.cpu_percent ? node.cpu_percent.toFixed(1) + '%' : 'N/A'}</span>
+                    <span class="detail-value">${node.cpu_percent != null ? node.cpu_percent.toFixed(1) + '%' : 'N/A'}</span>
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">${t('memory')}</span>
-                    <span class="detail-value">${node.memory_percent ? node.memory_percent.toFixed(1) + '%' : 'N/A'}</span>
+                    <span class="detail-value">${node.memory_percent != null ? node.memory_percent.toFixed(1) + '%' : 'N/A'}</span>
                 </div>
             </div>
             ${node.alert_count > 0 ? `
@@ -335,7 +336,7 @@ class App {
                 alertsList.innerHTML = data.alerts.map(a => `
                     <div style="padding: 0.5rem; background: var(--bg-tertiary); border-radius: 4px; margin-bottom: 0.5rem; border-left: 3px solid ${a.severity === 'critical' ? 'var(--danger)' : 'var(--warning)'};">
                         <div style="font-weight: 500; font-size: 0.875rem;">${this.formatAlertType(a.alert_type)}</div>
-                        <div style="font-size: 0.75rem; color: var(--text-secondary);">${a.message || t('noDetails')}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-secondary);">${escapeHtml(a.message || t('noDetails'))}</div>
                         ${a.current_value ? `<div style="font-size: 0.75rem; color: var(--text-secondary);">${t('value')}: ${a.current_value.toFixed(1)} (${t('threshold').toLowerCase()}: ${a.threshold_value || '-'})</div>` : ''}
                     </div>
                 `).join('');
@@ -374,11 +375,11 @@ class App {
                 <h4>${t('connection')}</h4>
                 <div class="detail-row">
                     <span class="detail-label">${t('from')}</span>
-                    <span class="detail-value">${sourceNode?.hostname || t('unknown')}</span>
+                    <span class="detail-value">${escapeHtml(sourceNode?.hostname || t('unknown'))}</span>
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">${t('to')}</span>
-                    <span class="detail-value">${targetNode?.hostname || t('unknown')}</span>
+                    <span class="detail-value">${escapeHtml(targetNode?.hostname || t('unknown'))}</span>
                 </div>
             </div>
             <div class="detail-section">
@@ -406,7 +407,7 @@ class App {
                 <div class="port-list">
                     ${link.port_details.map(p => `
                         <div class="port-item">
-                            <span class="port-name">${p.local_port} ↔ ${p.remote_port}</span>
+                            <span class="port-name">${escapeHtml(p.local_port)} ↔ ${escapeHtml(p.remote_port)}</span>
                             <span class="port-util">${this.formatBandwidth(p.bandwidth_mbps)}</span>
                         </div>
                     `).join('')}
@@ -524,7 +525,7 @@ class App {
                 <div class="hierarchy-modal-overlay" id="hierarchy-modal" onclick="window.app.closeHierarchyModal(event)">
                     <div class="hierarchy-modal" onclick="event.stopPropagation()">
                         <div class="hierarchy-modal-header">
-                            <h2>${device.hostname} ${statusBadge}</h2>
+                            <h2>${escapeHtml(device.hostname)} ${statusBadge}</h2>
                             <button class="btn-close" onclick="window.app.closeHierarchyModal()">&times;</button>
                         </div>
                         <div class="hierarchy-modal-body">
@@ -532,13 +533,13 @@ class App {
                             <div class="hierarchy-section">
                                 <h3>📋 ${t('deviceInformation')}</h3>
                                 <div class="device-info-grid">
-                                    <div><span class="label">${t('ipAddress')}</span><span class="value">${device.ip_address}</span></div>
+                                    <div><span class="label">${t('ipAddress')}</span><span class="value">${escapeHtml(device.ip_address)}</span></div>
                                     <div><span class="label">${t('type')}</span><span class="value">${device.device_type}</span></div>
-                                    <div><span class="label">${t('vendor')}</span><span class="value">${device.vendor}</span></div>
-                                    <div><span class="label">${t('model')}</span><span class="value">${device.model || '-'}</span></div>
-                                    <div><span class="label">${t('firmware')}</span><span class="value">${device.firmware_version || '-'}</span></div>
-                                    <div><span class="label">${t('cpu')}</span><span class="value">${device.cpu_percent ? device.cpu_percent.toFixed(1) + '%' : 'N/A'}</span></div>
-                                    <div><span class="label">${t('memory')}</span><span class="value">${device.memory_percent ? device.memory_percent.toFixed(1) + '%' : 'N/A'}</span></div>
+                                    <div><span class="label">${t('vendor')}</span><span class="value">${escapeHtml(device.vendor)}</span></div>
+                                    <div><span class="label">${t('model')}</span><span class="value">${escapeHtml(device.model || '-')}</span></div>
+                                    <div><span class="label">${t('firmware')}</span><span class="value">${escapeHtml(device.firmware_version || '-')}</span></div>
+                                    <div><span class="label">${t('cpu')}</span><span class="value">${device.cpu_percent != null ? device.cpu_percent.toFixed(1) + '%' : 'N/A'}</span></div>
+                                    <div><span class="label">${t('memory')}</span><span class="value">${device.memory_percent != null ? device.memory_percent.toFixed(1) + '%' : 'N/A'}</span></div>
                                 </div>
                             </div>
                             
@@ -550,14 +551,14 @@ class App {
                                     ${ancestors.map((a, i) => `
                                         <div class="hierarchy-item" style="margin-left: ${(ancestors.length - 1 - i) * 1.5}rem;">
                                             <span class="hierarchy-icon">${i === 0 ? '↑' : '↑'}</span>
-                                            <span class="hierarchy-hostname">${a.hostname}</span>
-                                            <span class="hierarchy-type">${a.device_type}</span>
+                                            <span class="hierarchy-hostname">${escapeHtml(a.hostname)}</span>
+                                            <span class="hierarchy-type">${escapeHtml(a.device_type)}</span>
                                             <span class="hierarchy-status ${a.status === 'offline' ? 'offline' : ''}">${a.status}</span>
                                         </div>
                                     `).reverse().join('')}
                                     <div class="hierarchy-item current">
                                         <span class="hierarchy-icon">●</span>
-                                        <span class="hierarchy-hostname">${device.hostname}</span>
+                                        <span class="hierarchy-hostname">${escapeHtml(device.hostname)}</span>
                                         <span class="hierarchy-type">${device.device_type}</span>
                                         <span class="hierarchy-status ${device.status === 'offline' ? 'offline' : ''}">${device.status}</span>
                                     </div>
@@ -572,8 +573,8 @@ class App {
                                 <div class="hierarchy-children-list">
                                     ${children.map(c => `
                                         <div class="hierarchy-child">
-                                            <span class="hierarchy-hostname">${c.hostname}</span>
-                                            <span class="hierarchy-meta">${c.ip_address} | ${c.device_type}</span>
+                                            <span class="hierarchy-hostname">${escapeHtml(c.hostname)}</span>
+                                            <span class="hierarchy-meta">${escapeHtml(c.ip_address)} | ${escapeHtml(c.device_type)}</span>
                                             <span class="hierarchy-status ${c.status === 'offline' ? 'offline' : ''}">${c.status}</span>
                                         </div>
                                     `).join('')}
@@ -589,7 +590,7 @@ class App {
                                     ${alertsData.alerts.map(a => `
                                         <div class="hierarchy-alert ${a.severity}">
                                             <strong>${this.formatAlertType(a.alert_type)}</strong>
-                                            <p>${a.message || t('noDetails')}</p>
+                                            <p>${escapeHtml(a.message || t('noDetails'))}</p>
                                         </div>
                                     `).join('')}
                                 </div>

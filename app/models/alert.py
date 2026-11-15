@@ -1,10 +1,11 @@
 """
 Alert and AlertProfile models
 """
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, JSON
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.database import Base
+from app.db.types import UTCDateTime
 
 
 class AlertProfile(Base):
@@ -20,8 +21,8 @@ class AlertProfile(Base):
     thresholds = Column(JSON, nullable=False)  # Changed to JSON for SQLite compat
     
     is_default = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(UTCDateTime, server_default=func.now())
+    updated_at = Column(UTCDateTime, server_default=func.now(), onupdate=func.now())
     
     # Relationships
     devices = relationship("Device", back_populates="alert_profile")
@@ -59,15 +60,15 @@ class Alert(Base):
     threshold_value = Column(Float)
     
     is_active = Column(Boolean, default=True, index=True)
-    triggered_at = Column(DateTime(timezone=True), server_default=func.now())
-    recovered_at = Column(DateTime(timezone=True))
-    acknowledged_at = Column(DateTime(timezone=True))
+    triggered_at = Column(UTCDateTime, server_default=func.now())
+    recovered_at = Column(UTCDateTime)
+    acknowledged_at = Column(UTCDateTime)
     acknowledged_by = Column(String(100))
     acknowledge_reason = Column(Text)  # Reason for acknowledgment
     
     # Suppress notification fields
     is_suppressed = Column(Boolean, default=False)  # Whether notifications are suppressed
-    suppress_until = Column(DateTime(timezone=True))  # Suppress until this time (null = until resolved)
+    suppress_until = Column(UTCDateTime)  # Suppress until this time (null = until resolved)
     
     # Extended fields for cascade impact
     details = Column(JSON)  # {is_root_cause, impact_count, affected_hostnames, ...}
@@ -88,12 +89,12 @@ class AlertHistory(Base):
     id = Column(Integer, primary_key=True, index=True)
     alert_id = Column(Integer, ForeignKey("alerts.id", ondelete="CASCADE"), nullable=False)
     event_type = Column(String(50))  # triggered, escalated, recovered, acknowledged, unsuppressed
-    event_time = Column(DateTime(timezone=True), server_default=func.now())
+    event_time = Column(UTCDateTime, server_default=func.now())
     details = Column(JSON)  # {acknowledged_by, reason, suppress_duration, ...}
     
     # Soft delete fields
     is_deleted = Column(Boolean, default=False)
-    deleted_at = Column(DateTime(timezone=True))
+    deleted_at = Column(UTCDateTime)
     deleted_by = Column(String(100))
     delete_reason = Column(Text)
     

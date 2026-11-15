@@ -530,6 +530,8 @@
         }
     </style>
     <script src="/static/js/i18n.js"></script>
+    <script src="/static/js/util.js"></script>
+    <script src="/static/js/sound.js"></script>
     <script src="/static/js/theme.js"></script>
 </head>
 
@@ -817,9 +819,23 @@
 
         async function loadAlerts() {
             try {
-                const response = await fetch(`${API_BASE}/alerts?limit=100`);
-                const data = await response.json();
-                alerts = data.alerts || [];
+                // Two requests, because they answer different questions.
+                // "What is wrong right now" has to be complete: taking it
+                // from the newest hundred alerts meant an outage that began
+                // before a hundred later events simply left the page while
+                // still being open. The recent list is for the history
+                // column, where a cut-off is what "recent" means.
+                const [active, recent] = await Promise.all([
+                    apiRequest(`${API_BASE}/alerts/active`),
+                    apiRequest(`${API_BASE}/alerts?limit=100`)
+                ]);
+                const byId = new Map();
+                for (const a of [...(active.alerts || []), ...(recent.alerts || [])]) {
+                    byId.set(a.id, a);
+                }
+                alerts = [...byId.values()].sort(
+                    (a, b) => new Date(b.triggered_at) - new Date(a.triggered_at));
+                if (window.AlertSound) AlertSound.notify(active.alerts);
 
                 updateStats();
                 renderAlerts();
@@ -899,7 +915,7 @@
                             <span class="alert-severity ${a.severity}">${i18n.t(a.severity).toUpperCase()}</span>
                         </div>
                         <div class="root-cause-tag">🔥 ROOT CAUSE</div>
-                        <div class="alert-message">${a.message || i18n.t('noDetails')}</div>
+                        <div class="alert-message">${escapeHtml(a.message || i18n.t('noDetails'))}</div>
                         <div class="alert-meta">
                             <span>⏰ ${formatTime(a.triggered_at)}</span>
                             <div class="alert-actions">
@@ -914,13 +930,13 @@
                     <div class="affected-devices-summary" onclick="toggleAffectedList(this)">
                         <span class="expand-icon">▶</span>
                         <span>📡 ${impactCount} ${i18n.t('devicesAffected')}</span>
-                        <span class="affected-preview">${affectedHostnames.slice(0, 3).join(', ')}${affectedHostnames.length > 3 ? '...' : ''}</span>
+                        <span class="affected-preview">${escapeHtml(affectedHostnames.slice(0, 3).join(', '))}${affectedHostnames.length > 3 ? '...' : ''}</span>
                     </div>
                     <div class="affected-devices-list" style="display: none;">
                         ${affectedHostnames.map(h => `
                             <div class="affected-device-item">
                                 <span class="offline-dot">●</span>
-                                <span>${h}</span>
+                                <span>${escapeHtml(h)}</span>
                             </div>
                         `).join('')}
                     </div>
@@ -938,7 +954,7 @@
                         </span>
                         <span class="alert-severity ${a.severity}">${i18n.t(a.severity).toUpperCase()}</span>
                     </div>
-                    <div class="alert-message">${a.message || i18n.t('noDetails')}</div>
+                    <div class="alert-message">${escapeHtml(a.message || i18n.t('noDetails'))}</div>
                     <div class="alert-meta">
                         <span>⏰ ${formatTime(a.triggered_at)}</span>
                         <div class="alert-actions">
@@ -989,7 +1005,7 @@
                         </span>
                         <span class="history-time">${formatTime(a.is_active ? a.triggered_at : a.recovered_at)}</span>
                     </div>
-                    <div class="history-message">${a.message || formatAlertType(a.alert_type)}</div>
+                    <div class="history-message">${escapeHtml(a.message || formatAlertType(a.alert_type))}</div>
                 </div>
             `).join('');
         }
@@ -1006,14 +1022,14 @@
         }
 
         function formatAlertType(type) {
-            const types = {
-                'device_offline': 'Device Offline',
-                'cpu_high': 'High CPU',
-                'memory_high': 'High Memory',
-                'link_high_utilization': 'Link High Utilization',
-                'link_down': 'Link Down'
+            const keys = {
+                'device_offline': 'deviceOffline',
+                'cpu_high': 'highCpu',
+                'memory_high': 'highMemory',
+                'link_high_utilization': 'linkHighUtilization',
+                'link_down': 'linkDown'
             };
-            return types[type] || type;
+            return keys[type] ? i18n.t(keys[type]) : type;
         }
 
         function formatTime(dateStr) {
@@ -1177,13 +1193,13 @@
                 <div class="alert-detail-section">
                     <h4>🖥️ ${i18n.t('device')}</h4>
                     <div class="device-info-box">
-                        <div style="font-weight: 500; font-size: 1.1rem;">${alert.hostname || 'Unknown'}</div>
-                        <div style="color: var(--text-secondary);">IP: ${alert.ip_address || '-'}</div>
+                        <div style="font-weight: 500; font-size: 1.1rem;">${escapeHtml(alert.hostname || 'Unknown')}</div>
+                        <div style="color: var(--text-secondary);">IP: ${escapeHtml(alert.ip_address || '-')}</div>
                     </div>
                 </div>
                 <div class="alert-detail-section">
                     <h4>📋 ${i18n.t('message')}</h4>
-                    <p style="margin: 0;">${alert.message || 'No details'}</p>
+                    <p style="margin: 0;">${escapeHtml(alert.message || 'No details')}</p>
                 </div>
                 <div class="alert-detail-section">
                     <h4>⏰ ${i18n.t('timeline')}</h4>
@@ -1255,12 +1271,12 @@
                     <div class="ack-history-item" style="${deletedStyle}">
                         <div class="ack-history-header">
                             <span>#${data.history.length - idx} - ${formatTime(h.event_time)}</span>
-                            <span>by ${h.acknowledged_by || 'Unknown'} ${suppressDuration}</span>
+                            <span>by ${escapeHtml(h.acknowledged_by || 'Unknown')} ${suppressDuration}</span>
                         </div>
-                        <div class="ack-history-reason">${h.reason || i18n.t('noReason')}</div>
+                        <div class="ack-history-reason">${escapeHtml(h.reason || i18n.t('noReason'))}</div>
                         ${isDeleted ? `
                             <div style="color: var(--danger); font-size: 0.75rem; font-style: italic; margin-top: 0.25rem;">
-                                🗑️ ${i18n.t('deletedBy')}: ${h.deleted_by} - ${h.delete_reason}
+                                🗑️ ${i18n.t('deletedBy')}: ${escapeHtml(h.deleted_by)} - ${escapeHtml(h.delete_reason)}
                             </div>
                         ` : `
                             <div class="ack-history-actions" style="margin-top: 0.5rem; display: flex; gap: 0.5rem;">

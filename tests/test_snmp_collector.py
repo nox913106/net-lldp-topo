@@ -255,3 +255,80 @@ def test_counters_move_and_produce_a_rate(snmp_agent):
         current=after, current_time=now,
     )
     assert bps is not None and bps > 0
+
+
+# ---------------------------------------------------------------------------
+# CPU and memory
+#
+# These are the numbers on every device row and behind two alert types, and
+# for Cisco, HP and Palo Alto they were always 0%: their OIDs are table
+# columns, the collector read them with a GET, and a GET on a column has no
+# answer. Nothing failed - 0% is a perfectly good-looking reading - so the
+# assertion here is on the value, against an agent that serves the tables
+# the way the real ones do.
+
+
+def _metrics(agent, community, vendor):
+    host, port, _ = agent
+
+    async def read():
+        collector = SNMPCollector(community, timeout=2, retries=1, port=port)
+        try:
+            return await collector.get_device_metrics(host, vendor)
+        finally:
+            await collector.aclose()
+
+    return run(read())
+
+
+def test_cisco_cpu_and_memory_come_from_the_table_rows(snmp_agent):
+    metrics = _metrics(snmp_agent, "public", "cisco_ios")
+    # The busier of the two stack members, not their average
+    assert metrics.cpu_percent == 37.0
+    # 800 used of 2000 across both pools
+    assert metrics.memory_percent == pytest.approx(40.0)
+
+
+def test_hp_memory_is_allocated_over_total(snmp_agent):
+    from tests.conftest import HP_COMMUNITY
+
+    metrics = _metrics(snmp_agent, HP_COMMUNITY, "hp_aruba")
+    assert metrics.cpu_percent == 22.0
+    assert metrics.memory_percent == pytest.approx(75.0)
+
+
+def test_host_resources_memory_counts_ram_and_not_the_disk(snmp_agent):
+    from tests.conftest import HOSTRES_COMMUNITY
+
+    metrics = _metrics(snmp_agent, HOSTRES_COMMUNITY, "paloalto")
+    # Four cores averaged: one pegged core is how a dataplane normally runs
+    assert metrics.cpu_percent == pytest.approx(40.0)
+    # The RAM row only - the 90% full disk in the same table is not memory
+    assert metrics.memory_percent == pytest.approx(25.0)
+
+
+def test_a_metric_that_cannot_be_read_is_none_not_zero(snmp_agent):
+    """
+    0% is what an idle device reports and what an alert recovers on. A
+    device that does not serve the table must not look like one.
+    """
+    from tests.conftest import PEER_COMMUNITY
+
+    assert _metrics(snmp_agent, PEER_COMMUNITY, "cisco_ios") is None
+
+
+def test_no_vendor_metric_is_read_as_a_scalar_unless_it_is_one():
+    """
+    The shape of the mistake, checked on the table itself: an OID that does
+    not end in .0 is a column, and a column under a scalar key would be read
+    with a GET again.
+    """
+    from app.core.snmp_oids import VENDOR_OIDS
+
+    for vendor, oids in VENDOR_OIDS.items():
+        for key in ("cpu", "memory"):
+            if key in oids:
+                assert oids[key].endswith(".0"), (
+                    f"{vendor}.{key} = {oids[key]} is a table column; "
+                    f"put it under {key}_table so it is walked"
+                )

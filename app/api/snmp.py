@@ -5,9 +5,14 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional, List, Any
 
+from app.core.app_settings import address_allowed, refusal
 from app.core.snmp_collector import SNMPCollector, snmp_value_to_text
 
-router = APIRouter(prefix="/snmp", tags=["snmp"])
+# No prefix here: main.py mounts this router at /api/v1/snmp. It used to carry
+# its own "/snmp" as well, which put the endpoints at /api/v1/snmp/snmp/test -
+# while the settings page called /api/v1/snmp/test, got a 404, and showed
+# "failed: undefined" for every device it was pointed at.
+router = APIRouter()
 
 # Keep responses small enough for the UI
 MAX_WALK_RESULTS = 200
@@ -73,6 +78,8 @@ async def test_snmp(request: SnmpTestRequest):
     """
     Test SNMP connectivity to a device
     """
+    if not address_allowed(request.ip):
+        return SnmpTestResponse(success=False, error=refusal(request.ip))
     try:
         async with _build_collector(request) as collector:
             return await _run_test(collector, request)
@@ -122,6 +129,8 @@ async def test_lldp(request: LldpTestRequest):
     Useful when the topology stays empty: it shows whether the device answers
     SNMP at all, whether it exposes LLDP-MIB, and what it reports.
     """
+    if not address_allowed(request.ip):
+        return LldpTestResponse(success=False, error=refusal(request.ip))
     try:
         async with _build_collector(request) as collector:
             return await _run_lldp_test(collector, request)

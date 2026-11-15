@@ -2,12 +2,13 @@
 Device model - Network device information
 """
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Enum as SQLEnum, Float,
+    BigInteger, Boolean, Column, Enum as SQLEnum, Float,
     ForeignKey, Integer, String, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.database import Base
+from app.db.types import UTCDateTime
 import enum
 
 
@@ -57,9 +58,9 @@ class Device(Base):
     uptime_seconds = Column(BigInteger)
     
     # Timestamps
-    last_seen = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_seen = Column(UTCDateTime)
+    created_at = Column(UTCDateTime, server_default=func.now())
+    updated_at = Column(UTCDateTime, server_default=func.now(), onupdate=func.now())
     
     # Relationships
     parent = relationship("Device", remote_side=[id], backref="children", foreign_keys=[parent_device_id])
@@ -113,7 +114,7 @@ class DeviceAddress(Base):
     # configured one. Today always "interface"; the column exists because
     # "which of these do I trust?" is the first question anyone asks of it.
     source = Column(String(20), default="interface")
-    first_seen = Column(DateTime(timezone=True), server_default=func.now())
+    first_seen = Column(UTCDateTime, server_default=func.now())
 
     device = relationship("Device", back_populates="addresses")
 

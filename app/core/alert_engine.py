@@ -13,6 +13,7 @@ from app.core.damping import TRAP_KEY
 from app.models.device import Device
 from app.models.link import MergedLink, RawLink
 from app.models.alert import Alert, AlertHistory, AlertProfile
+from app.core.clock import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -257,12 +258,19 @@ class AlertEngine:
             threshold=link_thresh,
             alert_type_high=AlertType.LINK_HIGH_UTILIZATION,
             alert_type_normal=AlertType.LINK_UTILIZATION_NORMAL,
-            device_name=f"Link {link.device_a_id} <-> {link.device_b_id}"
+            # By name: "Link 1 <-> 3" is the two database ids, which say
+            # nothing to whoever is reading the alert.
+            device_name=await self._link_name(link, device)
         )
         events.extend(link_events)
         
         return events
     
+    async def _link_name(self, link: MergedLink, device_a: Device) -> str:
+        device_b = await self._get_device(link.device_b_id)
+        other = device_b.hostname if device_b else f"device {link.device_b_id}"
+        return f"{device_a.hostname} <-> {other}"
+
     async def check_link_states(
         self, raw_link_ids: Optional[Iterable[int]] = None
     ) -> List[AlertEvent]:
@@ -613,7 +621,7 @@ class AlertEngine:
         
         if existing:
             existing.is_active = False
-            existing.recovered_at = datetime.utcnow()
+            existing.recovered_at = utcnow()
             if self._active is not None:
                 self._active.pop(self._active_key(
                     existing.device_id, existing.link_id,

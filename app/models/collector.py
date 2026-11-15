@@ -6,9 +6,10 @@ Only needed once the fleet is split across several collector processes
 back, which costs one statement per cycle and keeps the two deployments on the
 same code path.
 """
-from sqlalchemy import Column, DateTime, Integer, JSON, String
+from sqlalchemy import Column, Integer, JSON, String
 
 from app.db.database import Base
+from app.db.types import UTCDateTime
 
 
 class CollectorLease(Base):
@@ -42,9 +43,9 @@ class CollectorLease(Base):
     # (acquired_at, renewed_at) is what tells an operator "this process has
     # been doing the fleet-wide work for two days" from
     # "this changed hands a minute ago".
-    acquired_at = Column(DateTime(timezone=True))
-    renewed_at = Column(DateTime(timezone=True))
-    expires_at = Column(DateTime(timezone=True), nullable=False)
+    acquired_at = Column(UTCDateTime)
+    renewed_at = Column(UTCDateTime)
+    expires_at = Column(UTCDateTime, nullable=False)
     # Number of takeovers, so a lease flapping between two processes - which
     # is what a too-short TTL looks like - is visible in one SELECT.
     takeovers = Column(Integer, default=0)

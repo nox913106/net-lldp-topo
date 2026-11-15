@@ -15,6 +15,7 @@ from app.schemas.topology import (
     TopologyResponse, TopologyNode, TopologyLink, PortDetail,
     ExcludeRuleCreate, ExcludeRuleResponse
 )
+from app.core.clock import utcnow
 
 router = APIRouter()
 
@@ -47,8 +48,12 @@ async def get_topology(
         )
         result = await db.execute(query)
         devices = result.scalars().all()
-        # If no core/dist devices, show all devices
-        if not devices:
+        # The overview is the backbone. With fewer than two backbone
+        # devices there is no backbone to draw - a new installation has one
+        # seed switch typed "core" and everything else discovered from it -
+        # and showing that one switch on its own reads as "nothing was
+        # found". So until there is one, the overview is the whole map.
+        if len(devices) < 2:
             result = await db.execute(select(Device))
             devices = result.scalars().all()
         group_device_ids = None  # Not a group view
@@ -179,7 +184,7 @@ async def get_topology(
     return TopologyResponse(
         nodes=nodes,
         links=links,
-        last_updated=datetime.utcnow()
+        last_updated=utcnow()
     )
 
 

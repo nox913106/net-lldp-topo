@@ -415,6 +415,7 @@
 
 <body>
     <script src="/static/js/i18n.js"></script>
+    <script src="/static/js/util.js"></script>
     <div class="app-container">
         <!-- Header -->
         <header class="header">
@@ -495,7 +496,10 @@
                 </div>
             </div>
 
-            <!-- SNMP Settings -->
+            <!-- SNMP Settings. Saved on the server (POST /api/v1/settings),
+                 because the server is what acts on them: the API refuses a
+                 test or a discovery outside the allowed subnets, and the
+                 collector does not probe a neighbour outside them. -->
             <div class="settings-section">
                 <div class="section-header">
                     <h2>🔧 <span data-i18n="snmpConfiguration">SNMP Configuration</span></h2>
@@ -504,32 +508,24 @@
                     <div class="form-row">
                         <div class="form-group">
                             <label data-i18n="defaultCommunity">Default Community String</label>
-                            <input type="password" id="snmp-community" placeholder="Enter community string">
-                            <div class="form-help">Used for devices without specific community configured</div>
+                            <input type="password" id="snmp-community" autocomplete="off" placeholder="public">
+                            <div class="form-help" data-i18n="defaultCommunityHelp">Used by the subnet sweep below.
+                                Each device keeps the community it was added with.</div>
                         </div>
                         <div class="form-group">
-                            <label data-i18n="pollInterval">Poll Interval (seconds)</label>
-                            <input type="number" id="snmp-interval" value="60" min="30" max="300">
-                            <div class="form-help">How often to poll devices (30-300s)</div>
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label data-i18n="snmpTimeout">SNMP Timeout (seconds)</label>
-                            <input type="number" id="snmp-timeout" value="5" min="1" max="30">
-                        </div>
-                        <div class="form-group">
-                            <label data-i18n="snmpRetries">SNMP Retries</label>
-                            <input type="number" id="snmp-retries" value="2" min="0" max="5">
+                            <label data-i18n="snmpRuntime">Timeout / retries</label>
+                            <input type="text" id="snmp-runtime" value="-" disabled>
+                            <div class="form-help" data-i18n="envOnlyHint">Set in .env (SNMP_TIMEOUT, SNMP_RETRIES,
+                                COLLECTOR_INTERVAL); apply with: topomon restart</div>
                         </div>
                     </div>
 
                     <hr style="border: none; border-top: 1px solid var(--border); margin: 1.5rem 0;">
 
                     <h4 style="margin-bottom: 1rem; color: var(--text-secondary);">🔒 <span
-                            data-i18n="allowedSubnets">允許的網段</span></h4>
+                            data-i18n="allowedSubnets">Allowed Subnets</span></h4>
                     <div class="form-group">
-                        <label data-i18n="allowedSubnetsLabel">探索/測試的目標 IP 必須在以下網段內</label>
+                        <label data-i18n="allowedSubnetsLabel">Target IPs must be within these subnets</label>
                         <textarea id="allowed-subnets" rows="4"
                             placeholder="192.168.0.0/16&#10;10.0.0.0/8&#10;172.16.0.0/12"
                             style="font-family: monospace; font-size: 0.875rem;"></textarea>
@@ -538,11 +534,26 @@
                     </div>
                     <div class="form-group">
                         <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                            <input type="checkbox" id="enforce-subnet" checked style="width: auto;">
+                            <input type="checkbox" id="enforce-subnet" style="width: auto;">
                             <span data-i18n="enforceSubnetRestriction">Enable Subnet Restriction</span>
                         </label>
                         <div class="form-help" data-i18n="subnetRestrictionHelp">When enabled, SNMP testing and device
                             discovery only work for IPs within allowed subnets</div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                <input type="checkbox" id="discovery-enabled" style="width: auto;">
+                                <span data-i18n="discoveryEnabled">Sweep these subnets for new devices</span>
+                            </label>
+                            <div class="form-help" data-i18n="discoveryHint">Asks every address (up to 256 per
+                                subnet) for its name with the default community, and adds the ones that answer.</div>
+                        </div>
+                        <div class="form-group">
+                            <label data-i18n="discoveryInterval">Sweep interval (seconds)</label>
+                            <input type="number" id="discovery-interval" value="3600" min="300" max="86400">
+                            <div class="form-help" id="discovery-status"></div>
+                        </div>
                     </div>
 
                     <div class="btn-row">
@@ -566,38 +577,17 @@
                 </div>
             </div>
 
-            <!-- Log Export -->
+            <!-- Log Export: a start-up setting, so it is shown, not edited.
+                 This used to be a form whose Save and Test buttons both
+                 answered "success" without doing anything. -->
             <div class="settings-section">
                 <div class="section-header">
                     <h2>📤 <span data-i18n="logExport">Log Export</span></h2>
                 </div>
                 <div class="section-content">
-                    <div class="toggle-row">
-                        <div class="toggle-label">
-                            <span data-i18n="enableLogExport">Enable Log Export</span>
-                            <span>Send alerts and events to external systems</span>
-                        </div>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="log-enabled">
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
-                    <div class="form-group" style="margin-top: 1rem;">
-                        <label data-i18n="exportType">Export Type</label>
-                        <select id="log-type">
-                            <option value="elasticsearch">Elasticsearch</option>
-                            <option value="graylog">Graylog (GELF)</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Elasticsearch URL</label>
-                        <input type="text" id="es-url" placeholder="http://localhost:9200">
-                    </div>
-                    <div class="btn-row">
-                        <button class="btn-secondary" onclick="testLogConnection()" data-i18n="testConnection">Test
-                            Connection</button>
-                        <button class="btn-save" onclick="saveLogSettings()" data-i18n="save">Save</button>
-                    </div>
+                    <p id="log-export-status" style="margin: 0 0 0.5rem 0;">-</p>
+                    <div class="form-help" data-i18n="logExportHint">Configured in .env (LOG_EXPORT_ENABLED,
+                        LOG_EXPORT_TYPE, ELASTICSEARCH_URL or GRAYLOG_HOST); apply with: topomon restart</div>
                 </div>
             </div>
 
@@ -609,18 +599,9 @@
                 <div class="section-content">
                     <div class="toggle-row">
                         <div class="toggle-label">
-                            <span data-i18n="browserNotifications">Browser Notifications</span>
-                            <span>Show desktop notifications for new alerts</span>
-                        </div>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="notify-browser" checked>
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
-                    <div class="toggle-row">
-                        <div class="toggle-label">
                             <span data-i18n="soundAlerts">Sound Alerts</span>
-                            <span>Play sound for critical alerts</span>
+                            <span data-i18n="soundAlertsHelp">Play a sound in this browser when a new alert appears
+                                on the map or the alerts page</span>
                         </div>
                         <div style="display: flex; align-items: center; gap: 0.75rem;">
                             <button class="btn-secondary" onclick="testAlertSound()"
@@ -810,17 +791,15 @@
 
         async function loadSystemInfo() {
             try {
-                const [devicesRes, alertsRes] = await Promise.all([
-                    fetch(`${API_BASE}/devices?limit=1`),
-                    fetch(`${API_BASE}/alerts/active`)
+                const [devicesData, alertsData, topology] = await Promise.all([
+                    apiRequest(`${API_BASE}/devices?limit=1`),
+                    apiRequest(`${API_BASE}/alerts/active`),
+                    apiRequest(`${API_BASE}/topology?view=full`)
                 ]);
 
-                const devicesData = await devicesRes.json();
-                const alertsData = await alertsRes.json();
-
                 document.getElementById('info-devices').textContent = devicesData.total || 0;
-                document.getElementById('info-alerts').textContent = alertsData.total || alertsData.alerts?.length || 0;
-                document.getElementById('info-links').textContent = '-'; // Would need topology API
+                document.getElementById('info-alerts').textContent = alertsData.total || 0;
+                document.getElementById('info-links').textContent = (topology.links || []).length;
             } catch (error) {
                 console.error('Error loading system info:', error);
             }
@@ -844,15 +823,6 @@
                 console.error('Error loading collector status:', error);
                 box.innerHTML = `<p class="collector-quiet">${escapeHtml(String(error))}</p>`;
             }
-        }
-
-        function escapeHtml(value) {
-            // Hostnames and port names come from the devices over SNMP, so
-            // they are not this project's strings and go through here.
-            return String(value ?? '').replace(/[&<>"']/g, c => ({
-                '&': '&amp;', '<': '&lt;', '>': '&gt;',
-                '"': '&quot;', "'": '&#39;'
-            })[c]);
         }
 
         // The API is not translated, so it sends a code and the numbers.
@@ -1032,7 +1002,7 @@
             container.innerHTML = profiles.map(p => `
                 <div class="profile-card">
                     <div class="profile-info">
-                        <span class="profile-name">${p.name}</span>
+                        <span class="profile-name">${escapeHtml(p.name)}</span>
                         ${p.is_default ? '<span class="profile-default">DEFAULT</span>' : ''}
                         <span class="profile-thresholds">
                             CPU: ${p.thresholds?.cpu?.warning || 80}/${p.thresholds?.cpu?.critical || 95}% | 
@@ -1187,20 +1157,79 @@
             document.getElementById('notify-sound').checked = enabled;
         }
 
-        function saveSnmpSettings() {
-            // Save subnet settings to localStorage
-            const subnets = document.getElementById('allowed-subnets').value;
-            const enforceSubnet = document.getElementById('enforce-subnet').checked;
-            localStorage.setItem('snmp_allowed_subnets', subnets);
-            localStorage.setItem('snmp_enforce_subnet', enforceSubnet);
-            alert(i18n.t('settingsSaved'));
+        const subnetList = () => document.getElementById('allowed-subnets').value
+            .split('\n').map(line => line.trim()).filter(Boolean);
+
+        async function saveSnmpSettings() {
+            const data = {
+                default_community: document.getElementById('snmp-community').value.trim() || 'public',
+                allowed_subnets: subnetList(),
+                enable_subnet_restriction: document.getElementById('enforce-subnet').checked,
+                discovery_enabled: document.getElementById('discovery-enabled').checked,
+                discovery_interval: parseInt(document.getElementById('discovery-interval').value) || 3600
+            };
+            try {
+                const saved = await apiRequest(`${API_BASE}/settings`, apiJson('POST', data));
+                // Show what the server kept: it normalises the subnets
+                // (10.1.2.3/8 becomes 10.0.0.0/8) and drops duplicates.
+                fillSnmpSettings(saved.settings);
+                await loadDiscoveryStatus();
+                alert(i18n.t('settingsSaved'));
+            } catch (error) {
+                alert(`${i18n.t('saveFailed')}: ${error.message}`);
+            }
         }
 
-        function loadSnmpSettings() {
-            const subnets = localStorage.getItem('snmp_allowed_subnets') || '';
-            const enforceSubnet = localStorage.getItem('snmp_enforce_subnet') !== 'false';
-            document.getElementById('allowed-subnets').value = subnets;
-            document.getElementById('enforce-subnet').checked = enforceSubnet;
+        function fillSnmpSettings(data) {
+            document.getElementById('snmp-community').value = data.default_community || '';
+            document.getElementById('allowed-subnets').value = (data.allowed_subnets || []).join('\n');
+            document.getElementById('enforce-subnet').checked = !!data.enable_subnet_restriction;
+            document.getElementById('discovery-enabled').checked = !!data.discovery_enabled;
+            document.getElementById('discovery-interval').value = data.discovery_interval || 3600;
+        }
+
+        async function loadSnmpSettings() {
+            try {
+                fillSnmpSettings(await apiRequest(`${API_BASE}/settings`));
+            } catch (error) {
+                console.error('Error loading settings:', error);
+            }
+            loadDiscoveryStatus();
+            loadRuntimeSettings();
+        }
+
+        async function loadDiscoveryStatus() {
+            const el = document.getElementById('discovery-status');
+            try {
+                const status = await apiRequest(`${API_BASE}/settings/discovery/status`);
+                if (!status.running) {
+                    el.textContent = i18n.t('discoveryNotRunning');
+                } else if (status.last_run) {
+                    el.textContent = i18n.t('discoveryLastRun')
+                        .replace('{time}', new Date(status.last_run.finished_at).toLocaleString())
+                        .replace('{answered}', status.last_run.answered)
+                        .replace('{added}', status.last_run.added);
+                } else {
+                    el.textContent = i18n.t('discoveryRunning');
+                }
+            } catch (error) {
+                el.textContent = '';
+            }
+        }
+
+        // The start-up settings, for display. See GET /api/v1/settings/runtime.
+        async function loadRuntimeSettings() {
+            try {
+                const runtime = await apiRequest(`${API_BASE}/settings/runtime`);
+                document.getElementById('snmp-runtime').value =
+                    `${runtime.snmp.timeout}s / ${runtime.snmp.retries}`;
+                const log = runtime.log_export;
+                document.getElementById('log-export-status').textContent = log.enabled
+                    ? `${i18n.t('enabled')}: ${log.type} → ${log.target || '-'}`
+                    : i18n.t('disabled');
+            } catch (error) {
+                console.error('Error loading runtime settings:', error);
+            }
         }
 
         // ===== Language and Theme =====
@@ -1233,56 +1262,10 @@
             loadSoundSettings();
         });
 
-        function saveLogSettings() {
-            // Would save to backend
-            alert('Log export settings saved (demo)');
-        }
-
-        function testLogConnection() {
-            // Would test connection
-            alert('Connection test: Success (demo)');
-        }
-
-        // ===== Subnet Validation =====
-        function ipToLong(ip) {
-            const parts = ip.split('.').map(Number);
-            return (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
-        }
-
-        function isIpInCidr(ip, cidr) {
-            const [network, bits] = cidr.split('/');
-            const mask = -1 << (32 - parseInt(bits));
-            const ipLong = ipToLong(ip);
-            const networkLong = ipToLong(network);
-            return (ipLong & mask) === (networkLong & mask);
-        }
-
-        function isIpAllowed(ip) {
-            const enforceSubnet = document.getElementById('enforce-subnet').checked;
-            if (!enforceSubnet) return true;
-
-            const subnetsText = document.getElementById('allowed-subnets').value.trim();
-            if (!subnetsText) return true; // Empty means no restriction
-
-            const subnets = subnetsText.split('\n').map(s => s.trim()).filter(s => s && s.includes('/'));
-            if (subnets.length === 0) return true;
-
-            for (const subnet of subnets) {
-                if (isIpInCidr(ip, subnet)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        function validateIpBeforeAction(ip) {
-            if (!isIpAllowed(ip)) {
-                const subnets = document.getElementById('allowed-subnets').value.trim().split('\n').filter(s => s.trim()).join(', ');
-                alert(i18n.t('ipNotInSubnets').replace('{ip}', ip).replace('{subnets}', subnets || i18n.t('notConfigured')));
-                return false;
-            }
-            return true;
-        }
+        // The allowed-subnet check is done by the server on every test and
+        // every discovery (app/core/app_settings.py). It used to be done
+        // here, against the text box, which meant it only stopped whoever
+        // was looking at this page and nothing else.
 
         // SNMP Testing Tools
         document.getElementById('test-oid').addEventListener('change', function () {
@@ -1303,37 +1286,29 @@
                 return;
             }
 
-            if (!validateIpBeforeAction(ip)) {
-                return;
-            }
-
             const btn = document.getElementById('btn-snmpget');
             btn.disabled = true;
             btn.textContent = i18n.t('testing');
 
             try {
-                const response = await fetch(`${API_BASE}/snmp/test`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ip, community, oid, method: 'get' })
-                });
-                const data = await response.json();
+                const data = await apiRequest(`${API_BASE}/snmp/test`,
+                    apiJson('POST', { ip, community, oid, method: 'get' }));
 
                 document.getElementById('snmp-result').style.display = 'block';
                 const resultEl = document.getElementById('snmp-result-content');
 
                 if (data.success) {
                     resultEl.style.color = 'var(--success)';
-                    resultEl.textContent = `✅ 成功\n\nOID: ${oid}\n結果: ${data.result}`;
+                    resultEl.textContent = `✅ ${i18n.t('testSuccess')}\n\n${data.result}`;
                 } else {
                     resultEl.style.color = 'var(--danger)';
-                    resultEl.textContent = `❌ 失敗\n\n錯誤: ${data.error}`;
+                    resultEl.textContent = `❌ ${i18n.t('testFailed')}\n\n${data.error}`;
                 }
             } catch (error) {
                 document.getElementById('snmp-result').style.display = 'block';
                 const resultEl = document.getElementById('snmp-result-content');
                 resultEl.style.color = 'var(--danger)';
-                resultEl.textContent = `❌ 請求失敗: ${error.message}`;
+                resultEl.textContent = `❌ ${i18n.t('testFailed')}\n\n${error.message}`;
             } finally {
                 btn.disabled = false;
                 btn.textContent = '📡 SNMP Get';
@@ -1353,21 +1328,13 @@
                 return;
             }
 
-            if (!validateIpBeforeAction(ip)) {
-                return;
-            }
-
             const btn = document.getElementById('btn-snmpwalk');
             btn.disabled = true;
             btn.textContent = i18n.t('testing');
 
             try {
-                const response = await fetch(`${API_BASE}/snmp/test`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ip, community, oid, method: 'walk' })
-                });
-                const data = await response.json();
+                const data = await apiRequest(`${API_BASE}/snmp/test`,
+                    apiJson('POST', { ip, community, oid, method: 'walk' }));
 
                 document.getElementById('snmp-result').style.display = 'block';
                 const resultEl = document.getElementById('snmp-result-content');
@@ -1377,16 +1344,16 @@
                     const results = Array.isArray(data.result)
                         ? data.result.map(r => `${r.oid}: ${r.value}`).join('\n')
                         : data.result;
-                    resultEl.textContent = `✅ SNMP Walk 成功 (${data.count || 0} 筆結果)\n\n${results}`;
+                    resultEl.textContent = `✅ ${i18n.t('testSuccess')} (${data.count || 0})\n\n${results}`;
                 } else {
                     resultEl.style.color = 'var(--danger)';
-                    resultEl.textContent = `❌ 失敗\n\n錯誤: ${data.error}`;
+                    resultEl.textContent = `❌ ${i18n.t('testFailed')}\n\n${data.error}`;
                 }
             } catch (error) {
                 document.getElementById('snmp-result').style.display = 'block';
                 const resultEl = document.getElementById('snmp-result-content');
                 resultEl.style.color = 'var(--danger)';
-                resultEl.textContent = `❌ 請求失敗: ${error.message}`;
+                resultEl.textContent = `❌ ${i18n.t('testFailed')}\n\n${error.message}`;
             } finally {
                 btn.disabled = false;
                 btn.textContent = '🔍 SNMP Walk';
@@ -1403,21 +1370,13 @@
                 return;
             }
 
-            if (!validateIpBeforeAction(ip)) {
-                return;
-            }
-
             const btn = document.getElementById('btn-discover');
             btn.disabled = true;
             btn.textContent = i18n.t('discovering');
 
             try {
-                const response = await fetch(`${API_BASE}/discovery/manual`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ip, community, recursive })
-                });
-                const data = await response.json();
+                const data = await apiRequest(`${API_BASE}/discovery/manual`,
+                    apiJson('POST', { ip, community, recursive }));
 
                 document.getElementById('discover-result').style.display = 'block';
                 const resultEl = document.getElementById('discover-result-content');
@@ -1432,7 +1391,7 @@
                             const statusColor = d.is_new ? 'var(--success)' : 'var(--text-secondary)';
                             html += `
                                 <div style="background: var(--bg-secondary); padding: 0.5rem 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
-                                    <span style="font-weight: 500;">${d.hostname || d.ip}</span>
+                                    <span style="font-weight: 500;">${escapeHtml(d.hostname || d.ip)}</span>
                                     <span style="font-size: 0.75rem; color: ${statusColor};">${d.is_new ? i18n.t('newDevice') : i18n.t('alreadyExists')}</span>
                                 </div>
                             `;
@@ -1441,12 +1400,12 @@
                     }
                     resultEl.innerHTML = html;
                 } else {
-                    resultEl.innerHTML = `<div style="color: var(--danger);">❌ ${i18n.t('discoveryFailed')}: ${data.error}</div>`;
+                    resultEl.innerHTML = `<div style="color: var(--danger);">❌ ${i18n.t('discoveryFailed')}: ${escapeHtml(data.error)}</div>`;
                 }
             } catch (error) {
                 document.getElementById('discover-result').style.display = 'block';
                 const resultEl = document.getElementById('discover-result-content');
-                resultEl.innerHTML = `<div style="color: var(--danger);">❌ ${i18n.t('discoveryFailed')}: ${error.message}</div>`;
+                resultEl.innerHTML = `<div style="color: var(--danger);">❌ ${i18n.t('discoveryFailed')}: ${escapeHtml(error.message)}</div>`;
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = `🔎 <span data-i18n="startDiscovery">${i18n.t('startDiscovery')}</span>`;
