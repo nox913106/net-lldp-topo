@@ -153,7 +153,7 @@ async def ready():
     connection rather than only that the server is listening.
 
     Unauthenticated, like /health, so that a load balancer and
-    `topomon health` can use it (deploy/nginx.conf). That is why the failure
+    `mf-topomon doctor` can use it (deploy/nginx.conf). That is why the failure
     reason is logged rather than returned: an asyncpg connection error names
     the host, the port and the user it tried.
     """

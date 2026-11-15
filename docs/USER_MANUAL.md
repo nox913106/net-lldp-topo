@@ -56,7 +56,7 @@
 > [docs/DEPLOYMENT.md](DEPLOYMENT.md)：
 >
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
+> curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/scripts/bootstrap.sh | sudo bash
 > ```
 >
 > 下面是在自己機器上跑一份來看的步驟。
@@ -365,9 +365,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 > **為什麼要開網段限制**：鄰居就是線的另一頭接著的東西 —— 可能是 ISP 的
 > 路由器或別的單位的交換機。對它做自動發現，等於把你的 community 送給它。
 
-「逾時 / 重試次數」是唯讀的：它們與輪詢間隔都是啟動時的設定，在 `.env` 裡
+「逾時 / 重試次數」是唯讀的：它們與輪詢間隔都是啟動時的設定，在設定檔裡
 （`SNMP_TIMEOUT`、`SNMP_RETRIES`、`COLLECTOR_INTERVAL`、
-`COLLECTOR_FAST_INTERVAL`），改完執行 `sudo topomon restart`。收集器實際
+`COLLECTOR_FAST_INTERVAL`），改完執行 `sudo mf-topomon restart`。收集器實際
 用的間隔顯示在同一頁的「收集器狀態」。
 
 #### 告警設定檔
@@ -390,7 +390,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 顯示目前的狀態（關閉，或匯出到哪裡）。它是啟動時的設定，在 `.env` 裡：
 `LOG_EXPORT_ENABLED`、`LOG_EXPORT_TYPE`（`elasticsearch` 或 `graylog`）、
 `ELASTICSEARCH_URL` 或 `GRAYLOG_HOST` / `GRAYLOG_PORT`，改完執行
-`sudo topomon restart`。
+`sudo mf-topomon restart`。
 
 #### 通知設定
 

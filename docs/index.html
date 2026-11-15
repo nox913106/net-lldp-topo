@@ -905,33 +905,33 @@ footer .wrap { padding-block: 2.2rem; }
       <div class="head" style="margin-bottom:0">
         <p class="kicker" data-i18n="install.kicker">安裝</p>
         <h2 data-i18n="install.h">一行裝完，之後都用同一個指令</h2>
-        <p data-i18n="install.p">一台乾淨的 Ubuntu 就夠。它會把需要的東西裝好、產生好密碼與憑證、把服務跑起來，然後把網址和帳密印給你。</p>
+        <p data-i18n="install.p">一台乾淨的 Debian 或 Ubuntu 就夠。它直接裝在主機上，不需要容器：把資料庫與網頁伺服器裝好、產生好密碼與憑證、把服務跑起來，然後把網址和帳密印給你。</p>
       </div>
-      <pre><code><span class="c"># 在一台乾淨的 Ubuntu 上</span>
-curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh \
+      <pre><code><span class="c"># 在一台乾淨的 Debian 或 Ubuntu 上</span>
+curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/scripts/bootstrap.sh \
   | sudo bash
 
 <span class="c"># 跑完會印出：</span>
 <span class="g">  Web UI    https://10.0.0.20/</span>
-<span class="g">  登入帳密（只會顯示這一次）：admin / ••••••••••••</span></code></pre>
-      <button class="copy" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash" data-i18n="install.copy">複製安裝指令</button>
-      <p style="color:var(--ink-faint);font-size:0.85rem" data-i18n="install.note">原始碼目前是私有的，安裝時要附上存取權杖；完整寫法在部署文件裡。</p>
+<span class="g">  登入帳密：admin / ••••••••••••</span></code></pre>
+      <button class="copy" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/scripts/bootstrap.sh | sudo bash" data-i18n="install.copy">複製安裝指令</button>
+      <p style="color:var(--ink-faint);font-size:0.85rem" data-i18n="install.note">想用 Docker 也可以，同一行指令加一個參數；寫法在部署文件裡。</p>
 
       <div class="cmds">
         <div class="cmd">
-          <code>topomon health</code>
-          <p data-i18n="install.c1">一次檢查每一層：服務、代理、認證、資料庫、收集器。全部正常才算通過，可以直接接到監控上。</p>
+          <code>mf-topomon doctor</code>
+          <p data-i18n="install.c1">逐層健檢：服務、資料庫、登入、收集器。沒過的每一項都附上一行可以直接貼上的修復指令。</p>
         </div>
         <div class="cmd">
-          <code>topomon update</code>
+          <code>mf-topomon upgrade</code>
           <p data-i18n="install.c2">更新到最新版並重新檢查。檢查沒過會自動退回更新前的版本，不會把你留在壞掉的狀態。</p>
         </div>
         <div class="cmd">
-          <code>topomon backup</code>
-          <p data-i18n="install.c3">備份資料庫，舊的備份自動輪替。需要的時候可以還原回去。</p>
+          <code>mf-topomon backup</code>
+          <p data-i18n="install.c3">備份資料庫與設定，舊的備份自動輪替。需要的時候可以還原回去。</p>
         </div>
         <div class="cmd">
-          <code>topomon logs</code>
+          <code>mf-topomon logs</code>
           <p data-i18n="install.c4">跟著看任何一個服務的日誌，查問題不用先去找檔案放在哪裡。</p>
         </div>
       </div>
@@ -1110,12 +1110,12 @@ sudo topomon logs collector</code></pre>
       "modes.3.h": "全部在你的机房",
       "modes.3.p": "不连云端、不回报任何东西。界面本身有密码保护，而且只有反向代理对外，应用程序与数据库只在本机监听。",
       "install.kicker": "安装", "install.h": "一行装完，之后都用同一个命令",
-      "install.p": "一台干净的 Ubuntu 就够。它会把需要的东西装好、生成好密码与证书、把服务跑起来，然后把网址和账号密码打印给你。",
+      "install.p": "一台干净的 Debian 或 Ubuntu 就够。它直接装在主机上，不需要容器：把数据库与网页服务器装好、生成好密码与证书、把服务跑起来，然后把网址和账号密码打印给你。",
       "install.copy": "复制安装命令",
-      "install.note": "源代码目前是私有的，安装时要附上访问令牌；完整写法在部署文档里。",
-      "install.c1": "一次检查每一层：服务、代理、认证、数据库、采集器。全部正常才算通过，可以直接接到监控上。",
+      "install.note": "想用 Docker 也可以，同一行命令加一个参数；写法在部署文档里。",
+      "install.c1": "逐层体检：服务、数据库、登录、采集器。没过的每一项都附上一行可以直接粘贴的修复命令。",
       "install.c2": "更新到最新版并重新检查。检查没过会自动回退到更新前的版本，不会把你留在坏掉的状态。",
-      "install.c3": "备份数据库，旧的备份自动轮替。需要的时候可以还原回去。",
+      "install.c3": "备份数据库与配置，旧的备份自动轮替。需要的时候可以还原回去。",
       "install.c4": "跟着看任何一个服务的日志，查问题不用先去找文件放在哪里。",
       "install.sec": "<strong>界面是有密码的。</strong>对外只开反向代理，而且会转到加密连接；应用程序与数据库只在本机监听。连 API 的交互式文档页都要登录 —— 因为从那里可以直接操作整套系统。",
       "support.kicker": "支持范围", "support.h": "它跟什么东西讲话",
@@ -1231,12 +1231,12 @@ sudo topomon logs collector</code></pre>
       "modes.3.h": "All of it in your racks",
       "modes.3.p": "No cloud, nothing phoned home. The interface is password-protected, only the reverse proxy is exposed, and the application and database listen on localhost.",
       "install.kicker": "Install", "install.h": "One line to install, one command after that",
-      "install.p": "A clean Ubuntu machine is enough. It installs what it needs, generates the passwords and certificate, starts everything, and prints the address and credentials.",
+      "install.p": "A clean Debian or Ubuntu machine is enough. It installs straight onto the host, no containers: it sets up the database and the web server, generates the passwords and certificate, starts the services, and prints the address and credentials.",
       "install.copy": "Copy the command",
-      "install.note": "The source is private for now, so the install needs an access token; the deployment guide has the full command.",
-      "install.c1": "Checks every layer at once: services, proxy, authentication, database, collector. It passes only when all of them do, so you can wire it straight into monitoring.",
+      "install.note": "Docker works too - the same line with one extra parameter; the deployment guide has it.",
+      "install.c1": "A check-up layer by layer: services, database, login, collector. Every item that fails comes with one command you can paste to fix it.",
       "install.c2": "Updates and re-checks. If the check fails it rolls back to the previous version by itself rather than leaving you broken.",
-      "install.c3": "Backs up the database and rotates old backups. Restore when you need to.",
+      "install.c3": "Backs up the database and the configuration, and rotates old backups. Restore when you need to.",
       "install.c4": "Follow the logs of any service without hunting for where the files are.",
       "install.sec": "<strong>The interface has a password.</strong> Only the reverse proxy is exposed, and it redirects to an encrypted connection; the application and the database listen on localhost only. Even the interactive API documentation needs a login — anyone there can drive the whole system.",
       "support.kicker": "What it talks to", "support.h": "Devices, protocols, environment",

@@ -25,67 +25,66 @@ LLDP/CDP Topology Monitor - 網路拓撲監控系統
 
 ## 系統需求
 
-- Ubuntu 22.04 / 24.04 LTS（或 Debian）
-- Docker & Docker Compose v2 —— `install.sh` 會幫你裝
+- Debian 12／13 或 Ubuntu 24.04（amd64）
 - 2 core / 4 GB 起（500 台約吃 24% CPU，見 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)）
 - 連得到設備管理位址的 udp/161；要收 trap 再加 udp/162
 
-PostgreSQL、Redis、Python 都在容器裡，主機上不用先裝。
-不用 docker 的裝法（systemd + venv）見 [docs/DEPLOYMENT.md 附錄 A](docs/DEPLOYMENT.md)。
+安裝程式會用 `apt` 裝 PostgreSQL、nginx 與 Python，主機上不用先準備什麼。
 
 裝完之後**管理主機與瀏覽器都不需要連得到網際網路**。介面要用的檔案都隨程式
 一起送（d3 在 `static/vendor/`，見那裡的 README），所以放在沒有對外路由的
 管理網段也會正常顯示 —— 這點由 `tests/test_static_assets.py` 守著，因為少
 一個檔案的話瀏覽器是靜靜地畫不出來，不會報錯。
 
-## 一鍵部署
+## 安裝
 
-一台乾淨的 Ubuntu，一行。**這個 repo 是私有的**，所以權杖要給兩次 —— 一次
-拿這個腳本，一次讓它 clone：
-
-```bash
-export GITHUB_TOKEN=ghp_xxx          # 要有這個 repo 的 Contents: Read
-curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
-  https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh \
-  | sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash
-```
-
-權杖會被寫進 `/opt/topomon/.git/config`（chmod 600，只有 root 讀得到），
-`topomon update` 之後才能自己更新。不想留權杖的話用唯讀 deploy key，
-見 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
-
-repo 轉成公開之後就不用權杖：
+一台乾淨的機器，一行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/scripts/bootstrap.sh | sudo bash
 ```
 
-裝 docker、取原始碼到 `/opt/topomon`、產生隨機密鑰與登入密碼、起服務、等到
-`/health/ready` 說資料庫也連得上為止，然後印出網址與帳密（**密碼只顯示這一
-次**）。重複執行等同一次更新，不會動到 `.env`、憑證與資料庫。
+這是**原生安裝**：把程式碼放到 `/opt/mf-topomon`，在主機上裝好 PostgreSQL 與
+nginx，建立一個不能登入的服務帳號，產生隨機密鑰與登入密碼，啟動兩個 systemd
+服務，等到 `/health/ready` 說資料庫也連得上、而且 nginx 真的驗得了密碼為止，
+然後印出網址與帳密。密碼另外存一份在
+`/etc/mf-topomon/.admin-initial-password`（root 才讀得到），登入之後請換掉。
 
-之後都用 `topomon`：
+重複執行等同一次更新，不會動到設定、憑證與資料庫。
+
+之後都用 `mf-topomon`：
 
 ```bash
-sudo topomon health      # 逐層檢查：容器、代理、認證、資料庫、收集器
-sudo topomon update      # 拉最新版、重建、健康檢查（沒過自動回滾）
-sudo topomon status      # 容器狀態 + 收集器回報
-sudo topomon logs        # 跟著看日誌（app / collector / proxy / db）
-sudo topomon backup      # 備份資料庫
-sudo topomon password    # 重設介面密碼
+sudo mf-topomon doctor      # 逐層健檢；沒過的每一條都附一行修復指令
+sudo mf-topomon upgrade     # 拉最新版、備份、更新、健康檢查（沒過自動回滾）
+sudo mf-topomon status      # 服務狀態 + 收集器回報
+sudo mf-topomon logs        # 跟著看日誌（app / collector / proxy）
+sudo mf-topomon backup      # 備份資料庫與設定
+sudo mf-topomon password    # 重設介面密碼
 ```
 
-完整清單與每一項的細節見 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+完整清單、每個檔案放在哪裡、以及這套流程實際驗過的範圍，見
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+
+要用 Docker Compose（主機不能裝套件、或本來就是 Docker 主機）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/scripts/bootstrap.sh \
+  | sudo MF_TOPOMON_MODE=docker bash
+```
+
+那是次要的方式，用 `mf-topomon-docker` 管理，指令是對應的
+（`deploy`／`update`／`health`）。
 
 ### 介面是有密碼的
 
-這個系統沒有使用者的概念，認證整個落在反向代理上：8080（應用程式）與
-5432（資料庫）只綁 `127.0.0.1`，唯一的入口是 443，而 80 一律轉到 443。
-`/health` 與 `/health/ready` 不要密碼（給負載平衡器與 `topomon health`），
-其餘全部要，包含可以直接打 API 的 `/docs`。
+這個系統沒有使用者的概念，認證整個落在 nginx 上：應用程式只聽
+`127.0.0.1:8080`，唯一的入口是 443，而 80 一律轉到 443。`/health` 與
+`/health/ready` 不要密碼（給負載平衡器與 `mf-topomon doctor`），其餘全部要，
+包含可以直接打 API 的 `/docs`。
 
 憑證預設是自簽的，所以瀏覽器第一次會警告 —— 換成真憑證是覆蓋
-`auth/tls.crt` 與 `auth/tls.key` 再 `topomon restart proxy`。
+`/etc/mf-topomon/auth/tls.crt` 與 `tls.key` 再 `sudo systemctl reload nginx`。
 
 這一層有測試守著：`tests/test_proxy_auth.py` 用真的 nginx 跑
 `deploy/nginx.conf`，確認沒帶密碼的請求**根本到不了應用程式**，而兩個健康

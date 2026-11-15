@@ -1,6 +1,6 @@
 services:
   # 反向代理 —— 唯一對外的入口，也是整個系統的認證（deploy/nginx.conf 說明
-  # 為什麼認證在這裡）。憑證與 htpasswd 由 `topomon deploy` 產生在 auth/。
+  # 為什麼認證在這裡）。憑證與 htpasswd 由 `mf-topomon-docker deploy` 產生在 auth/。
   proxy:
     image: nginx:1.27-alpine
     ports:
@@ -48,7 +48,7 @@ services:
     # （上面的 ports），所以沒有別人能偽造那個標頭。
     #
     # 沒有 --reload：那是開發用的，它會多一個監看行程，而且改到一半的檔案會
-    # 讓它在半路重啟。要更新程式碼用 `topomon update`。
+    # 讓它在半路重啟。要更新程式碼用 `mf-topomon-docker update`。
     command: >-
       uvicorn app.main:app --host 0.0.0.0 --port 8080
       --proxy-headers --forwarded-allow-ips=*
@@ -173,7 +173,7 @@ services:
     environment:
       - POSTGRES_USER=topomon
       # 預設值是舊部署用的那一個，所以升級不會把既有的 pgdata 鎖在外面。
-      # 新安裝時 `topomon deploy` 會在 .env 裡放一組隨機密碼。
+      # 新安裝時 `mf-topomon-docker deploy` 會在 .env 裡放一組隨機密碼。
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-topomon}
       - POSTGRES_DB=topomon
       - TZ=Asia/Taipei

@@ -12,7 +12,7 @@ What CI runs. Two kinds, and the split matters:
 | `test_lease_e2e.py` | 一個資料庫 | 整機群的工作只有一個行程做、過期才接手、分片心跳回報的狀態、少一片會被指名 |
 | `test_proxy_auth.py` | 一個 nginx（裝了就好） | **真的跑 `deploy/nginx.conf`**：沒密碼到不了應用程式、`/docs` 也要密碼、明文 HTTP 在問密碼前就被轉走、兩個健康檢查路徑仍然免認證 |
 | `test_http_surface.py` | 一個資料庫 | 兩個健康檢查的語意（ready 真的 `SELECT 1`、失敗是 503 而且不洩漏連線字串）、被刪掉的空殼端點真的是 404、CORS 預設關閉 |
-| `test_deploy.py` | 什麼都不用 | `install.sh` 與 `tools/topomon` 的語法、每個指令都有被 dispatch 也有被寫進說明、compose 沒有把 8080／5432 開到網路上、私有 repo 的權杖只經過一個函式也不會被印出來。**執行 CLI 的測試都在只有 PATH 與 HOME 的環境下跑** —— 作者 shell 裡的 `GITHUB_TOKEN` 曾經遮掉一個 `set -u` 的錯（docs/PERFORMANCE.md 第 41.5 節） |
+| `test_deploy.py` | 什麼都不用（有 nginx 的話多驗一項） | 三支腳本（`scripts/bootstrap.sh`、`scripts/mf-topomon.sh`、`scripts/mf-topomon-docker.sh`）與舊路徑那個殼的語法；每個指令都有被 dispatch 也有被寫進說明；兩支工具的指令是對應的；systemd 單元不是 root、應用程式只聽 127.0.0.1；裝到主機 nginx 的站台就是被測試的那一份只換三樣東西；doctor 每一條沒過的檢查都附修復指令；compose 沒有把 8080／5432 開到網路上；密碼檔讓代理的 worker 讀得到。**執行腳本的測試都在只有 PATH 與 HOME 的環境下跑** —— 作者 shell 裡的環境變數曾經遮掉一個 `set -u` 的錯（docs/PERFORMANCE.md 第 41.5 節） |
 
 最後三個檔案以前是 scratchpad 裡的腳本 —— 也就是這個專案最強的證據活在一個
 會被回收的容器裡，CI 測到的東西比我手上少。現在它們在 CI 裡，而且跑兩次：

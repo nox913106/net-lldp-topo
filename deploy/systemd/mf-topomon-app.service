@@ -1,0 +1,34 @@
+# mf-topomon 的 Web UI 與 API。
+#
+# 這是範本：@...@ 由 scripts/mf-topomon.sh install 換成這台機器的實際路徑後，
+# 寫到 /etc/systemd/system/。不要直接改 /etc 底下那一份 —— 下一次 upgrade
+# 會用這個檔案蓋掉它。要調整請用 `systemctl edit mf-topomon-app`。
+[Unit]
+Description=mf-topomon web UI and API
+Documentation=https://github.com/nox913106/net-lldp-topo
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Group=@RUN_USER@
+WorkingDirectory=@DIR@
+EnvironmentFile=@ENV_FILE@
+# 程式碼是 root 的，服務帳號寫不進去，所以也不要嘗試寫 .pyc
+Environment=PYTHONDONTWRITEBYTECODE=1
+# 只聽 127.0.0.1：唯一的入口是 nginx，認證在那裡（deploy/nginx.conf）。
+# --forwarded-allow-ips 只信本機，因為只有本機的 nginx 連得到這個埠。
+ExecStart=@DIR@/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port @APP_PORT@ --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=5
+
+# 這個行程只需要讀程式、連資料庫、寫一個設定檔
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=@DATA_DIR@
+
+[Install]
+WantedBy=multi-user.target

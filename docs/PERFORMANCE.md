@@ -2767,6 +2767,84 @@ PostgreSQL 各一輪。
 MIB 造的模擬器驗的，不是對著實機。第一次接上實機時，設備頁的 CPU 欄是第一
 個該看的地方。
 
+## 44. 部署方式改成原生安裝
+
+第 41 節的一鍵部署是 Docker Compose。這一節把主要的方式換成直接裝在主機上
+（`apt` + systemd），Docker 留著當次要的 —— 做法與指令的樣子比照 jt-ipam：
+一行 `bootstrap.sh`、一支管理工具、`upgrade` 與 `doctor`、安裝時的密碼另外
+存一份。同時 repo 轉為公開，安裝指令不再帶權杖；對外名稱 mf-topomon 也成了
+機器上的名稱（`/opt/mf-topomon`、`mf-topomon` 指令）。
+
+### 44.1 長什麼樣子
+
+| | 原生（主要） | Docker（次要） |
+|---|---|---|
+| 入口 | `scripts/bootstrap.sh` | 同一支，`MF_TOPOMON_MODE=docker` |
+| 管理 | `scripts/mf-topomon.sh` | `scripts/mf-topomon-docker.sh` |
+| 行程 | 兩個 systemd 服務，帳號 `mftopomon` | 五個容器 |
+| 資料庫／代理 | 主機的 PostgreSQL 與 nginx | 容器裡的 |
+| 設定 | `/etc/mf-topomon/mf-topomon.env` | `/opt/mf-topomon/.env` |
+| 指令 | `install`／`upgrade`／`doctor` | `deploy`／`update`／`health` |
+
+三個不是照抄的決定：
+
+* **install 與 upgrade 是同一串步驟**（`converge`），每一步都是「確保它是這個
+  樣子」。所以 install 可以重跑、重跑就是修復，而升級不會漏掉某一步只有
+  安裝才做的事。
+* **裝到主機 nginx 的站台就是 `deploy/nginx.conf`**，只換上游位址、憑證目錄
+  與埠。那個檔案是 `tests/test_proxy_auth.py` 用真的 nginx 測的，所以被測試
+  的就是被部署的 —— 第 43 節第 1 項（沒有人登入得進去）就是「兩份各自演化」
+  會出的事。
+* **服務不是 root**。應用程式只需要讀程式、連資料庫、寫一個設定檔
+  （`APP_DATA_DIR`，所以 `settings.json` 不再寫在程式碼旁邊）；收集器多一項
+  `CAP_NET_BIND_SERVICE`，為了 udp/162。
+
+### 44.2 驗了什麼
+
+在 Ubuntu 24.04（Python 3.13、PostgreSQL 16、nginx 1.24）上從零開始：
+
+| 步驟 | 結果 |
+|---|---|
+| 一行安裝（clone → apt → 帳號 → 設定 → 資料庫 → venv → 服務 → nginx） | 一次過，印出帳密 |
+| 登入 | 沒密碼 401、錯的 401、對的 200；8080 從別的位址連不到 |
+| 行程與權限 | 兩個服務是 `mftopomon`；`htpasswd` root:www-data 640、`tls.key` 600 |
+| 對八台模擬交換機 | 一台種子長出八台、熱點線路 76% 並告警、CPU／記憶體有值 |
+| 瀏覽器操作 | 23 項全過（含 Docker 那一輪在沙箱裡驗不到的 SNMP 測試） |
+| `doctor` | 全過；停掉服務之後四項 FAIL，各附修復指令 |
+| `backup` → 刪一台設備 → `restore` | 設備回來 |
+| `upgrade`：沒有新版、有新版、**刻意弄壞的版本** | 第三種自動回滾到前一版，服務正常 |
+| `uninstall` → 重跑一行安裝 | 舊密碼還能登入、八台設備都在 |
+| Docker 部署的備份 → 原生的 `restore` | 八台設備都在（44.3） |
+| `uninstall --purge` | 資料庫、`/etc`、`/var/lib`、帳號都清掉 |
+| Docker 那一套（改名之後） | `deploy`、`health` 全過；舊指令 `topomon` 仍然通 |
+
+### 44.3 過程中找到的
+
+* **復原之後應用程式讀不到資料**（還沒發生就擋掉的）：`restore` 以 postgres
+  的身分把 dump 倒進去，表就屬於 postgres；從別的部署搬來的 dump 還帶著一個
+  這裡不存在的擁有者。現在以服務的角色倒（`SET ROLE`），倒完確認它讀得到，
+  備份也改成不寫擁有者。
+* **剛重啟就跑 `doctor` 會說收集器沒在回報**：收集器啟動後先等資料庫幾秒
+  才寫第一筆。現在服務在跑而還沒回報的時候，多等它一下。
+* 測試環境的：模擬器在 `--process-user=nobody` 下綁不了 161 埠而且不報錯，
+  兩次都被誤認成收集器的問題。跟產品無關，記在這裡是因為它花了時間。
+
+### 44.4 沒有驗到的
+
+**systemd 本身。** 那個環境沒有 systemd，所以「照單元檔把行程起起來」是由
+一個讀同一份單元檔的替身做的（它用單元檔裡的 `User`、`WorkingDirectory`、
+`EnvironmentFile` 與 `ExecStart`）。因此：
+
+* 單元檔的沙箱設定（`ProtectSystem=full`、`ProtectHome`、`PrivateTmp`、
+  `ReadWritePaths`、capabilities）沒有被執行過。它們是標準寫法，但
+  「標準寫法」正是第 43 節每一項出錯之前的狀態。
+* 開機自動啟動、`Restart=always`、`journalctl` 的輸出沒有被驗。
+* Debian 12／13 與 Python 3.11／3.12 只驗了依賴裝得起來（3.11 是開發與 CI
+  用的版本），沒有跑完整的安裝。
+
+所以第一次在真的機器上裝完，請跑 `sudo mf-topomon doctor`；它檢查的正是
+上面這幾樣會不會讓服務起不來。這一項取代第 42 節的第 8 項。
+
 ## 42. 下一步
 
 | # | 動作 | 效果 | 需要新元件？ |
@@ -2778,7 +2856,7 @@ MIB 造的模擬器驗的，不是對著實機。第一次接上實機時，設�
 | 5 | 確認次數也做 per-profile | 核心交換機要立刻告警、分公司要確認三次 | 不用 |
 | 6 | 分片之後再看 `COLLECTOR_CONCURRENT` 的預設值 | 每片的設備變少，20 可能偏高（24.9） | 不用 |
 | 7 | 位址走訪的到期時間打散 | 現在全機群同一輪到期，12 輪裡有 1 輪付整個 2.51 s（38.3） | 不用 |
-| 8 | 在一台真機器上跑一次 `install.sh` 與 `topomon update` | 部署路徑目前只有邏輯被測過（41.5） | 要（一台 Ubuntu，有 docker daemon） |
+| 8 | 在一台有 systemd 的真機器上跑一次一行安裝與 `mf-topomon upgrade`（44.4） | 部署路徑目前只有邏輯被測過（41.5） | 要（一台 Ubuntu，有 docker daemon） |
 | 9 | 讓 `topomon health` 能輸出機器可讀的格式（`--json`） | 現在要接監控只能看 exit code | 不用 |
 | 10 | 真正的 schema migration（alembic） | 現在只有「新增可為 NULL 的欄位與索引」會自動補（`_sync_upgrade_schema`），改型別與刪欄位要人工 | 要（alembic，而且要處理既有部署的 baseline） |
 

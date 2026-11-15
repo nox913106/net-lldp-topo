@@ -2,16 +2,17 @@
 
 ## 1. 環境變數
 
-`topomon deploy` 第一次跑的時候會自己從 `.env.example` 產生 `.env`，並且把
-`APP_SECRET_KEY` 與資料庫密碼換成隨機值。要自己手動建也可以：
+設定檔在哪裡，看是哪一種安裝：
 
-```bash
-cp .env.example .env
-```
+| | 設定檔 | 套用 |
+|---|---|---|
+| 原生安裝（預設） | `/etc/mf-topomon/mf-topomon.env` | `sudo mf-topomon restart` |
+| Docker | `/opt/mf-topomon/.env` | `sudo mf-topomon-docker restart`（改到 compose 本身用 `deploy`） |
 
-改完 `.env` 之後 `sudo topomon restart` 套用（改到 compose 本身則用
-`sudo topomon deploy`）。`topomon health` 會提醒兩個「能跑但不該這樣跑」的
-值：還是範例值的 `APP_SECRET_KEY`，以及還是預設 `topomon` 的資料庫密碼。
+安裝時它是從 `.env.example` 產生的，`APP_SECRET_KEY` 與資料庫密碼換成隨機
+值。升級不會動它，只會告訴你這個版本多了哪些設定。`mf-topomon doctor`
+（Docker 是 `health`）會提醒「能跑但不該這樣跑」的設定。下面的內容兩種安裝
+都適用，除非特別註明。
 
 ### 基本設定
 
@@ -34,7 +35,7 @@ APP_CORS_ORIGINS=
 DATABASE_URL=postgresql+asyncpg://topomon:topomon@localhost:5432/topomon
 
 # 資料庫密碼。docker-compose.yml 的 db 容器與上面那兩條 URL 都用它。
-# 新安裝時 topomon deploy 會放一組隨機值；既有的部署沒有這一行，會沿用舊的
+# 新安裝時安裝程式會放一組隨機值；既有的部署沒有這一行，會沿用舊的
 # 預設值 —— 密碼是在 pgdata 初始化的時候烤進去的，改這裡只會把自己鎖在外面。
 POSTGRES_PASSWORD=topomon
 
@@ -42,7 +43,7 @@ POSTGRES_PASSWORD=topomon
 REDIS_URL=redis://localhost:6379
 
 # 反向代理在主機上聽哪兩個埠。80 一律轉到 443；443 後面的每一條路徑都要
-# HTTP basic auth 的帳密（`topomon password` 重設）。這兩個埠之外，應用程式
+# HTTP basic auth 的帳密（`mf-topomon password` 重設）。這兩個埠之外，應用程式
 # 的 8080 與資料庫的 5432 只綁 127.0.0.1 —— 見 docs/DEPLOYMENT.md「登入與
 # 憑證」。
 TOPOMON_HTTP_PORT=80

@@ -1,0 +1,38 @@
+# mf-topomon 的收集器：輪詢設備、算流量、跑告警檢查，以及（開啟時）收 trap。
+#
+# 這是範本，見 mf-topomon-app.service 開頭的說明。
+#
+# 它直接跑在主機上，所以送出去的 SNMP 與收到的 trap 都是主機自己的位址 ——
+# 不經過任何 NAT，trap 的來源位址就是設備的位址。
+[Unit]
+Description=mf-topomon SNMP collector
+Documentation=https://github.com/nox913106/net-lldp-topo
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Group=@RUN_USER@
+WorkingDirectory=@DIR@
+EnvironmentFile=@ENV_FILE@
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=@DIR@/.venv/bin/python -m app.collector
+Restart=always
+RestartSec=5
+# SIGTERM 之後收集器會釋放它的 lease、關掉 trap 埠再結束（app/collector.py）
+TimeoutStopSec=30
+
+# 收 trap 要綁 udp/162，這是一個非 root 帳號唯一需要的特權。只給這一項，
+# 而且只給這個行程，而不是讓收集器用 root 跑。
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=@DATA_DIR@
+
+[Install]
+WantedBy=multi-user.target

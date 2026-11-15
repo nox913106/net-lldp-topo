@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     # every device's SNMP community and the credential the browser would
     # attach is the operator's own (app/main.py).
     app_cors_origins: str = ""
+    # Where the application keeps the one file it writes: settings.json, the
+    # settings saved from the web UI (app/core/app_settings.py).
+    #
+    # Empty means the directory the code is in, which is what the Docker
+    # deployment has always done (the checkout is bind-mounted and the
+    # process is root). A native install runs as an unprivileged account
+    # that must not be able to write to its own code, so the installer
+    # points this at /var/lib/mf-topomon.
+    app_data_dir: str = ""
     
     # Database (默認使用 SQLite 方便本地測試)
     database_url: str = "sqlite+aiosqlite:///./topomon.db"

@@ -21,10 +21,14 @@ from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 SETTINGS_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "settings.json"
+    get_settings().app_data_dir
+    or os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "settings.json"
 )
 
 
