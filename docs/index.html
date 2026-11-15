@@ -937,10 +937,10 @@ curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/script
       </div>
 
       <pre><code><span class="c"># 每天會用到的就這幾個</span>
-sudo topomon health      <span class="c"># 全部正常嗎</span>
-sudo topomon update      <span class="c"># 更新（沒過會自己退回去）</span>
-sudo topomon backup      <span class="c"># 備份資料庫</span>
-sudo topomon logs collector</code></pre>
+sudo mf-topomon doctor     <span class="c"># 全部正常嗎</span>
+sudo mf-topomon upgrade    <span class="c"># 更新（沒過會自己退回去）</span>
+sudo mf-topomon backup     <span class="c"># 備份資料庫與設定</span>
+sudo mf-topomon logs collector</code></pre>
       <p style="color:var(--ink-soft);max-width:var(--measure)" data-i18n="install.sec"><strong>介面是有密碼的。</strong>對外只開反向代理，而且會轉到加密連線；應用程式與資料庫只在本機聽。連 API 的互動式文件頁都要登入 —— 因為從那裡可以直接操作整套系統。</p>
     </div>
   </div>
