@@ -2,6 +2,8 @@
 
 LLDP/CDP Topology Monitor - 網路拓撲監控系統
 
+介紹網站：<https://nox913106.github.io/net-lldp-topo/>
+
 ## 專案簡介
 
 基於 LLDP/CDP 協定的網路拓撲自動發現與監控系統，提供乾淨的視覺化拓撲圖和完整的告警機制。
@@ -104,7 +106,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ## 文件
 
-- [專案介紹網站](docs/index.html) —— 功能、實際畫面與部署方式，可切換繁中／簡中／英文；把 GitHub Pages 設成由 `/docs` 發佈就是這一頁
+- [專案介紹網站](https://nox913106.github.io/net-lldp-topo/)（原始檔 [docs/index.html](docs/index.html)）—— 功能、實際畫面與部署方式，可切換繁中／簡中／英文；改了這個檔案推上 main 就會由 `.github/workflows/pages.yml` 重新發佈
 - [部署與維護](docs/DEPLOYMENT.md) —— 一鍵安裝、`topomon` 每一個指令、認證與憑證、備份
 - [設定說明](docs/CONFIGURATION.md) —— 每個環境變數，以及設備端要不要改（不用）
 - [使用手冊](docs/USER_MANUAL.md) —— 介面怎麼用

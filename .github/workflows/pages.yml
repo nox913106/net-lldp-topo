@@ -1,0 +1,65 @@
+# Publishes the showcase site (docs/index.html) to GitHub Pages.
+#
+# Only that one file goes up: its screenshots are embedded as base64
+# (tools/embed-site-images.py), so it needs nothing else next to it. The
+# rest of docs/ stays a set of Markdown files read on GitHub - publishing
+# the whole folder would put the SDD and the performance notes on the site
+# as half-rendered Jekyll pages.
+#
+# The embed check runs first for the same reason it runs in CI: a page whose
+# embedded copy is older than docs/img would publish the old screenshots.
+#
+# One-time setup in the repository: Settings -> Pages -> Source:
+# "GitHub Actions". Until then the deploy step fails with a 404.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/index.html
+      - docs/img/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer push replaces a queued one but never cancels
+# a deploy already running.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Embedded screenshots match docs/img
+        run: python3 tools/embed-site-images.py --check
+
+      - name: Stage the site
+        run: |
+          mkdir -p _site
+          cp docs/index.html _site/index.html
+          touch _site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
