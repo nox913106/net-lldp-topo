@@ -16,7 +16,7 @@ import importlib
 
 import pytest
 from fastapi.middleware.cors import CORSMiddleware
-from httpx import ASGITransport, AsyncClient
+from tests.conftest import authed_client
 
 import app.main as main_module
 from app.config import get_settings
@@ -27,9 +27,7 @@ def run(coro):
 
 
 async def _request(path, **kwargs):
-    async with AsyncClient(
-        transport=ASGITransport(app=main_module.app), base_url="http://test"
-    ) as client:
+    async with authed_client(main_module.app, "viewer") as client:
         return await client.get(path, **kwargs)
 
 

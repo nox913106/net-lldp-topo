@@ -12,10 +12,13 @@
 #   程式碼        /opt/mf-topomon            root 的；服務帳號只讀得到
 #   Python 環境   /opt/mf-topomon/.venv      照 requirements.txt 的 hash 鎖定安裝
 #   設定          /etc/mf-topomon/mf-topomon.env        root:mftopomon 640
-#   登入與憑證    /etc/mf-topomon/auth/                  htpasswd、tls.crt、tls.key
-#   執行期資料    /var/lib/mf-topomon/       介面上存的設定（settings.json）
+#   HTTPS 憑證    /etc/mf-topomon/auth/                  tls.crt、tls.key
+#   執行期資料    /var/lib/mf-topomon/       介面上存的設定、後台送出的工作請求
+#   工作結果      /var/lib/mf-topomon-runner/  root 的；服務帳號只讀得到
 #   資料庫        主機自己的 PostgreSQL，資料庫與角色都叫 mftopomon
-#   服務          mf-topomon-app.service、mf-topomon-collector.service
+#                 （登入帳號、稽核紀錄、通知設定也在裡面）
+#   服務          mf-topomon-app.service、mf-topomon-collector.service、
+#                 mf-topomon-runner.path（後台要求的備份／升級／憑證）
 #   反向代理      主機自己的 nginx，/etc/nginx/sites-available/mf-topomon
 #   備份          /var/backups/mf-topomon/
 #
@@ -25,9 +28,9 @@
 #      重跑，重跑就是修復；upgrade 做的也是同一串步驟，只是前面多一次
 #      git pull、後面多一次失敗時的回滾。
 #
-#   2. 認證在 nginx 上（deploy/nginx.conf 說明為什麼），應用程式只聽
-#      127.0.0.1。doctor 檢查 API 的時候直接打那個埠 —— 它本來就在認證的
-#      裡面。
+#   2. 登入在應用程式裡（帳號、角色、AD），nginx 只負責 TLS。應用程式只聽
+#      127.0.0.1，所以唯一的入口還是 nginx。doctor 需要讀資料庫的時候不走
+#      HTTP，而是以服務帳號跑 `python -m app.cli`（app/cli.py）。
 #
 #   3. doctor 每一條沒過的檢查，後面都跟著一行可以直接複製貼上的指令。
 #      「哪裡壞了」沒有附上「所以要打什麼」，等於只講了一半。
@@ -51,6 +54,9 @@ ENV_FILE="$ETC_DIR/mf-topomon.env"
 AUTH_DIR="$ETC_DIR/auth"
 DATA_DIR="${MF_TOPOMON_DATA:-/var/lib/mf-topomon}"
 BACKUP_DIR="${MF_TOPOMON_BACKUP_DIR:-/var/backups/mf-topomon}"
+# 後台工作的結果。root 的、服務帳號只讀：見 deploy/systemd/mf-topomon-runner.path
+RUNNER_DIR="${MF_TOPOMON_RUNNER_DIR:-/var/lib/mf-topomon-runner}"
+REQUEST_DIR="$DATA_DIR/requests"
 VENV="$DIR/.venv"
 LAST_GOOD="$ETC_DIR/.last-good"
 # 安裝時產生的管理密碼也存在這裡（root 才讀得到），因為「只印一次」的東西
@@ -64,6 +70,8 @@ APP_PORT="${MF_TOPOMON_APP_PORT:-8080}"
 
 APP_UNIT="mf-topomon-app.service"
 COLLECTOR_UNIT="mf-topomon-collector.service"
+RUNNER_PATH_UNIT="mf-topomon-runner.path"
+RUNNER_UNIT="mf-topomon-runner.service"
 UNIT_DIR="${MF_TOPOMON_UNIT_DIR:-/etc/systemd/system}"
 NGINX_AVAILABLE="/etc/nginx/sites-available/mf-topomon"
 NGINX_ENABLED="/etc/nginx/sites-enabled/mf-topomon"
@@ -152,8 +160,8 @@ psql_value() {
     as_postgres psql -tAc "$1" 2>/dev/null | head -n 1 | tr -d '[:space:]'
 }
 
-# nginx 的 worker 用哪個帳號跑。htpasswd 是 worker 在每個請求上讀的，所以它
-# 必須讓這個帳號的群組讀得到（secure_auth_dir）。Debian/Ubuntu 是 www-data。
+# nginx 的 worker 用哪個帳號跑（auth/ 目錄交給它的群組讀，secure_auth_dir）。
+# Debian/Ubuntu 是 www-data。
 nginx_user() {
     local user
     user="$(grep -E '^[[:space:]]*user[[:space:]]+' /etc/nginx/nginx.conf 2>/dev/null \
@@ -225,8 +233,17 @@ ensure_user() {
 
 ensure_dirs() {
     install -d -m 750 -o root -g "$RUN_USER" "$ETC_DIR"
-    install -d -m 750 -o "$RUN_USER" -g "$RUN_USER" "$DATA_DIR"
-    install -d -m 700 -o root -g root "$BACKUP_DIR"
+    install -d -m 750 -o "$RUN_USER" -g "$RUN_USER" "$DATA_DIR" "$REQUEST_DIR"
+    # 服務帳號讀得到資料庫的 dump（後台列出與下載備份用）—— 裡面沒有它本來
+    # 就讀不到的東西。旁邊的設定封存檔有 TLS 私鑰，維持只有 root 讀得到。
+    install -d -m 750 -o root -g "$RUN_USER" "$BACKUP_DIR"
+    local dump
+    for dump in "$BACKUP_DIR"/mf-topomon-*.sql.gz; do
+        [[ -f "$dump" ]] || continue
+        chown "root:$RUN_USER" "$dump"
+        chmod 640 "$dump"
+    done
+    install -d -m 750 -o root -g "$RUN_USER" "$RUNNER_DIR" "$RUNNER_DIR/jobs"
 }
 
 # --------------------------------------------------------------------------
@@ -248,9 +265,16 @@ ensure_env() {
         env_set DATABASE_URL \
             "postgresql+asyncpg://${DB_USER}:${db_password}@127.0.0.1:5432/${DB_NAME}"
         env_set APP_DATA_DIR "$DATA_DIR"
+        env_set APP_RUNNER_DIR "$RUNNER_DIR"
+        env_set APP_BACKUP_DIR "$BACKUP_DIR"
         info "已產生隨機的 APP_SECRET_KEY 與資料庫密碼"
         return
     fi
+
+    # 這兩個是這個腳本自己的路徑，不是使用者的設定：舊的安裝沒有的話補上，
+    # 否則後台的備份、升級、憑證會說「沒有背景執行器」
+    grep -qE '^[[:space:]]*APP_RUNNER_DIR[[:space:]]*=' "$ENV_FILE" || env_set APP_RUNNER_DIR "$RUNNER_DIR"
+    grep -qE '^[[:space:]]*APP_BACKUP_DIR[[:space:]]*=' "$ENV_FILE" || env_set APP_BACKUP_DIR "$BACKUP_DIR"
 
     # 裡面有資料庫密碼，所以每次都收一次權限
     chown "root:$RUN_USER" "$ENV_FILE"
@@ -321,14 +345,9 @@ ensure_venv() {
     fi
 }
 
-# auth/ 的權限。兩種讀法要分開看：
-#
-#   tls.key   nginx 的 master 行程在啟動時以 root 讀，600 root 就夠。
-#   htpasswd  worker 行程（www-data）在**每一個請求**上讀。讀不到的話，任何
-#             帶了帳密的請求都得到 500 —— 而沒帶帳密的請求照樣是 401，所以
-#             看起來一切正常，只是沒有人登入得進去。
-#
-# 所以目錄與 htpasswd 交給那個群組讀（750 / 640），而不是開給所有人。
+# auth/ 的權限。tls.key 是 nginx 的 master 行程在啟動時以 root 讀的，600 root
+# 就夠；目錄交給 nginx 的群組（750）。以前這裡還有 htpasswd —— 登入搬進應用
+# 程式之後，舊安裝留下的那一份會在第一次升級時被匯入（ensure_accounts）。
 secure_auth_dir() {
     local group
     group="$(id -gn "$(nginx_user)" 2>/dev/null || echo www-data)"
@@ -348,7 +367,7 @@ secure_auth_dir() {
 }
 
 # 剛產生的登入帳密，印一次就清掉。由 EXIT trap 呼叫（cmd_install），因為
-# 密碼在 ensure_auth 就寫進 htpasswd 了：之後任何一步失敗，腳本都會在印出
+# 帳號在 ensure_accounts 就寫進資料庫了：之後任何一步失敗，腳本都會在印出
 # 摘要之前結束。
 print_new_credentials() {
     if [[ -z "${NEW_CREDENTIALS:-}" ]]; then return 0; fi
@@ -357,31 +376,48 @@ print_new_credentials() {
     echo "      ${BOLD}${NEW_CREDENTIALS}${NC}"
     echo
     echo "  也存了一份在 $INITIAL_PASSWORD_FILE（root 才讀得到）。"
-    echo "  登入之後請換掉並刪除那個檔案："
-    echo "      sudo mf-topomon password && sudo rm $INITIAL_PASSWORD_FILE"
+    echo "  第一次登入時會要求換掉這組密碼；換完之後刪掉那個檔案："
+    echo "      sudo rm $INITIAL_PASSWORD_FILE"
     echo
     NEW_CREDENTIALS=""
 }
 
-write_htpasswd() {
-    local user="$1" password="$2"
-    # apr1 是 nginx 認得而 openssl 做得出來的格式；bcrypt 需要另外裝
-    # apache2-utils，為了一個密碼多裝一個套件不值得。
-    printf '%s:%s\n' "$user" "$(openssl passwd -apr1 "$password")" > "$AUTH_DIR/htpasswd"
-    echo "$user" > "$AUTH_DIR/.admin-user"
+# 以服務帳號執行 app/cli.py。用服務帳號而不是 root：它讀的就是服務讀的那份
+# 設定、連的就是服務連的那個資料庫角色，表格也就屬於服務。
+app_cli() {
+    (cd "$DIR" && runuser -u "$RUN_USER" -- env -i PATH=/usr/bin:/bin \
+        PYTHONDONTWRITEBYTECODE=1 HOME="$DATA_DIR" LANG=C.UTF-8 \
+        "$VENV/bin/python" -m app.cli --env-file "$ENV_FILE" "$@")
+}
+
+# 登入帳號。三種情況：
+#   * 舊版留下的 htpasswd：匯入那個帳號，密碼不變（app/core/passwords.py 認得
+#     $apr1$），第一次登入時自動改存成 scrypt
+#   * 資料庫裡沒有任何管理員：建一個，密碼隨機，第一次登入要改
+#   * 已經有管理員：什麼都不做
+ensure_accounts() {
+    if [[ -f "$AUTH_DIR/htpasswd" ]]; then
+        local imported
+        # root 開檔、從 stdin 交給服務帳號：auth/ 是 nginx 的群組才讀得到
+        imported="$(app_cli import-htpasswd - < "$AUTH_DIR/htpasswd" 2>/dev/null)" \
+            || fail "匯入舊的登入帳號失敗（$AUTH_DIR/htpasswd）"
+        mv -f "$AUTH_DIR/htpasswd" "$AUTH_DIR/htpasswd.imported"
+        rm -f "$AUTH_DIR/.admin-user"
+        info "登入改由應用程式處理：舊的帳號已匯入，密碼不變（${imported}）"
+    fi
+    local out user password
+    out="$(app_cli ensure-admin "${MF_TOPOMON_ADMIN_USER:-admin}")" \
+        || fail "建立管理員帳號失敗。看：sudo journalctl -u $APP_UNIT -n 40"
+    if [[ "$out" == created* ]]; then
+        read -r _ user password <<< "$out"
+        (umask 077 && printf '%s / %s\n' "$user" "$password" > "$INITIAL_PASSWORD_FILE")
+        NEW_CREDENTIALS="$user / $password"
+        info "建立管理員帳號 $user"
+    fi
 }
 
 ensure_auth() {
     install -d -m 750 "$AUTH_DIR"
-
-    if [[ ! -f "$AUTH_DIR/htpasswd" ]]; then
-        local user password
-        user="${MF_TOPOMON_ADMIN_USER:-admin}"
-        password="$(random_password)"
-        write_htpasswd "$user" "$password"
-        (umask 077 && printf '%s / %s\n' "$user" "$password" > "$INITIAL_PASSWORD_FILE")
-        NEW_CREDENTIALS="$user / $password"
-    fi
 
     if [[ ! -f "$AUTH_DIR/tls.crt" || ! -f "$AUTH_DIR/tls.key" ]]; then
         info "產生自簽 TLS 憑證（10 年）"
@@ -405,10 +441,11 @@ ensure_auth() {
 
 install_units() {
     local unit
-    for unit in "$APP_UNIT" "$COLLECTOR_UNIT"; do
+    for unit in "$APP_UNIT" "$COLLECTOR_UNIT" "$RUNNER_PATH_UNIT" "$RUNNER_UNIT"; do
         sed -e "s|@DIR@|$DIR|g" \
             -e "s|@ENV_FILE@|$ENV_FILE|g" \
             -e "s|@DATA_DIR@|$DATA_DIR|g" \
+            -e "s|@RUNNER_DIR@|$RUNNER_DIR|g" \
             -e "s|@RUN_USER@|$RUN_USER|g" \
             -e "s|@APP_PORT@|$APP_PORT|g" \
             "$DIR/deploy/systemd/$unit" > "$UNIT_DIR/$unit"
@@ -416,6 +453,8 @@ install_units() {
     done
     systemctl daemon-reload
     systemctl enable "$APP_UNIT" "$COLLECTOR_UNIT" >/dev/null 2>&1 || true
+    # 由 path 單元觸發，不 enable 那個 service 本身
+    systemctl enable --now "$RUNNER_PATH_UNIT" >/dev/null 2>&1 || true
 }
 
 # nginx 的版本，例如 "1.24.0" -> 1 24 0
@@ -499,32 +538,52 @@ wait_healthy() {
     return 1
 }
 
-# 代理「驗得了密碼」嗎。帶一組一定錯的帳密去問：
+# 登入有在要求嗎。經過 nginx 問兩件事：
 #
-#   401  它讀了 htpasswd、比對過、拒絕了 —— 正確的答案
-#   500  它讀不到 htpasswd。這時候**對的密碼也是 500**，沒有人進得去
-#   200  認證根本沒在要求
-#
-# 不帶帳密的請求分不出前兩種：nginx 在打開 htpasswd 之前就回 401 了。
+#   /api/v1/devices   沒有登入要是 401 —— 不是 200（任何人都進得去），也不是
+#                     502（nginx 到不了應用程式）
+#   /api/v1/auth/info 登入頁要用的這一條要是 200，否則沒有人登入得進去
 auth_probe() {
-    curl -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
-        -u "mf-topomon-doctor:not-the-password" \
-        "https://127.0.0.1:$(https_port)/" 2>/dev/null || true
+    local api info
+    api="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
+        "https://127.0.0.1:$(https_port)/api/v1/devices" 2>/dev/null || true)"
+    info="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
+        "https://127.0.0.1:$(https_port)/api/v1/auth/info" 2>/dev/null || true)"
+    echo "$api/$info"
 }
 
 require_login_works() {
     local code
     code="$(auth_probe)"
-    if [[ "$code" == "401" ]]; then
+    if [[ "$code" == "401/200" ]]; then
         return 0
     fi
     tail -n 5 /var/log/nginx/error.log >&2 2>/dev/null || true
-    fail "服務起來了，但 nginx 驗不了密碼（帶帳密的請求回 $code 而不是 401）。
-    最常見的原因是它讀不到 $AUTH_DIR/htpasswd —— 上面是 nginx 最近的錯誤。"
+    fail "服務起來了，但登入不是預期的樣子（沒登入的 API 回 ${code%/*}、登入頁的
+    資訊回 ${code#*/}，應該是 401 與 200）。上面是 nginx 最近的錯誤。"
 }
 
 api_get() {
     curl -fsS --max-time 10 "http://127.0.0.1:${APP_PORT}$1" 2>/dev/null
+}
+
+# 給後台讀的狀態：憑證與版本。寫在 RUNNER_DIR（root 的），應用程式只讀。
+write_status_files() {
+    install -d -m 750 -o root -g "$RUN_USER" "$RUNNER_DIR" "$RUNNER_DIR/jobs"
+    if [[ -f "$AUTH_DIR/tls.crt" ]]; then
+        python3 -I "$DIR/scripts/runner_helper.py" tls-info "$AUTH_DIR/tls.crt" \
+            | python3 -I "$DIR/scripts/runner_helper.py" write-json "$RUNNER_DIR/tls.json" || true
+    fi
+    python3 -I "$DIR/scripts/runner_helper.py" git-info "$DIR" \
+        | python3 -I "$DIR/scripts/runner_helper.py" write-json "$RUNNER_DIR/version.json" || true
+    local last_good=""
+    [[ -f "$LAST_GOOD" ]] && last_good="$(cut -c1-10 "$LAST_GOOD")"
+    printf '{"last_good": "%s"}' "$last_good" \
+        | python3 -I "$DIR/scripts/runner_helper.py" merge-json "$RUNNER_DIR/version.json" || true
+    printf '{"installed": true, "updated_at": "%s"}' "$(date -Is)" \
+        | python3 -I "$DIR/scripts/runner_helper.py" merge-json "$RUNNER_DIR/runner.json" || true
+    chown -R "root:$RUN_USER" "$RUNNER_DIR"
+    chmod 640 "$RUNNER_DIR"/*.json 2>/dev/null || true
 }
 
 # --------------------------------------------------------------------------
@@ -548,6 +607,9 @@ converge() {
 
     step "Python 環境"
     ensure_venv
+
+    step "登入帳號"
+    ensure_accounts
 
     step "服務與反向代理"
     install_units
@@ -573,6 +635,7 @@ cmd_install() {
     require_login_works
 
     git rev-parse HEAD > "$LAST_GOOD" 2>/dev/null || true
+    write_status_files
     install_link
     print_summary
 }
@@ -601,8 +664,8 @@ print_summary() {
     echo "  API 文件  ${base}/docs"
     print_new_credentials
     echo
-    echo "  憑證是自己簽的，所以瀏覽器會先警告一次。要換成真憑證："
-    echo "      覆蓋 $AUTH_DIR/tls.crt 與 tls.key，然後 sudo systemctl reload nginx"
+    echo "  憑證是自己簽的，所以瀏覽器會先警告一次。要換成真憑證：登入後到"
+    echo "  「後台 → HTTPS 憑證」上傳；帳號、AD、通知、備份排程也都在後台設定。"
     echo
     echo "  接下來：到「設備」頁新增一台交換機（名稱、IP、community），"
     echo "  它的鄰居會在下一輪盤點自動長出來。細節見"
@@ -625,22 +688,35 @@ cmd_upgrade() {
     trap print_new_credentials EXIT
 
     local before after
-    before="$(git rev-parse HEAD)"
+    if [[ "${1:-}" == "--resume" ]]; then
+        # 第二段：程式碼已經換成新版，由新版的這個腳本接手（見下面的 exec）
+        before="$2"
+        after="$(git rev-parse HEAD)"
+    else
+        before="$(git rev-parse HEAD)"
 
-    step "取得更新"
-    if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
-        git status --short --untracked-files=no >&2
-        fail "$DIR 有未提交的改動，升級會蓋掉它們。先處理上面這些檔案。
+        step "取得更新"
+        if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+            git status --short --untracked-files=no >&2
+            fail "$DIR 有未提交的改動，升級會蓋掉它們。先處理上面這些檔案。
     （設定在 $ETC_DIR，不在這個目錄裡，不會被升級碰到。）"
-    fi
-    git fetch --quiet origin "$BRANCH" || fail "git fetch 失敗 —— 這台機器連得到
+        fi
+        git fetch --quiet origin "$BRANCH" || fail "git fetch 失敗 —— 這台機器連得到
     $(git remote get-url origin 2>/dev/null || echo 'origin') 嗎？"
-    if ! git merge --ff-only "origin/$BRANCH" >/dev/null 2>&1; then
-        fail "無法 fast-forward 到 origin/$BRANCH —— 這個 checkout 有自己的
+        if ! git merge --ff-only "origin/$BRANCH" >/dev/null 2>&1; then
+            fail "無法 fast-forward 到 origin/$BRANCH —— 這個 checkout 有自己的
     commit。要丟掉本地的改動用：
         sudo git -C $DIR reset --hard origin/$BRANCH && sudo mf-topomon install"
+        fi
+        after="$(git rev-parse HEAD)"
+        if [[ "$before" != "$after" ]]; then
+            # bash 已經把這個腳本的舊版讀進記憶體了：接下來的步驟（安裝、
+            # 健康檢查）要由新版來做，否則新版加的安裝步驟要等到下一次升級才會
+            # 生效。trap 先拿掉：密碼由新版那一段負責印。
+            trap - EXIT
+            exec /bin/bash "$DIR/scripts/mf-topomon.sh" upgrade --resume "$before"
+        fi
     fi
-    after="$(git rev-parse HEAD)"
 
     if [[ "$before" == "$after" ]]; then
         info "已經是最新版（$(git rev-parse --short HEAD)）"
@@ -657,8 +733,9 @@ cmd_upgrade() {
     converge
 
     step "健康檢查"
-    if wait_healthy && [[ "$(auth_probe)" == "401" ]]; then
+    if wait_healthy && [[ "$(auth_probe)" == "401/200" ]]; then
         echo "$after" > "$LAST_GOOD"
+        write_status_files
         info "升級完成"
         return 0
     fi
@@ -672,9 +749,24 @@ cmd_upgrade() {
     install_units
     start_services
     if wait_healthy; then
+        write_status_files
         fail "已回滾到升級前的版本，服務是好的。失敗的原因在上面的日誌裡。"
     fi
     fail "回滾之後仍然起不來。跑 \`sudo mf-topomon doctor\`。"
+}
+
+# 應用程式每次啟動前（systemd 以 root 執行，見 mf-topomon-app.service 的
+# ExecStartPre）。只做「補齊」：這一版需要的目錄與設定、登入帳號、給後台讀的
+# 狀態檔。任何一步失敗都只記一行，不擋啟動 —— doctor 會指出是哪一步。
+cmd_app_prestart() {
+    [[ $EUID -eq 0 && -f "$ENV_FILE" && -x "$VENV/bin/python" ]] || return 0
+    id "$RUN_USER" >/dev/null 2>&1 || return 0
+    ( ensure_dirs ) || warn "app-prestart：目錄沒有補齊"
+    grep -qE '^[[:space:]]*APP_RUNNER_DIR[[:space:]]*=' "$ENV_FILE" || env_set APP_RUNNER_DIR "$RUNNER_DIR"
+    grep -qE '^[[:space:]]*APP_BACKUP_DIR[[:space:]]*=' "$ENV_FILE" || env_set APP_BACKUP_DIR "$BACKUP_DIR"
+    ( NEW_CREDENTIALS=""; ensure_accounts ) || warn "app-prestart：登入帳號沒有補齊"
+    ( write_status_files ) >/dev/null 2>&1 || true
+    return 0
 }
 
 cmd_rollback() {
@@ -693,6 +785,7 @@ cmd_rollback() {
     install_units
     start_services
     wait_healthy || fail "回滾之後健康檢查沒過。跑 \`sudo mf-topomon doctor\`。"
+    write_status_files
     info "已回滾（資料庫沒有動；需要的話用 mf-topomon restore）"
 }
 
@@ -755,7 +848,7 @@ cmd_doctor() {
             "sudo journalctl -u $APP_UNIT -n 40 --no-pager"
     fi
 
-    # 5. nginx：在聽、要求認證、而且驗得了
+    # 5. nginx：在聽、而且登入有在要求
     if curl -fsS --max-time 5 "http://127.0.0.1:$(http_port)/health" >/dev/null 2>&1; then
         ok "nginx 在聽 :$(http_port) 與 :$(https_port)"
     else
@@ -764,29 +857,39 @@ cmd_doctor() {
     fi
 
     local code
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
-        "https://127.0.0.1:$(https_port)/" 2>/dev/null || true)"
-    if [[ "$code" == "401" ]]; then
-        ok "認證有在要求（/ 回 401）"
+    code="$(auth_probe)"
+    if [[ "$code" == "401/200" ]]; then
+        ok "登入有在要求（沒登入的 API 回 401，登入頁可用）"
+    elif [[ "${code%/*}" == "200" ]]; then
+        bad "沒登入的 API 回 200 —— 這個介面現在不用登入就進得去" "sudo mf-topomon install"
     else
-        bad "/ 回 $code 而不是 401 —— 這個介面現在不用密碼就進得去" \
-            "sudo mf-topomon install"
+        bad "沒登入的 API 回 ${code%/*}、登入頁資訊回 ${code#*/}（應該是 401 與 200）" \
+            "sudo tail -n 20 /var/log/nginx/error.log && sudo journalctl -u $APP_UNIT -n 40 --no-pager"
     fi
 
-    code="$(auth_probe)"
-    if [[ "$code" == "401" ]]; then
-        ok "nginx 驗得了密碼（錯的帳密被拒絕，而不是 500）"
-    elif [[ "$code" == "500" ]]; then
-        bad "帶帳密的請求回 500 —— nginx 讀不到 $AUTH_DIR/htpasswd，沒有人登入得進去" \
-            "sudo mf-topomon install"
+    # 管理員帳號。全部停用或刪光的話，後台就沒有人進得去
+    local accounts admins
+    accounts="$(app_cli users 2>/dev/null || true)"
+    admins="$(echo "$accounts" | awk -F'\t' '$3=="admin" && $4=="active"' | grep -c . || true)"
+    if (( admins > 0 )); then
+        ok "啟用中的管理員帳號 $admins 個"
     else
-        bad "帶錯的帳密得到 $code 而不是 401" "sudo tail -n 20 /var/log/nginx/error.log"
+        bad "沒有啟用中的管理員帳號，沒有人進得了後台" "sudo mf-topomon password"
+    fi
+
+    # 背景執行器：後台的備份、還原、升級、憑證都靠它
+    if systemctl is-active --quiet "$RUNNER_PATH_UNIT" 2>/dev/null; then
+        ok "背景執行器待命中（$RUNNER_PATH_UNIT）"
+    else
+        bad "$RUNNER_PATH_UNIT 沒有在執行 —— 後台的備份、升級、憑證都不會做" \
+            "sudo systemctl enable --now $RUNNER_PATH_UNIT"
     fi
 
     # 6. 收集器自己的回報。API 與收集器是兩個行程，所以這是唯一能回答
-    #    「有人在輪詢嗎」的地方（docs/SDD-API.md 第 8 節）。
+    #    「有人在輪詢嗎」的地方（docs/SDD-API.md 第 8 節）。API 要登入，所以
+    #    以服務帳號直接讀資料庫（app/cli.py collector-status）。
     local status summary waited=0
-    status="$(api_get /api/v1/collector/status || true)"
+    status="$(app_cli collector-status 2>/dev/null || true)"
     # 收集器啟動後先等資料庫幾秒才寫第一筆回報。剛重啟完就跑 doctor 會撞上
     # 那段空窗，而「服務在跑、只是還沒回報」不該被說成壞掉 —— 所以只在服務
     # 確實在跑的時候，多等它一下。
@@ -794,7 +897,7 @@ cmd_doctor() {
             && (( waited < 20 )); do
         sleep 2
         waited=$((waited + 2))
-        status="$(api_get /api/v1/collector/status || true)"
+        status="$(app_cli collector-status 2>/dev/null || true)"
     done
     if [[ -z "$status" ]]; then
         bad "讀不到收集器狀態" "sudo journalctl -u $APP_UNIT -n 40 --no-pager"
@@ -858,7 +961,7 @@ for w in d.get('warnings') or []:
     # 9. 能跑但不該這樣留著的東西
     if [[ -f "$INITIAL_PASSWORD_FILE" ]]; then
         notice "安裝時的管理密碼還存在 $INITIAL_PASSWORD_FILE"
-        echo "         ${BOLD}→ sudo mf-topomon password && sudo rm $INITIAL_PASSWORD_FILE${NC}"
+        echo "         ${BOLD}→ 登入並換掉密碼之後：sudo rm $INITIAL_PASSWORD_FILE${NC}"
     fi
     if [[ "$(env_value APP_SECRET_KEY)" == "change-this-to-random-string" ]]; then
         notice "APP_SECRET_KEY 還是範例值"
@@ -880,11 +983,11 @@ for w in d.get('warnings') or []:
 
 cmd_status() {
     step "服務"
-    systemctl --no-pager --lines=0 status "$APP_UNIT" "$COLLECTOR_UNIT" nginx postgresql 2>/dev/null \
+    systemctl --no-pager --lines=0 status "$APP_UNIT" "$COLLECTOR_UNIT" "$RUNNER_PATH_UNIT" nginx postgresql 2>/dev/null \
         | grep -E '^(●|○|×|\*)|Active:' || true
     step "收集器"
     local status
-    status="$(api_get /api/v1/collector/status || true)"
+    status="$(app_cli collector-status 2>/dev/null || true)"
     if [[ -n "$status" ]]; then
         echo "$status" | python3 -m json.tool 2>/dev/null || echo "$status"
     else
@@ -936,30 +1039,59 @@ cmd_stop() {
     info "已停止兩個服務（nginx 與 PostgreSQL 是主機的服務，沒有動；資料都在）"
 }
 
+# 本機管理員帳號的密碼：建立或重設，而且一定是管理員、一定是啟用的。這是
+# 「後台進不去了」的最後手段 —— 忘記密碼、帳號被鎖、AD 掛了、有人把所有
+# 管理員都降級了，都從這裡回來。
 cmd_password() {
     require_root password
     require_installed
-    require_tools openssl
-    local user password
-    user="${1:-$(cat "$AUTH_DIR/.admin-user" 2>/dev/null || echo admin)}"
-    password="${2:-$(random_password)}"
-    install -d -m 750 "$AUTH_DIR"
-    write_htpasswd "$user" "$password"
-    secure_auth_dir
+    local user="${1:-admin}" out password
+    if [[ -n "${2:-}" ]]; then
+        # 密碼走 stdin，不放在 app_cli 的參數上（ps 看得到參數）
+        out="$(printf '%s\n' "$2" | app_cli set-password "$user" -)" \
+            || fail "密碼不符合規則（至少 10 個字元、不能包含帳號名稱）"
+        password="$2"
+    else
+        out="$(app_cli set-password "$user")" || fail "重設失敗。看：sudo journalctl -u $APP_UNIT -n 40"
+        password="$(echo "$out" | awk '{print $3}')"
+    fi
     # 換過密碼之後，安裝時存的那一份就是錯的了
     rm -f "$INITIAL_PASSWORD_FILE"
     echo
     echo "  ${BOLD}${user} / ${password}${NC}"
     echo
-    info "立刻生效（nginx 每次請求都重讀這個檔案）"
+    if [[ -z "${2:-}" ]]; then
+        info "這是隨機產生的，第一次登入時會要求換掉。這個帳號原本的登入都已登出。"
+    else
+        info "立刻生效。這個帳號原本的登入都已登出。"
+    fi
 }
 
 cmd_backup() {
     require_root backup
     require_installed
-    local dir="${1:-$BACKUP_DIR}" stamp file config
-    install -d -m 700 "$dir"
+    local dir="$BACKUP_DIR" keep="$BACKUP_KEEP" trigger="cli" by="${SUDO_USER:-root}"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --keep)    keep="$2"; shift 2 ;;
+            --trigger) trigger="$2"; shift 2 ;;
+            --by)      by="$2"; shift 2 ;;
+            *)         dir="$1"; shift ;;
+        esac
+    done
+    [[ "$keep" =~ ^[0-9]+$ ]] && (( keep >= 1 )) || fail "--keep 要是正整數"
+    local stamp file config
+    if [[ "$dir" == "$BACKUP_DIR" ]]; then
+        install -d -m 750 -o root -g "$RUN_USER" "$dir"
+    else
+        install -d -m 700 "$dir"
+    fi
     stamp="$(date +%Y%m%d-%H%M%S)"
+    # 同一秒內的第二份（排程剛好撞上手動）不能蓋掉第一份
+    while [[ -e "$dir/mf-topomon-${stamp}.sql.gz" ]]; do
+        sleep 1
+        stamp="$(date +%Y%m%d-%H%M%S)"
+    done
     file="$dir/mf-topomon-${stamp}.sql.gz"
     config="$dir/mf-topomon-${stamp}-config.tar.gz"
 
@@ -968,9 +1100,19 @@ cmd_backup() {
     # 同一份備份可以倒進角色名稱不同的資料庫（例如從 Docker 的部署搬過來）。
     (umask 077 && as_postgres pg_dump --clean --if-exists --no-owner "$DB_NAME" | gzip > "$file") \
         || { rm -f "$file"; fail "備份失敗"; }
+    if [[ "$dir" == "$BACKUP_DIR" ]]; then
+        # 後台列得出來、管理員下載得到（ensure_dirs 說明為什麼可以）
+        chown "root:$RUN_USER" "$file"
+        chmod 640 "$file"
+        if [[ -d "$RUNNER_DIR" ]]; then
+            printf '{"%s": {"trigger": "%s", "by": "%s"}}' "$(basename "$file")" "$trigger" "$by" \
+                | python3 -I "$DIR/scripts/runner_helper.py" merge-json "$RUNNER_DIR/backups.json" || true
+            chown "root:$RUN_USER" "$RUNNER_DIR/backups.json" 2>/dev/null || true
+        fi
+    fi
     info "$(du -h "$file" | cut -f1)"
 
-    # 資料庫備份復原之後，還需要連得上它的密碼、登入用的 htpasswd 與憑證、
+    # 資料庫備份復原之後，還需要連得上它的密碼、TLS 憑證、
     # 以及介面上存的設定 —— 少了這些，一份完好的 dump 也用不起來。
     (umask 077 && tar -czf "$config" \
         -C / "${ETC_DIR#/}" \
@@ -980,28 +1122,36 @@ cmd_backup() {
 
     # 只留最近幾份：沒有人會去刪它們
     local old
-    old="$(ls -1t "$dir"/mf-topomon-*.sql.gz 2>/dev/null | tail -n +$((BACKUP_KEEP + 1)) || true)"
+    old="$(ls -1t "$dir"/mf-topomon-*.sql.gz 2>/dev/null | tail -n +$((keep + 1)) || true)"
     if [[ -n "$old" ]]; then
         local dump
         while IFS= read -r dump; do
             rm -f "$dump" "${dump%.sql.gz}-config.tar.gz"
         done <<< "$old"
-        info "刪掉 $(echo "$old" | wc -l) 份舊備份（保留最近 $BACKUP_KEEP 份）"
+        info "刪掉 $(echo "$old" | wc -l) 份舊備份（保留最近 $keep 份）"
     fi
 }
 
 cmd_restore() {
     require_root restore
     require_installed
-    local file="${1:-}"
-    [[ -n "$file" ]] || fail "用法：mf-topomon restore <備份檔.sql.gz>"
+    local file="" yes=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes) yes=1; shift ;;
+            *)     file="$1"; shift ;;
+        esac
+    done
+    [[ -n "$file" ]] || fail "用法：mf-topomon restore <備份檔.sql.gz> [--yes]"
     [[ -f "$file" ]] || fail "找不到 $file"
 
-    echo "${RED}${BOLD}這會用 $file 蓋掉現在資料庫裡的全部內容。${NC}"
-    echo "確定的話輸入 RESTORE："
-    local answer
-    read -r answer
-    [[ "$answer" == "RESTORE" ]] || fail "取消"
+    if [[ $yes -eq 0 ]]; then
+        echo "${RED}${BOLD}這會用 $file 蓋掉現在資料庫裡的全部內容。${NC}"
+        echo "確定的話輸入 RESTORE："
+        local answer
+        read -r answer
+        [[ "$answer" == "RESTORE" ]] || fail "取消"
+    fi
 
     step "停掉會寫入的服務"
     systemctl stop "$APP_UNIT" "$COLLECTOR_UNIT"
@@ -1044,8 +1194,9 @@ cmd_uninstall() {
     read -r answer
     [[ "$answer" == "UNINSTALL" ]] || fail "取消"
 
-    systemctl disable --now "$APP_UNIT" "$COLLECTOR_UNIT" >/dev/null 2>&1 || true
-    rm -f "$UNIT_DIR/$APP_UNIT" "$UNIT_DIR/$COLLECTOR_UNIT"
+    systemctl disable --now "$APP_UNIT" "$COLLECTOR_UNIT" "$RUNNER_PATH_UNIT" >/dev/null 2>&1 || true
+    rm -f "$UNIT_DIR/$APP_UNIT" "$UNIT_DIR/$COLLECTOR_UNIT" \
+        "$UNIT_DIR/$RUNNER_PATH_UNIT" "$UNIT_DIR/$RUNNER_UNIT"
     systemctl daemon-reload || true
     rm -f "$NGINX_ENABLED" "$NGINX_AVAILABLE"
     # nginx 與 PostgreSQL 是主機的套件，可能還有別人在用，所以只重新載入
@@ -1054,7 +1205,7 @@ cmd_uninstall() {
     if [[ $purge -eq 1 ]]; then
         as_postgres dropdb --if-exists "$DB_NAME" || true
         as_postgres dropuser --if-exists "$DB_USER" || true
-        rm -rf "$ETC_DIR" "$DATA_DIR"
+        rm -rf "$ETC_DIR" "$DATA_DIR" "$RUNNER_DIR"
         if id "$RUN_USER" >/dev/null 2>&1; then userdel "$RUN_USER" || true; fi
     fi
     if [[ "$(readlink -f "$LINK" 2>/dev/null || true)" == "$DIR/scripts/mf-topomon.sh" ]]; then
@@ -1070,6 +1221,195 @@ cmd_uninstall() {
     echo "         nginx 與 PostgreSQL 這兩個套件（主機的，沒有移除）"
 }
 
+# --------------------------------------------------------------------------
+# 指令：run-requests（後台要求的工作，由 mf-topomon-runner.path 觸發）
+# --------------------------------------------------------------------------
+#
+# 請求檔是服務帳號寫的，所以這裡把它當成不可信的輸入：讀檔、檢查擁有者、
+# 驗證每個欄位都由 scripts/runner_helper.py 做（不跟隨符號連結），而且
+# 驗過的值在這裡用之前還會再比對一次格式。結果寫在 $RUNNER_DIR/jobs ——
+# root 的目錄，服務帳號只讀得到。
+
+RUNNER_HELPER() { python3 -I "$DIR/scripts/runner_helper.py" "$@"; }
+
+job_status() {
+    # job_status <id> <json>：合併進 jobs/<id>.json
+    local id="$1" json="$2" file="$RUNNER_DIR/jobs/$1.json"
+    printf '%s' "$json" | RUNNER_HELPER merge-json "$file"
+    chown "root:$RUN_USER" "$file"
+    chmod 640 "$file"
+}
+
+json_str() {
+    python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+# 一個工作。在子 shell 裡跑：cmd_* 失敗時呼叫的 fail 會 exit，只結束這個子 shell
+run_one_job() {
+    local id="$1" kind="$2" by="$3" args="$4" stage="$5"
+    local log="$RUNNER_DIR/jobs/$id.log" rc=0 arg_keep arg_trigger arg_name
+    arg_keep="$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("keep", ""))' "$args")"
+    arg_trigger="$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("trigger", "manual"))' "$args")"
+    arg_name="$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("name", ""))' "$args")"
+
+    : > "$log"
+    chown "root:$RUN_USER" "$log"
+    chmod 640 "$log"
+    job_status "$id" "{\"state\": \"running\", \"started_at\": \"$(date -Is)\"}"
+
+    (
+        set -euo pipefail
+        # 第二道檢查：helper 已經驗過，這裡在用之前再比對一次
+        case "$kind" in
+            backup)
+                [[ "$arg_keep" =~ ^[0-9]{1,3}$ ]] || fail "keep 格式不對"
+                [[ "$arg_trigger" =~ ^(manual|scheduled)$ ]] || fail "trigger 格式不對"
+                cmd_backup --keep "$arg_keep" --trigger "$arg_trigger" --by "$by"
+                ;;
+            delete-backup)
+                [[ "$arg_name" =~ ^mf-topomon-[0-9]{8}-[0-9]{6}\.sql\.gz$ ]] || fail "備份名稱格式不對"
+                [[ -f "$BACKUP_DIR/$arg_name" ]] || fail "找不到 $arg_name"
+                rm -f "$BACKUP_DIR/$arg_name" "$BACKUP_DIR/${arg_name%.sql.gz}-config.tar.gz"
+                info "已刪除 $arg_name"
+                ;;
+            restore)
+                [[ "$arg_name" =~ ^mf-topomon-[0-9]{8}-[0-9]{6}\.sql\.gz$ ]] || fail "備份名稱格式不對"
+                [[ -f "$BACKUP_DIR/$arg_name" ]] || fail "找不到 $arg_name"
+                step "還原前先備份現在的資料"
+                cmd_backup --keep 365 --trigger manual --by "$by"
+                cmd_restore "$BACKUP_DIR/$arg_name" --yes
+                ;;
+            upgrade)
+                cmd_upgrade
+                ;;
+            check-update)
+                git fetch --quiet origin "$BRANCH" || fail "git fetch 失敗 —— 這台機器連得到 $(git remote get-url origin) 嗎？"
+                RUNNER_HELPER git-info "$DIR" "origin/$BRANCH" | RUNNER_HELPER write-json "$RUNNER_DIR/update.json"
+                chown "root:$RUN_USER" "$RUNNER_DIR/update.json"
+                chmod 640 "$RUNNER_DIR/update.json"
+                local behind
+                behind="$(git rev-list --count "HEAD..origin/$BRANCH")"
+                if [[ "$behind" == "0" ]]; then
+                    info "已經是最新版（$(git rev-parse --short HEAD)）"
+                else
+                    info "有 $behind 個新的版本可以升級（$(git rev-parse --short HEAD) → $(git rev-parse --short "origin/$BRANCH")）"
+                fi
+                ;;
+            tls)
+                apply_tls "$stage"
+                ;;
+            doctor)
+                cmd_doctor
+                ;;
+            *)
+                fail "不認得的工作 $kind"
+                ;;
+        esac
+    ) >> "$log" 2>&1 || rc=$?
+
+    # 給畫面看的一行：最後一行有內容的輸出，去掉顏色碼
+    local summary
+    summary="$(sed -e 's/\x1b\[[0-9;]*m//g' "$log" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-300)"
+    sed -i -e 's/\x1b\[[0-9;]*m//g' "$log"
+    if [[ $rc -eq 0 ]]; then
+        job_status "$id" "{\"state\": \"ok\", \"exit_code\": 0, \"finished_at\": \"$(date -Is)\", \"summary\": $(json_str "$summary")}"
+    else
+        job_status "$id" "{\"state\": \"failed\", \"exit_code\": $rc, \"finished_at\": \"$(date -Is)\", \"summary\": $(json_str "$summary")}"
+    fi
+}
+
+# 上傳的憑證：再驗一次、換上、nginx -t、reload；任何一步失敗就換回原本的
+apply_tls() {
+    local stage="$1" cert="$1/cert.pem" key="$1/key.pem" stamp
+    [[ -f "$cert" && -f "$key" ]] || fail "請求裡沒有憑證或私鑰"
+    openssl x509 -in "$cert" -noout >/dev/null 2>&1 || fail "讀不出憑證（不是 PEM？）"
+    openssl pkey -in "$key" -noout >/dev/null 2>&1 || fail "讀不出私鑰（有密碼保護或不是 PEM？）"
+    if [[ "$(openssl x509 -in "$cert" -noout -pubkey)" != "$(openssl pkey -in "$key" -pubout)" ]]; then
+        fail "私鑰與憑證不是一對"
+    fi
+    openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1 || fail "憑證已經過期"
+    info "新憑證：$(openssl x509 -in "$cert" -noout -subject | sed 's/^subject=//')"
+    info "到期：$(openssl x509 -in "$cert" -noout -enddate | sed 's/^notAfter=//')"
+
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    cp -p "$AUTH_DIR/tls.crt" "$AUTH_DIR/tls.crt.bak-$stamp"
+    cp -p "$AUTH_DIR/tls.key" "$AUTH_DIR/tls.key.bak-$stamp"
+    install -m 644 -o root -g root "$cert" "$AUTH_DIR/tls.crt"
+    install -m 600 -o root -g root "$key" "$AUTH_DIR/tls.key"
+    if ! nginx -t >/dev/null 2>&1 || ! systemctl reload nginx; then
+        nginx -t || true
+        cp -p "$AUTH_DIR/tls.crt.bak-$stamp" "$AUTH_DIR/tls.crt"
+        cp -p "$AUTH_DIR/tls.key.bak-$stamp" "$AUTH_DIR/tls.key"
+        systemctl reload nginx || true
+        fail "nginx 不接受新的憑證，已換回原本的（上面是 nginx 的訊息）"
+    fi
+    # reload 是非同步的：等新的 worker 起來，確認對外送出的就是這張
+    local want got="" tries=0
+    want="$(openssl x509 -in "$cert" -noout -fingerprint -sha256)"
+    while (( tries < 10 )); do
+        got="$(echo | openssl s_client -connect "127.0.0.1:$(https_port)" 2>/dev/null \
+            | openssl x509 -noout -fingerprint -sha256 2>/dev/null || true)"
+        [[ "$got" == "$want" ]] && break
+        tries=$((tries + 1))
+        sleep 1
+    done
+    [[ "$got" == "$want" ]] || warn "nginx 已重新載入，但 :$(https_port) 送出的還不是新憑證（${got:-連不上}）"
+    secure_auth_dir
+    write_status_files
+    # 舊的留最近 5 份
+    ls -1t "$AUTH_DIR"/tls.crt.bak-* 2>/dev/null | tail -n +6 | while IFS= read -r old; do
+        rm -f "$old" "${old/tls.crt.bak-/tls.key.bak-}"
+    done
+    info "HTTPS 憑證已更新"
+}
+
+cmd_run_requests() {
+    require_root run-requests
+    require_installed
+    local uid
+    uid="$(id -u "$RUN_USER")"
+    install -d -m 750 -o root -g "$RUN_USER" "$RUNNER_DIR" "$RUNNER_DIR/jobs"
+    printf '{"last_run": "%s"}' "$(date -Is)" | RUNNER_HELPER merge-json "$RUNNER_DIR/runner.json"
+    chown "root:$RUN_USER" "$RUNNER_DIR/runner.json"
+    chmod 640 "$RUNNER_DIR/runner.json"
+
+    local handled=0 req stage id kind by args error
+    # 一次處理到請求目錄空了為止；上限只是防止一個寫不停的服務帳號讓這裡永遠不結束
+    while (( handled < 20 )); do
+        stage="$(mktemp -d)"
+        req="$(RUNNER_HELPER take "$REQUEST_DIR" "$uid" "$stage")" || { rm -rf "$stage"; break; }
+        if [[ -z "$req" ]]; then
+            rm -rf "$stage"
+            break
+        fi
+        handled=$((handled + 1))
+        error="$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("error", ""))' "$req")"
+        id="$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("id") or "")' "$req")"
+        if [[ -n "$error" ]]; then
+            warn "拒絕一個請求：$error"
+            if [[ "$id" =~ ^[0-9]{8}-[0-9]{6}-[a-f0-9]{8}$ ]]; then
+                job_status "$id" "{\"id\": \"$id\", \"state\": \"failed\", \"finished_at\": \"$(date -Is)\", \"summary\": $(json_str "請求被拒絕：$error")}"
+            fi
+            rm -rf "$stage"
+            continue
+        fi
+        kind="$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1])["kind"])' "$req")"
+        by="$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1])["by"])' "$req")"
+        args="$(python3 -I -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["args"]))' "$req")"
+        [[ "$id" =~ ^[0-9]{8}-[0-9]{6}-[a-f0-9]{8}$ ]] || { rm -rf "$stage"; continue; }
+        [[ "$by" =~ ^[A-Za-z0-9._@-]{1,128}$ ]] || by="web"
+        job_status "$id" "$(printf '%s' "$req" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); d["state"]="queued"; print(json.dumps(d))')"
+        info "工作 $id：$kind（$by）"
+        run_one_job "$id" "$kind" "$by" "$args" "$stage"
+        rm -rf "$stage"
+    done
+
+    # 工作紀錄留最近 200 筆
+    ls -1t "$RUNNER_DIR"/jobs/*.json 2>/dev/null | tail -n +201 | while IFS= read -r old; do
+        rm -f "$old" "${old%.json}.log"
+    done
+}
+
 usage() {
     cat <<EOF
 ${BOLD}mf-topomon${NC} —— LLDP/CDP 拓撲監控的安裝與維護（原生安裝）
@@ -1082,9 +1422,9 @@ ${BOLD}mf-topomon${NC} —— LLDP/CDP 拓撲監控的安裝與維護（原生�
   ${BOLD}mf-topomon restart${NC}             重啟兩個服務並重新載入 nginx
   ${BOLD}mf-topomon start${NC}               啟動
   ${BOLD}mf-topomon stop${NC}                停止兩個服務（資料留著）
-  ${BOLD}mf-topomon password [帳號] [密碼]${NC} 重設介面登入密碼（省略密碼＝隨機產生）
+  ${BOLD}mf-topomon password [帳號] [密碼]${NC} 建立或重設本機管理員（省略密碼＝隨機，登入時要換）
   ${BOLD}mf-topomon backup [目錄]${NC}       備份資料庫與設定（預設 $BACKUP_DIR，保留 $BACKUP_KEEP 份）
-  ${BOLD}mf-topomon restore <檔案>${NC}      從備份復原（會先要你打字確認）
+  ${BOLD}mf-topomon restore <檔案> [--yes]${NC} 從備份復原（沒有 --yes 會先要你打字確認）
   ${BOLD}mf-topomon rollback${NC}            回到上一個健康檢查通過的版本
   ${BOLD}mf-topomon version${NC}             版本與路徑
   ${BOLD}mf-topomon uninstall [--purge]${NC} 移除服務（--purge 連資料與設定一起）
@@ -1116,6 +1456,8 @@ main() {
         rollback)   cmd_rollback "$@" ;;
         version)    cmd_version "$@" ;;
         uninstall)  cmd_uninstall "$@" ;;
+        run-requests) cmd_run_requests "$@" ;;
+        app-prestart) cmd_app_prestart "$@" ;;
         # 不在說明裡：印出 install 會寫進 nginx 的那一份站台設定，不安裝它。
         # 測試用它確認「被測試的設定檔」與「裝上去的設定檔」是同一份。
         render-nginx) render_nginx_site ;;

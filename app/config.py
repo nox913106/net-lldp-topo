@@ -34,7 +34,26 @@ class Settings(BaseSettings):
     # that must not be able to write to its own code, so the installer
     # points this at /var/lib/mf-topomon.
     app_data_dir: str = ""
-    
+
+    # The privileged half of the back office (backup, restore, upgrade, the
+    # HTTPS certificate, the full health check). The application cannot do
+    # these itself - it runs as an unprivileged account on purpose - so it
+    # drops a request in <app_data_dir>/requests and a root service started
+    # by a systemd path unit carries it out (scripts/mf-topomon.sh
+    # run-requests). That service writes what happened here: a directory
+    # owned by root and only readable by the service account, so the account
+    # that writes the requests cannot forge the results.
+    #
+    # Empty means there is no such service (the Docker deployment, a
+    # development checkout): the back office then shows these features as
+    # unavailable and says which host command does the same.
+    app_runner_dir: str = ""
+    # Where the database dumps are, to list them and offer them for download.
+    # The installer makes the dumps readable by the service account (they
+    # hold nothing it cannot already read from the database); the config
+    # archives next to them, which hold the TLS key, stay root-only.
+    app_backup_dir: str = ""
+
     # Database (默認使用 SQLite 方便本地測試)
     database_url: str = "sqlite+aiosqlite:///./topomon.db"
     

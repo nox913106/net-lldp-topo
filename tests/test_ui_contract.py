@@ -29,7 +29,7 @@ import pathlib
 import re
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from tests.conftest import authed_client
 from sqlalchemy import delete, func, select
 
 import app.core.app_settings as app_settings
@@ -140,9 +140,7 @@ async def _clean():
 
 
 async def _client():
-    return AsyncClient(
-        transport=ASGITransport(app=main_module.app), base_url="http://test"
-    )
+    return authed_client(main_module.app)
 
 
 async def _device(db, name, ip, **kwargs):

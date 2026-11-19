@@ -47,8 +47,7 @@ LAST_GOOD="$DIR/auth/.last-good"
 WAIT_SECONDS="${TOPOMON_WAIT:-180}"
 BACKUP_KEEP="${TOPOMON_BACKUP_KEEP:-14}"
 # nginx 映像裡 worker 行程的群組（nginx:1.27 的 alpine 與 debian 版都是 101）。
-# htpasswd 是 worker 在每個請求上讀的，不是啟動時由 root 讀一次的，所以它必須
-# 讓這個群組讀得到 —— 見 secure_auth_dir。
+# auth/ 目錄交給這個群組讀 —— 見 secure_auth_dir。
 NGINX_GID="${TOPOMON_NGINX_GID:-101}"
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
@@ -219,36 +218,23 @@ ensure_env() {
     fi
 }
 
-# auth/ 的權限。兩種讀法要分開看：
-#
-#   tls.key   nginx 的 master 行程在啟動時以 root 讀，所以 600 root 就夠。
-#   htpasswd  worker 行程（映像裡的 nginx 使用者，uid/gid 101）在**每一個
-#             請求**上讀。它原本也是 600 root、放在一個 700 的目錄裡 ——
-#             worker 讀不到，於是任何帶了帳密的請求都得到 500。沒帶帳密的
-#             請求照樣是 401，而健康檢查只看那個 401，所以部署會回報成功、
-#             介面卻沒有任何人登入得進去。
-#
-# 所以目錄與 htpasswd 交給那個群組讀（750 / 640），而不是開給所有人（644）：
-# 裡面是密碼的雜湊，主機上的其他帳號不需要看得到。每次都重設一次，這樣已經
-# 部署出去的機器跑一次 deploy 或 update 就會被修好。
+# auth/ 的權限：tls.key 是 nginx 的 master 行程在啟動時以 root 讀的，600 root
+# 就夠；目錄交給映像裡 nginx 的群組（gid 101）讀。以前這裡還有 htpasswd ——
+# 登入搬進應用程式之後，舊部署留下的那一份會在下一次 deploy/update 時被匯入
+# （ensure_accounts）。
 secure_auth_dir() {
     chown "root:$NGINX_GID" "$AUTH_DIR"
     chmod 750 "$AUTH_DIR"
-    if [[ -f "$AUTH_DIR/htpasswd" ]]; then
-        chown "root:$NGINX_GID" "$AUTH_DIR/htpasswd"
-        chmod 640 "$AUTH_DIR/htpasswd"
-    fi
     if [[ -f "$AUTH_DIR/tls.key" ]]; then chmod 600 "$AUTH_DIR/tls.key"; fi
 }
 
 # 剛產生的登入帳密，印一次就清掉。它是由 EXIT trap 呼叫的（見 cmd_deploy），
-# 因為密碼在 ensure_auth 就已經寫進 htpasswd 了：如果之後建映像或健康檢查
-# 失敗，腳本會在印出摘要之前結束，下一次執行時 htpasswd 已經存在、不會再產生
-# —— 也就是那組「只會顯示這一次」的密碼一次都沒有顯示過。
+# 因為帳號在 ensure_accounts 就已經寫進資料庫了：之後任何一步失敗，腳本都會
+# 在印出摘要之前結束。
 print_new_credentials() {
     if [[ -z "${NEW_CREDENTIALS:-}" ]]; then return 0; fi
     echo
-    echo "  ${YELLOW}${BOLD}登入帳密（只會顯示這一次）：${NC}"
+    echo "  ${YELLOW}${BOLD}登入帳密（只會顯示這一次，第一次登入時要換掉）：${NC}"
     echo "      ${BOLD}${NEW_CREDENTIALS}${NC}"
     echo
     echo "  忘記了就 \`sudo mf-topomon-docker password\` 重設一組。"
@@ -256,20 +242,27 @@ print_new_credentials() {
     NEW_CREDENTIALS=""
 }
 
-ensure_auth() {
-    mkdir -p "$AUTH_DIR"
+app_cli() { compose exec -T app python -m app.cli "$@"; }
 
-    if [[ ! -f "$AUTH_DIR/htpasswd" ]]; then
-        local user password hash
-        user="${TOPOMON_ADMIN_USER:-admin}"
-        password="$(random_password)"
-        # apr1 是 nginx 認得而 openssl 做得出來的格式；bcrypt 需要
-        # apache2-utils 的 htpasswd，為了一個密碼多裝一個套件不值得。
-        hash="$(openssl passwd -apr1 "$password")"
-        printf '%s:%s\n' "$user" "$hash" > "$AUTH_DIR/htpasswd"
-        echo "$user" > "$AUTH_DIR/.admin-user"
+# 登入帳號：匯入舊的 htpasswd（密碼不變），或在沒有管理員時建一個
+ensure_accounts() {
+    if [[ -f "$AUTH_DIR/htpasswd" ]]; then
+        app_cli import-htpasswd - < "$AUTH_DIR/htpasswd" >/dev/null \
+            || fail "匯入舊的登入帳號失敗（$AUTH_DIR/htpasswd）"
+        mv -f "$AUTH_DIR/htpasswd" "$AUTH_DIR/htpasswd.imported"
+        rm -f "$AUTH_DIR/.admin-user"
+        info "登入改由應用程式處理：舊的帳號已匯入，密碼不變"
+    fi
+    local out user password
+    out="$(app_cli ensure-admin "${TOPOMON_ADMIN_USER:-admin}")" || fail "建立管理員帳號失敗"
+    if [[ "$out" == created* ]]; then
+        read -r _ user password <<< "$out"
         NEW_CREDENTIALS="$user / $password"
     fi
+}
+
+ensure_auth() {
+    mkdir -p "$AUTH_DIR"
 
     if [[ ! -f "$AUTH_DIR/tls.crt" || ! -f "$AUTH_DIR/tls.key" ]]; then
         info "產生自簽 TLS 憑證（10 年）"
@@ -308,19 +301,14 @@ wait_healthy() {
     return 1
 }
 
-# 代理「驗得了密碼」嗎。帶一組一定錯的帳密去問：
-#
-#   401  它讀了 htpasswd、比對過、拒絕了 —— 正確的答案
-#   500  它讀不到 htpasswd（權限、檔案不見）。這時候**對的密碼也是 500**，
-#        也就是沒有人進得去
-#   200  認證根本沒在要求
-#
-# 不帶帳密的請求分不出前兩種：nginx 在還沒打開 htpasswd 之前就回 401 了。
-# 所以「/ 回 401」只能證明有在問密碼，不能證明答得出來。
+# 登入有在要求嗎：沒登入的 API 要是 401，登入頁要用的資訊要是 200
 auth_probe() {
-    curl -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
-        -u "topomon-health-probe:not-the-password" \
-        "https://127.0.0.1:$(https_port)/" 2>/dev/null || true
+    local api info
+    api="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
+        "https://127.0.0.1:$(https_port)/api/v1/devices" 2>/dev/null || true)"
+    info="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
+        "https://127.0.0.1:$(https_port)/api/v1/auth/info" 2>/dev/null || true)"
+    echo "$api/$info"
 }
 
 # --------------------------------------------------------------------------
@@ -349,6 +337,7 @@ cmd_deploy() {
         compose logs --tail=40 app || true
         fail "部署沒有完成。看 \`mf-topomon-docker logs\` 或 \`mf-topomon-docker health\`"
     fi
+    ensure_accounts
     require_login_works
 
     git rev-parse HEAD > "$LAST_GOOD" 2>/dev/null || true
@@ -361,12 +350,12 @@ cmd_deploy() {
 require_login_works() {
     local code
     code="$(auth_probe)"
-    if [[ "$code" == "401" ]]; then
+    if [[ "$code" == "401/200" ]]; then
         return 0
     fi
-    compose logs --tail=10 proxy >&2 || true
-    fail "服務起來了，但代理驗不了密碼（帶帳密的請求回 $code 而不是 401）。
-    最常見的原因是 nginx 讀不到 $AUTH_DIR/htpasswd —— 看上面 proxy 的日誌。"
+    compose logs --tail=10 proxy app >&2 || true
+    fail "服務起來了，但登入不是預期的樣子（沒登入的 API 回 ${code%/*}、登入頁資訊回
+    ${code#*/}，應該是 401 與 200）—— 看上面的日誌。"
 }
 
 install_link() {
@@ -393,7 +382,7 @@ print_summary() {
     echo "  API 文件  ${base}/docs"
     echo
     print_new_credentials
-    echo "  憑證是自己簽的，所以瀏覽器會先警告一次。要換成真憑證："
+    echo "  帳號、AD、通知在登入後的「後台」設定。憑證是自己簽的，要換成真憑證："
     echo "      覆蓋 $AUTH_DIR/tls.crt 與 tls.key，然後 mf-topomon-docker restart"
     echo
     echo "  接下來：到「設備」頁新增一台交換機（名稱、IP、community），"
@@ -447,7 +436,7 @@ cmd_update() {
     compose up -d --build
 
     step "健康檢查"
-    if wait_healthy && [[ "$(auth_probe)" == "401" ]]; then
+    if wait_healthy && ensure_accounts && [[ "$(auth_probe)" == "401/200" ]]; then
         echo "$after" > "$LAST_GOOD"
         info "更新完成"
         return 0
@@ -484,18 +473,6 @@ cmd_rollback() {
 
 # 在 app 容器裡面打 API：那裡面是 127.0.0.1，所以不需要（也不該需要）密碼。
 # python 一定在那個映像裡，所以也不必為了這件事裝 curl。
-api_get() {
-    local path="$1"
-    compose exec -T app python -c "
-import json, sys, urllib.request
-try:
-    with urllib.request.urlopen('http://127.0.0.1:8080$path', timeout=10) as r:
-        sys.stdout.write(r.read().decode())
-except Exception as exc:
-    print(json.dumps({'error': str(exc)}))
-" 2>/dev/null
-}
-
 HEALTH_FAILED=0
 ok()     { echo "  ${GREEN}[ OK ]${NC} $*"; }
 bad()    { echo "  ${RED}[FAIL]${NC} $*"; HEALTH_FAILED=1; }
@@ -544,32 +521,22 @@ cmd_health() {
         bad "https://127.0.0.1:$(https_port)/health/ready 沒有回應"
     fi
 
-    # 4. 認證真的有在要求。這一條是在防「設定被改掉而沒人發現」：一個沒有
-    #    認證的管理介面看起來跟有認證的一模一樣，直到有人逛進來。
+    # 4. 登入真的有在要求。這一條是在防「設定被改掉而沒人發現」：一個不用
+    #    登入的管理介面看起來跟要登入的一模一樣，直到有人逛進來。
     local code
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
-        "https://127.0.0.1:$(https_port)/" 2>/dev/null || true)"
-    if [[ "$code" == "401" ]]; then
-        ok "認證有在要求（/ 回 401）"
-    else
-        bad "/ 回 $code 而不是 401 —— 這個介面現在不用密碼就進得去"
-    fi
-
-    # 4b. ……而且驗得了。上一條分不出「會驗密碼」與「讀不到密碼檔」。
     code="$(auth_probe)"
-    if [[ "$code" == "401" ]]; then
-        ok "代理驗得了密碼（錯的帳密被拒絕，而不是 500）"
-    elif [[ "$code" == "500" ]]; then
-        bad "帶帳密的請求回 500 —— nginx 讀不到 $AUTH_DIR/htpasswd，\
-沒有人登入得進去。跑一次 sudo mf-topomon-docker deploy 會把權限修好"
+    if [[ "$code" == "401/200" ]]; then
+        ok "登入有在要求（沒登入的 API 回 401，登入頁可用）"
+    elif [[ "${code%/*}" == "200" ]]; then
+        bad "沒登入的 API 回 200 —— 這個介面現在不用登入就進得去"
     else
-        bad "帶錯的帳密得到 $code 而不是 401"
+        bad "沒登入的 API 回 ${code%/*}、登入頁資訊回 ${code#*/}（應該是 401 與 200）"
     fi
 
     # 5. 收集器自己的回報。API 與收集器是兩個行程，所以這是唯一能回答
     #    「有人在輪詢嗎、是不是漏了一片」的地方（docs/SDD-API.md 第 8 節）。
     local status
-    status="$(api_get /api/v1/collector/status || true)"
+    status="$(app_cli collector-status 2>/dev/null || true)"
     if [[ -z "$status" || "$status" == *'"error"'* ]]; then
         bad "讀不到收集器狀態${status:+：$status}"
     else
@@ -629,7 +596,7 @@ cmd_status() {
     compose ps
     step "收集器"
     local status
-    status="$(api_get /api/v1/collector/status || true)"
+    status="$(app_cli collector-status 2>/dev/null || true)"
     if [[ -n "$status" && "$status" != *'"error"'* ]]; then
         echo "$status" | /usr/bin/env python3 -m json.tool 2>/dev/null || echo "$status"
     else
@@ -676,24 +643,23 @@ cmd_stop() {
     info "已停止（資料還在。要連資料一起刪見 \`mf-topomon-docker uninstall --purge\`）"
 }
 
+# 本機管理員帳號：建立或重設（後台進不去時的最後手段）
 cmd_password() {
     require_root password
-    require_tools openssl
-    local user password
-    user="${1:-$(cat "$AUTH_DIR/.admin-user" 2>/dev/null || echo admin)}"
-    password="${2:-$(random_password)}"
-    mkdir -p "$AUTH_DIR"
-    printf '%s:%s\n' "$user" "$(openssl passwd -apr1 "$password")" > "$AUTH_DIR/htpasswd"
-    echo "$user" > "$AUTH_DIR/.admin-user"
-    secure_auth_dir
-    # nginx 每次請求都讀 htpasswd，所以不用重啟；但代理可能根本沒在跑
-    if docker info >/dev/null 2>&1; then
-        compose exec -T proxy nginx -s reload >/dev/null 2>&1 || true
+    require_docker
+    local user="${1:-admin}" out password
+    if [[ -n "${2:-}" ]]; then
+        out="$(printf '%s\n' "$2" | app_cli set-password "$user" -)" \
+            || fail "密碼不符合規則（至少 10 個字元、不能包含帳號名稱）"
+        password="$2"
+    else
+        out="$(app_cli set-password "$user")" || fail "重設失敗（app 容器有在跑嗎？）"
+        password="$(echo "$out" | awk '{print $3}')"
     fi
     echo
     echo "  ${BOLD}${user} / ${password}${NC}"
     echo
-    info "立刻生效（nginx 每次請求都重讀這個檔案）"
+    info "立刻生效。這個帳號原本的登入都已登出。"
 }
 
 cmd_backup() {

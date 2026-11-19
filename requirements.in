@@ -48,6 +48,12 @@ pyasn1>=0.6.0
 # app/core/log_exporter.py posts to Elasticsearch/Graylog
 httpx>=0.25.0
 
+# -- Directory login ---------------------------------------------------------
+# Active Directory / LDAP binds for the login page (app/core/ldap_auth.py).
+# Pure Python (its only dependency is pyasn1, already here for pysnmp), so it
+# installs from an internal mirror as easily as everything else.
+ldap3>=2.9.1,<3.0.0
+
 # Deliberately not here, because nothing imports them: alembic (the schema is
 # upgraded in place by app/db/database.py - there is no migrations
 # directory), apscheduler (app/core/discovery_scheduler.py is plain asyncio),

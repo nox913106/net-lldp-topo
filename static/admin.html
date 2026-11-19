@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - mf-topomon</title>
+    <script src="/static/js/theme.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/theme-tactical.css">
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+
+<body class="admin-page">
+    <script src="/static/js/i18n.js"></script>
+    <script src="/static/js/i18n-admin.js"></script>
+    <script src="/static/js/util.js"></script>
+    <script src="/static/js/session.js"></script>
+    <div class="app-container">
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">🌐</span>
+                <span class="logo-text">mf-topomon</span>
+            </div>
+            <nav class="nav">
+                <a href="/" class="nav-item" data-i18n="topology">Topology</a>
+                <a href="/devices" class="nav-item" data-i18n="devices">Devices</a>
+                <a href="/alerts" class="nav-item" data-i18n="alerts">Alerts</a>
+                <a href="/groups" class="nav-item" data-i18n="groups">Groups</a>
+                <a href="/settings" class="nav-item" data-i18n="settings">Settings</a>
+            </nav>
+        </header>
+
+        <div class="admin-layout">
+            <nav class="admin-tabs" id="admin-tabs" aria-label="Admin">
+                <a href="#status" data-tab="status" data-i18n="tabStatus">System status</a>
+                <a href="#users" data-tab="users" data-i18n="tabUsers">Accounts</a>
+                <a href="#ldap" data-tab="ldap" data-i18n="tabLdap">Directory login</a>
+                <a href="#audit" data-tab="audit" data-i18n="tabAudit">Audit log</a>
+                <a href="#notify" data-tab="notify" data-i18n="tabNotify">Notifications</a>
+                <a href="#backup" data-tab="backup" data-i18n="tabBackup">Backup &amp; restore</a>
+                <a href="#tls" data-tab="tls" data-i18n="tabTls">HTTPS certificate</a>
+                <a href="#sysinfo" data-tab="sysinfo" data-i18n="tabSysinfo">System info</a>
+                <a href="#version" data-tab="version" data-i18n="tabVersion">Version &amp; upgrade</a>
+            </nav>
+            <main class="admin-main" id="admin-main" aria-live="polite"></main>
+        </div>
+    </div>
+
+    <div class="admin-toast" id="admin-toast" role="status" hidden></div>
+
+    <div class="modal-overlay admin-modal-overlay" id="admin-modal" hidden>
+        <div class="modal admin-modal" role="dialog" aria-modal="true" aria-labelledby="admin-modal-title">
+            <div class="modal-header">
+                <h3 id="admin-modal-title"></h3>
+                <button type="button" class="modal-close" id="admin-modal-x" aria-label="Close">×</button>
+            </div>
+            <div class="modal-body" id="admin-modal-body"></div>
+            <div class="modal-footer" id="admin-modal-footer"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/admin.js"></script>
+</body>
+
+</html>

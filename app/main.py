@@ -13,9 +13,11 @@ import os
 from app.config import get_settings, log_level
 from app.db.database import engine, init_db
 from app.api import (
-    alerts, collector, devices, discovery, groups, profiles, settings, snmp,
-    topology
+    admin_accounts, admin_ops, alerts, auth as auth_api, collector, devices, discovery,
+    groups, profiles, settings, snmp, topology
 )
+from app.core.security_middleware import SecurityMiddleware
+from app.core import maintenance
 from app.core.discovery_scheduler import stop_discovery_scheduler
 from app.api.settings import apply_discovery, load_settings as load_app_settings
 
@@ -47,9 +49,13 @@ async def lifespan(app: FastAPI):
     if app_settings.discovery_enabled and app_settings.allowed_subnets:
         logger.info("Discovery Scheduler started")
 
+    # Notifications, scheduled backups and health checks, daily purges
+    maintenance.start()
+
     yield
     
     # Shutdown
+    await maintenance.stop()
     stop_discovery_scheduler()
     logger.info(f"Shutting down {settings_config.app_name}...")
 
@@ -83,7 +89,15 @@ if _cors_origins:
         allow_headers=["*"],
     )
 
+# Login, roles, CSRF and the audit trail for every request
+# (app/core/security_middleware.py). Added last so it is the outermost layer:
+# nothing - not CORS, not a router - sees a request it has not checked.
+app.add_middleware(SecurityMiddleware)
+
 # API routes
+app.include_router(auth_api.router, prefix="/api/v1/auth", tags=["Auth"])
+app.include_router(admin_accounts.router, prefix="/api/v1/admin", tags=["Admin"])
+app.include_router(admin_ops.router, prefix="/api/v1/admin", tags=["Admin"])
 app.include_router(devices.router, prefix="/api/v1/devices", tags=["Devices"])
 app.include_router(topology.router, prefix="/api/v1/topology", tags=["Topology"])
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["Alerts"])
@@ -126,6 +140,18 @@ async def groups_page():
 async def settings_page():
     """Serve the settings page"""
     return FileResponse(os.path.join(STATIC_DIR, "settings.html"))
+
+
+@app.get("/login")
+async def login_page():
+    """The login page (public: app/core/security_middleware.py)"""
+    return FileResponse(os.path.join(STATIC_DIR, "login.html"))
+
+
+@app.get("/admin")
+async def admin_page():
+    """The back office (admin role only)"""
+    return FileResponse(os.path.join(STATIC_DIR, "admin.html"))
 
 
 @app.get("/health")

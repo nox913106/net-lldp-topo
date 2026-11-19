@@ -10,7 +10,8 @@ What CI runs. Two kinds, and the split matters:
 | `test_loops_e2e.py` | 代理 + 資料庫 | **真的跑一輪盤點與快迴圈**：線路寫進去了、合併成一條、告警出現、流量是速率不是計數器 |
 | `test_trap_e2e.py` | 代理 + 資料庫 + 一個 UDP 埠 | **真的 trap 封包**：從設備自己持有的位址送來會被套用、誰都不持有的位址被忽略、v1 的宣稱只是最後手段、偽造的宣稱蓋不過來源位址、位址走訪的間隔內新位址還不認得 |
 | `test_lease_e2e.py` | 一個資料庫 | 整機群的工作只有一個行程做、過期才接手、分片心跳回報的狀態、少一片會被指名 |
-| `test_proxy_auth.py` | 一個 nginx（裝了就好） | **真的跑 `deploy/nginx.conf`**：沒密碼到不了應用程式、`/docs` 也要密碼、明文 HTTP 在問密碼前就被轉走、兩個健康檢查路徑仍然免認證 |
+| `test_proxy_auth.py` | 一個 nginx（裝了就好） | **真的跑 `deploy/nginx.conf`，後面接真的應用程式**：沒登入到不了任何東西（API 401、頁面轉登入頁、`/docs` 也是）、cookie 是 `Secure; HttpOnly; SameSite`、沒有 CSRF 標頭的變更被拒絕、明文 HTTP 在送出任何東西前就被轉走、兩個健康檢查路徑仍然免登入 |
+| `test_admin.py` | 不用 | 後台：每個角色能做的剛好是它那一份、最後一個管理員刪不掉、失敗鎖定、AD 帳號第一次是訪客、舊版 `$apr1$` 密碼照樣登入、每個會改東西的路由都進稽核紀錄且不含密碼、告警變成有簽章的 Webhook、大量告警合併、送不出去會重試、密碼不回傳給瀏覽器、背景執行器拒絕符號連結／別人的檔案／名單外的工作、健康檢查、憑證與私鑰不成對被拒 |
 | `test_http_surface.py` | 一個資料庫 | 兩個健康檢查的語意（ready 真的 `SELECT 1`、失敗是 503 而且不洩漏連線字串）、被刪掉的空殼端點真的是 404、CORS 預設關閉 |
 | `test_deploy.py` | 什麼都不用（有 nginx 的話多驗一項） | 三支腳本（`scripts/bootstrap.sh`、`scripts/mf-topomon.sh`、`scripts/mf-topomon-docker.sh`）與舊路徑那個殼的語法；每個指令都有被 dispatch 也有被寫進說明；兩支工具的指令是對應的；systemd 單元不是 root、應用程式只聽 127.0.0.1；裝到主機 nginx 的站台就是被測試的那一份只換三樣東西；doctor 每一條沒過的檢查都附修復指令；compose 沒有把 8080／5432 開到網路上；密碼檔讓代理的 worker 讀得到。**執行腳本的測試都在只有 PATH 與 HOME 的環境下跑** —— 作者 shell 裡的環境變數曾經遮掉一個 `set -u` 的錯（docs/PERFORMANCE.md 第 41.5 節） |
 

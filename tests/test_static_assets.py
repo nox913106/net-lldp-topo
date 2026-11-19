@@ -27,8 +27,8 @@ SCRIPTS = sorted((STATIC / "js").glob("*.js"))
 D3 = STATIC / "vendor" / "d3-7.9.0.min.js"
 D3_SHA256 = "f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539"
 
-# http://localhost:9200 is an example value in a form field, not a fetch.
-ALLOWED_EXTERNAL = {"http://localhost:9200"}
+# Example values in form fields (placeholders), not fetches.
+ALLOWED_EXTERNAL = {"http://localhost:9200", "https://…", "https://topomon.corp.local"}
 
 
 def read(path):
@@ -84,14 +84,12 @@ def test_the_server_serves_the_vendored_directory():
     # leave the directory out of the image, so ask the application for it.
     import asyncio
 
-    from httpx import ASGITransport, AsyncClient
+    from tests.conftest import authed_client
 
     import app.main as main_module
 
     async def fetch():
-        async with AsyncClient(
-            transport=ASGITransport(app=main_module.app), base_url="http://test"
-        ) as client:
+        async with authed_client(main_module.app, "viewer") as client:
             return await client.get("/static/vendor/d3-7.9.0.min.js")
 
     response = asyncio.run(fetch())
@@ -102,8 +100,21 @@ def test_the_server_serves_the_vendored_directory():
 # -- the language switch ---------------------------------------------------
 
 
+def admin_dictionary():
+    """
+    static/js/i18n-admin.js: one entry per key, the three languages side by
+    side - key: ['English', '繁體中文', '简体中文'].
+    """
+    src = read(STATIC / "js" / "i18n-admin.js")
+    entries = {}
+    for m in re.finditer(r"^\s{8}'?([A-Za-z0-9_-]+)'?: \[(.*?)\],\s*$", src, re.M | re.S):
+        values = re.findall(r"'((?:[^'\\]|\\.)*)'", m.group(2))
+        entries[m.group(1)] = values
+    return entries
+
+
 def dictionaries():
-    """The three translation tables in static/js/i18n.js, as key sets."""
+    """The three translation tables, as key sets: i18n.js plus i18n-admin.js."""
     src = read(STATIC / "js" / "i18n.js")
     heads = [
         (m.group(1).strip("'"), m.start())
@@ -111,10 +122,38 @@ def dictionaries():
     ]
     assert [name for name, _ in heads] == ["en", "zh-TW", "zh-CN"], heads
     bounds = [start for _, start in heads] + [len(src)]
+    extra = set(admin_dictionary())
     return {
-        name: set(re.findall(r"^\s{12}([A-Za-z0-9_]+):", src[start:end], re.M))
+        name: set(re.findall(r"^\s{12}([A-Za-z0-9_]+):", src[start:end], re.M)) | extra
         for (name, start), end in zip(heads, bounds[1:])
     }
+
+
+def test_every_admin_string_has_all_three_languages():
+    entries = admin_dictionary()
+    assert len(entries) > 200, "the i18n-admin.js parser found too few entries"
+    short = {k: v for k, v in entries.items() if len(v) != 3 or not all(x.strip() for x in v)}
+    assert not short, "entries without exactly three non-empty strings: %s" % sorted(short)
+
+
+def test_every_string_the_back_office_asks_for_exists():
+    entries = admin_dictionary()
+    used = set()
+    for name in ("admin.js", "session.js", "login.js"):
+        src = read(STATIC / "js" / name)
+        used |= set(re.findall(r"\bT\('([A-Za-z0-9_-]+)'", src))
+        used |= set(re.findall(r"i18n\.t\('([A-Za-z0-9_-]+)'\)", src))
+    # Built from a prefix: T('kind_' + kind), T('ev_' + ev), T('st_' + st)...
+    for prefix, values in {
+        "kind_": ["backup", "delete-backup", "restore", "upgrade", "check-update", "tls", "doctor"],
+        "ev_": ["alert_new", "alert_resolved", "health_failed", "job_finished"],
+        "st_": ["sent", "pending", "failed"],
+        "trig_": ["manual", "scheduled", "cli"],
+    }.items():
+        used |= {prefix + v for v in values}
+    base = set().union(*(set(re.findall(r"^\s{12}([A-Za-z0-9_]+):", read(STATIC / "js" / "i18n.js"), re.M)),))
+    missing = sorted(k for k in used if k not in entries and k not in base and not k.endswith("_"))
+    assert not missing, "used but not defined: %s" % missing
 
 
 def referenced_keys():

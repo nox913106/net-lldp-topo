@@ -14,6 +14,7 @@ from app.models.device import Device
 from app.models.link import MergedLink, RawLink
 from app.models.alert import Alert, AlertHistory, AlertProfile
 from app.core.clock import utcnow
+from app.core.notify import queue_event
 
 logger = logging.getLogger(__name__)
 
@@ -586,6 +587,7 @@ class AlertEngine:
             self.db.add(history)
             
             logger.info(f"New alert: {event.alert_type.value} - {event.message}")
+            await self._queue_notification("alert_new", alert)
     
     # Which alert a recovery event closes. Spelled out rather than derived
     # from the name: "link_utilization_normal".replace("_normal", "_high")
@@ -637,7 +639,37 @@ class AlertEngine:
             self.db.add(history)
             
             logger.info(f"Alert resolved: {event.message}")
+            if not existing.is_suppressed:
+                # Suppressed means "do not tell me about this one" - which
+                # includes its recovery
+                await self._queue_notification("alert_resolved", existing, event.message)
     
+    async def _queue_notification(self, kind: str, alert: Alert, message: Optional[str] = None):
+        """
+        Queue a notification in this cycle's transaction (app/core/notify.py).
+
+        Same commit as the alert itself, so there is never an alert whose
+        message was lost, and nothing here waits on Teams or a mail server.
+        """
+        device = await self._get_device(alert.device_id) if alert.device_id else None
+        details = alert.details or {}
+        started = alert.triggered_at
+        if started is not None and started.tzinfo is None:
+            from datetime import timezone
+            started = started.replace(tzinfo=timezone.utc)
+        now = utcnow()
+        payload = {
+            "alert_type": alert.alert_type,
+            "device": device.hostname if device else None,
+            "ip": device.ip_address if device else None,
+            "message": message or alert.message,
+            "time": now.isoformat(),
+            "is_root_cause": details.get("is_root_cause"),
+        }
+        if kind == "alert_resolved" and started is not None:
+            payload["duration_seconds"] = max(0, (now - started).total_seconds())
+        queue_event(self.db, kind, payload, severity=alert.severity, alert_id=alert.id)
+
     @staticmethod
     def _active_key(
         device_id: Optional[int],

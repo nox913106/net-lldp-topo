@@ -1,0 +1,18 @@
+# 後台網頁要求的特權工作（備份、還原、升級、HTTPS 憑證、完整健檢）。
+#
+# 應用程式以沒有特權的帳號執行，做不了這些事；它只在 @DATA_DIR@/requests 放一個
+# 請求檔。這個單元看到請求檔出現，就啟動 mf-topomon-runner.service（root），由
+# `mf-topomon run-requests` 重新驗證每一個欄位後執行，結果寫在 @RUNNER_DIR@ ——
+# 那是 root 的目錄，服務帳號只能讀，所以能提出請求的帳號偽造不了結果。
+#
+# 這是範本，見 mf-topomon-app.service 開頭的說明。
+[Unit]
+Description=mf-topomon: run jobs requested from the back office
+Documentation=https://github.com/nox913106/net-lldp-topo
+
+[Path]
+PathExistsGlob=@DATA_DIR@/requests/*.json
+Unit=mf-topomon-runner.service
+
+[Install]
+WantedBy=paths.target

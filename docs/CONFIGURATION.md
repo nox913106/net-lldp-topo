@@ -188,6 +188,22 @@ ELASTICSEARCH_URL=http://localhost:9200
 
 ---
 
+### 後台
+
+帳號、AD 登入、通知通道、備份排程、健康檢查、稽核保存天數**都不在這個檔案
+裡**：它們在「後台」設定、存在資料庫（所以備份會帶著它們），儲存後立即生效，
+不用重啟。這裡只有兩個由安裝程式管理的路徑：
+
+```env
+# root 寫結果、服務帳號只讀的目錄（後台工作的狀態與輸出）
+APP_RUNNER_DIR=/var/lib/mf-topomon-runner
+# 資料庫備份所在的目錄（後台列出與下載用）
+APP_BACKUP_DIR=/var/backups/mf-topomon
+```
+
+留空表示這個部署沒有背景執行器（Docker、開發環境）：後台的備份、還原、升級、
+換憑證會說明要改用 `mf-topomon-docker` 指令，其餘功能照常。
+
 ## 2. 設定檔
 
 ### config.yaml

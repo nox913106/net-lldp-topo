@@ -12,7 +12,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from tests.conftest import authed_client
 from sqlalchemy import delete
 
 from app.core.lease import FLEET_LEASE, Lease, member_lease
@@ -39,9 +39,7 @@ async def _clean():
 async def _get():
     import app.main as main_module
 
-    async with AsyncClient(
-        transport=ASGITransport(app=main_module.app), base_url="http://test"
-    ) as client:
+    async with authed_client(main_module.app, "viewer") as client:
         response = await client.get("/api/v1/collector/status")
         assert response.status_code == 200, response.text
         return response.json()

@@ -244,12 +244,46 @@ def test_the_old_command_still_reaches_the_tool():
 # to install on.
 
 UNITS = sorted((ROOT / "deploy" / "systemd").glob("*.service"))
+# The two long-running services. The third unit, the runner, is a oneshot
+# that runs as root on purpose (test_the_runner_is_root_only_for_whitelisted_jobs).
+DAEMONS = [u for u in UNITS if u.name != "mf-topomon-runner.service"]
+RUNNER_PATH = ROOT / "deploy" / "systemd" / "mf-topomon-runner.path"
+RUNNER_SERVICE = ROOT / "deploy" / "systemd" / "mf-topomon-runner.service"
 
 
-def test_there_are_two_services():
+def test_there_are_two_services_and_a_runner():
     assert [unit.name for unit in UNITS] == [
-        "mf-topomon-app.service", "mf-topomon-collector.service"
+        "mf-topomon-app.service", "mf-topomon-collector.service",
+        "mf-topomon-runner.service",
     ]
+    assert RUNNER_PATH.is_file()
+
+
+def test_the_runner_is_root_only_for_whitelisted_jobs():
+    """
+    The back office's backups, restores, upgrades and certificate installs
+    need root; the application must not have it. So the application drops a
+    request file and a root oneshot - started by a path unit, never enabled on
+    its own - runs the same tool an operator would, which validates every
+    field again (scripts/runner_helper.py).
+    """
+    path = RUNNER_PATH.read_text()
+    assert "PathExistsGlob=@DATA_DIR@/requests/*.json" in path
+    assert "Unit=mf-topomon-runner.service" in path
+    service = RUNNER_SERVICE.read_text()
+    assert "Type=oneshot" in service
+    assert "scripts/mf-topomon.sh run-requests" in service
+    assert "[Install]" not in service, "the runner is started by the path unit only"
+    text = NATIVE.read_text()
+    body = text[text.index("cmd_run_requests() {"):text.index("\n}\n", text.index("cmd_run_requests() {"))]
+    assert "RUNNER_HELPER take" in body
+    helper = (ROOT / "scripts" / "runner_helper.py").read_text()
+    assert "O_NOFOLLOW" in helper and "st_uid != uid" in helper
+    # Every kind the application can ask for is one the shell knows how to run
+    from app.core.runner import KINDS
+    job = text[text.index("run_one_job() {"):text.index("\n}\n", text.index("run_one_job() {"))]
+    for kind in KINDS:
+        assert f"            {kind})" in job, kind
 
 
 @pytest.mark.parametrize("unit", UNITS, ids=lambda p: p.name)
@@ -261,7 +295,7 @@ def test_every_placeholder_in_a_unit_is_filled_in(unit):
     assert wanted <= filled, f"not substituted: {sorted(wanted - filled)}"
 
 
-@pytest.mark.parametrize("unit", UNITS, ids=lambda p: p.name)
+@pytest.mark.parametrize("unit", DAEMONS, ids=lambda p: p.name)
 def test_the_services_do_not_run_as_root(unit):
     text = unit.read_text()
     assert "User=@RUN_USER@" in text
@@ -274,8 +308,8 @@ def test_the_services_do_not_run_as_root(unit):
 
 def test_the_application_listens_on_loopback_only():
     """
-    Authentication is nginx's. An application reachable on the network
-    without going through it has no authentication at all.
+    TLS is nginx's. An application reachable on the network without going
+    through it would take passwords and session cookies in clear.
     """
     text = (ROOT / "deploy" / "systemd" / "mf-topomon-app.service").read_text()
     assert "--host 127.0.0.1" in text
@@ -289,21 +323,33 @@ def test_the_collector_can_bind_the_trap_port_without_being_root():
     assert "CapabilityBoundingSet=CAP_NET_BIND_SERVICE" in text
 
 
-def test_the_native_password_file_is_readable_by_the_proxy_worker():
-    """The same mistake the Docker tool made, not made again here"""
+def test_the_native_install_creates_an_account_not_a_password_file():
+    """
+    Logins are the application's now. The installer creates the first
+    administrator in the database (app/cli.py ensure-admin), imports the
+    account an older install kept in htpasswd with its password unchanged,
+    and checks after every install and upgrade that the login is enforced.
+    """
     text = NATIVE.read_text()
+    accounts = text[text.index("ensure_accounts() {"):text.index("\n}\n", text.index("ensure_accounts() {"))]
+    # Read by root and handed over on stdin: the service account cannot open
+    # auth/ (it belongs to nginx's group)
+    assert 'app_cli import-htpasswd - < "$AUTH_DIR/htpasswd"' in accounts
+    assert "app_cli ensure-admin" in accounts
+    assert 'mv -f "$AUTH_DIR/htpasswd" "$AUTH_DIR/htpasswd.imported"' in accounts
+    assert "write_htpasswd" not in text
     body = text[text.index("secure_auth_dir() {"):text.index("print_new_credentials() {")]
-    assert 'chown "root:$group" "$AUTH_DIR/htpasswd"' in body
-    assert 'chmod 640 "$AUTH_DIR/htpasswd"' in body
     assert 'chmod 750 "$AUTH_DIR"' in body
     assert 'chmod 600 "$AUTH_DIR/tls.key"' in body
-    for function in ("ensure_auth() {", "cmd_password() {"):
-        start = text.index(function)
-        assert "secure_auth_dir" in text[start:text.index("\n}\n", start)], function
-    for function in ("cmd_install() {", "cmd_doctor() {"):
+    # The operator's password never goes on a command line (ps shows those)
+    password = text[text.index("cmd_password() {"):text.index("\n}\n", text.index("cmd_password() {"))]
+    assert 'printf \'%s\\n\' "$2" | app_cli set-password "$user" -' in password
+    for function in ("cmd_install() {", "cmd_doctor() {", "cmd_upgrade() {"):
         start = text.index(function)
         assert ("require_login_works" in text[start:text.index("\n}\n", start)]
                 or "auth_probe" in text[start:text.index("\n}\n", start)]), function
+    probe = text[text.index("auth_probe() {"):text.index("\n}\n", text.index("auth_probe() {"))]
+    assert "/api/v1/devices" in probe and "/api/v1/auth/info" in probe
 
 
 def test_the_first_password_is_kept_where_only_root_can_read_it():
@@ -344,6 +390,9 @@ def test_an_upgrade_backs_up_first_and_rolls_back_on_failure():
     assert 'git reset --hard --quiet "$before"' in upgrade
     assert "auth_probe" in upgrade, "an upgrade that breaks login must roll back"
     assert "trap print_new_credentials EXIT" in upgrade
+    # The steps after the code changed are run by the new version of this
+    # script, not by the copy bash already read into memory
+    assert 'exec /bin/bash "$DIR/scripts/mf-topomon.sh" upgrade --resume "$before"' in upgrade
 
 
 def test_install_and_upgrade_run_the_same_steps():
@@ -374,7 +423,7 @@ def test_the_installed_proxy_config_is_the_tested_one_with_three_things_changed(
 
     assert "server 127.0.0.1:9090;" in site
     assert "server app:8080;" not in site
-    assert f"auth_basic_user_file {etc}/auth/htpasswd;" in site
+    assert "auth_basic" not in site, "logins are the application's now"
     assert f"ssl_certificate_key {etc}/auth/tls.key;" in site
     assert "/etc/nginx/auth" not in site
     assert "listen 8088 default_server;" in site
@@ -456,27 +505,18 @@ def test_the_proxy_waits_for_the_application(compose_file):
 # nginx; these pin the three things the tool does about it.
 
 
-def test_the_proxy_worker_is_given_the_password_file():
+def test_the_proxy_worker_can_read_the_auth_directory():
     """
-    htpasswd is read by the nginx worker on every request, and the worker is
-    not root. 0600 root in a 0700 directory - what this used to create - is
-    a file it cannot open.
+    The nginx worker is not root; the directory holding the certificate is
+    given to its group (750), and the private key stays root-only.
     """
     text = TOPOMON.read_text()
     body = text[text.index("secure_auth_dir() {"):text.index("print_new_credentials() {")]
     assert 'chown "root:$NGINX_GID" "$AUTH_DIR"' in body
     assert 'chmod 750 "$AUTH_DIR"' in body
-    assert 'chown "root:$NGINX_GID" "$AUTH_DIR/htpasswd"' in body
-    assert 'chmod 640 "$AUTH_DIR/htpasswd"' in body
-    # Group-readable, not world-readable: it holds password hashes
-    assert not re.search(r"chmod (644|755|777) \"\$AUTH_DIR(/htpasswd)?\"", text)
-    # ...and nothing puts it back the way it was
-    assert 'chmod 700 "$AUTH_DIR"' not in text
-    assert 'chmod 600 "$AUTH_DIR/htpasswd"' not in text
-    # Both writers of the file fix its ownership afterwards
-    for function in ("ensure_auth() {", "cmd_password() {"):
-        start = text.index(function)
-        assert "secure_auth_dir" in text[start:text.index("\n}\n", start)], function
+    assert 'chmod 600 "$AUTH_DIR/tls.key"' in body
+    assert not re.search(r"chmod (644|755|777) \"\$AUTH_DIR\"", text)
+    assert "ensure_accounts" in text[text.index("cmd_deploy() {"):text.index("\n}\n", text.index("cmd_deploy() {"))]
 
 
 def test_the_worker_group_matches_the_image_the_compose_file_pins(compose_file):
@@ -485,10 +525,10 @@ def test_the_worker_group_matches_the_image_the_compose_file_pins(compose_file):
     assert 'NGINX_GID="${TOPOMON_NGINX_GID:-101}"' in TOPOMON.read_text()
 
 
-def test_health_and_deploy_try_a_password_not_just_the_absence_of_one():
+def test_health_and_deploy_check_that_the_login_is_enforced():
     text = TOPOMON.read_text()
-    probe = text[text.index("auth_probe() {"):text.index("# 指令", text.index("auth_probe() {"))]
-    assert "-u " in probe, "the probe has to send credentials"
+    probe = text[text.index("auth_probe() {"):text.index("\n}\n", text.index("auth_probe() {"))]
+    assert "/api/v1/devices" in probe and "/api/v1/auth/info" in probe
     for function in ("cmd_health() {", "require_login_works() {"):
         start = text.index(function)
         assert "auth_probe" in text[start:text.index("\n}\n", start)], function

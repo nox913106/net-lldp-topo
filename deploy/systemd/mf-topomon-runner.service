@@ -1,0 +1,15 @@
+# 以 root 執行後台要求的工作。由 mf-topomon-runner.path 啟動，不需要 enable。
+#
+# 這是範本，見 mf-topomon-app.service 開頭的說明。
+[Unit]
+Description=mf-topomon: privileged jobs requested from the back office
+Documentation=https://github.com/nox913106/net-lldp-topo
+After=postgresql.service
+
+[Service]
+Type=oneshot
+# 與在主機上打 `sudo mf-topomon <指令>` 是同一段程式，只是參數來自請求檔，
+# 而且每一個參數都先被驗證過（scripts/runner_helper.py）
+ExecStart=/bin/bash @DIR@/scripts/mf-topomon.sh run-requests
+# 升級要拉程式、裝套件、重啟、健康檢查，最壞情況會回滾，給它足夠的時間
+TimeoutStartSec=1800

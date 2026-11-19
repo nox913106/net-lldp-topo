@@ -1,7 +1,7 @@
 """
 Alerts API endpoints
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 from typing import List, Optional
@@ -69,14 +69,16 @@ class AlertListResponse(BaseModel):
 
 
 class AcknowledgeRequest(BaseModel):
-    acknowledged_by: str
+    # Ignored when the request is from a logged-in user (always, behind the
+    # login): who acknowledged is who is logged in, not what the form says.
+    acknowledged_by: str = ""
     reason: Optional[str] = None
     suppress_value: Optional[int] = None  # Duration value (e.g., 30)
     suppress_unit: Optional[str] = None  # 'minutes', 'hours', 'days', or 'until_resolved'
 
 
 class UnsuppressRequest(BaseModel):
-    unsuppressed_by: str
+    unsuppressed_by: str = ""
 
 
 class EditHistoryRequest(BaseModel):
@@ -162,10 +164,17 @@ async def get_alert(
 async def acknowledge_alert(
     alert_id: int,
     request: AcknowledgeRequest,
+    http: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """Acknowledge an alert and optionally suppress notifications"""
     from datetime import timedelta
+
+    user = getattr(http.state, "user", None)
+    if user is not None:
+        request.acknowledged_by = user.label
+    if not request.acknowledged_by:
+        raise HTTPException(status_code=422, detail="acknowledged_by is required")
     
     result = await db.execute(
         select(Alert).where(Alert.id == alert_id)
@@ -274,9 +283,13 @@ async def get_alert_history(
 async def unsuppress_alert(
     alert_id: int,
     request: UnsuppressRequest,
+    http: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """Cancel suppression and restore notifications"""
+    user = getattr(http.state, "user", None)
+    if user is not None:
+        request.unsuppressed_by = user.label
     result = await db.execute(
         select(Alert).where(Alert.id == alert_id)
     )

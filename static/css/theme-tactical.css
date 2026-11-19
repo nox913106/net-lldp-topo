@@ -776,6 +776,218 @@
     box-shadow: var(--t-led-glow);
 }
 
+
+/* ---------------------------------------------------------- account menu */
+
+.header .user-menu {
+    position: relative;
+    margin-left: 0.75rem;
+}
+
+:root .user-menu-button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.1rem;
+    padding: 0.3rem 0.65rem;
+    background: var(--t-well);
+    border: 1px solid var(--t-grid);
+    color: var(--t-ink);
+    cursor: pointer;
+    font: inherit;
+}
+
+:root .user-menu-button:hover,
+:root .user-menu-button[aria-expanded="true"] {
+    border-color: var(--t-reticle);
+}
+
+:root .user-menu-name {
+    font-family: var(--t-mono);
+    font-size: 0.78rem;
+    font-weight: 700;
+    max-width: 14rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+:root .user-menu-role {
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--t-accent);
+}
+
+:root .user-menu-list {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    z-index: 2000;
+    min-width: 13rem;
+    display: flex;
+    flex-direction: column;
+    background: var(--t-panel);
+    border: 1px solid var(--t-reticle);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+:root .user-menu-list[hidden] { display: none; }
+
+:root .user-menu-who {
+    padding: 0.55rem 0.8rem;
+    font-family: var(--t-mono);
+    font-size: 0.72rem;
+    color: var(--t-ink-2);
+    border-bottom: 1px solid var(--t-grid);
+}
+
+:root .user-menu-list a,
+:root .user-menu-list button {
+    padding: 0.55rem 0.8rem;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--t-ink);
+    font: inherit;
+    font-size: 0.8rem;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+:root .user-menu-list a:hover,
+:root .user-menu-list button:hover {
+    background: var(--t-hover);
+}
+
+:root .user-menu-logout { color: var(--t-crit) !important; }
+
+/* ------------------------------------------------------------ login page */
+
+:root body.login-page {
+    min-height: 100vh;
+    background-color: var(--t-canvas);
+    background-image:
+        linear-gradient(var(--t-gridline) 1px, transparent 1px),
+        linear-gradient(90deg, var(--t-gridline) 1px, transparent 1px);
+    background-size: 40px 40px;
+}
+
+.login-shell {
+    max-width: 420px;
+    margin: 0 auto;
+    padding: 12vh 16px 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+:root .login-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    align-self: flex-start;
+    padding: 0.35rem 0.75rem;
+    background: var(--t-well);
+    border: 1px solid var(--t-reticle);
+}
+
+.login-card .section-header h2::before { content: none !important; }
+.login-card[hidden] { display: none !important; }
+
+.login-user-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.login-user-row input { flex: 1; min-width: 0; }
+
+:root .login-suffix {
+    font-family: var(--t-mono);
+    font-size: 0.8rem;
+    color: var(--t-ink-2);
+    white-space: nowrap;
+}
+
+:root .login-error {
+    margin-bottom: 1rem;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--t-crit);
+    background: var(--t-crit-bg);
+    color: var(--t-crit);
+    font-size: 0.82rem;
+}
+
+.login-error[hidden] { display: none; }
+.login-submit { width: 100%; padding: 0.7rem 1rem !important; }
+
+:root .login-text {
+    margin: 0 0 1rem;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: var(--t-ink-2);
+}
+
+:root .login-who {
+    font-family: var(--t-mono);
+    font-size: 0.85rem;
+    margin: 0 0 1rem;
+}
+
+.login-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+.login-lang {
+    display: flex;
+    gap: 0.25rem;
+    justify-content: center;
+}
+
+:root .login-lang button {
+    background: none;
+    border: none;
+    color: var(--t-ink-2);
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+}
+
+:root .login-lang button:hover { color: var(--t-ink); }
+
+/* Login form controls (the settings page styles them inline) */
+.login-page .form-group { margin-bottom: 1.1rem; }
+.login-page .form-group label {
+    display: block;
+    margin-bottom: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--t-ink-2);
+}
+.login-page .form-group input {
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    background: var(--t-well);
+    border: 1px solid var(--t-grid);
+    color: var(--t-ink);
+    font: inherit;
+}
+.login-page .form-group input:focus { outline: none; border-color: var(--t-accent); }
+.login-page .form-help { margin-top: 0.3rem; font-size: 0.72rem; color: var(--t-ink-2); }
+.login-page .section-header { padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--t-grid); }
+.login-page .section-header h2 { margin: 0; }
+.login-page .section-content { padding: 1.1rem; }
+.login-page .btn-secondary,
+.login-page .btn-save { padding: 0.5rem 1rem; cursor: pointer; }
+
+@media (max-width: 760px) {
+    .header .user-menu { margin-left: 0.5rem; }
+    :root .user-menu-name { max-width: 7rem; }
+}
+
 /* ---------------------------------------------------------------- motion */
 
 @media (prefers-reduced-motion: reduce) {

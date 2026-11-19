@@ -14,6 +14,10 @@ LLDP/CDP Topology Monitor - 網路拓撲監控系統
 - 🗺️ **拓撲視覺化**：乾淨的網路拓撲圖（合併重複 link）
 - 📊 **流量監控**：即時顯示 link 頻寬使用率
 - 🚨 **智慧告警**：可自訂閾值的告警系統
+- 📣 **告警通知**：Microsoft Teams、Webhook（HMAC 簽章）、Email；大量告警自動合併成一則彙整
+- 👤 **帳號與 AD 登入**：系統管理員／維運人員／檢視者三種角色，可接 Active Directory（LDAPS、群組限制），本機緊急帳號
+- 🧾 **稽核紀錄**：每一個變更記下誰、何時、從哪裡、成功與否，可查詢與匯出 CSV
+- 🛠️ **後台**：網頁上的健康檢查、排程備份與還原、一鍵升級、上傳 HTTPS 憑證、系統資訊
 - 📝 **Log 整合**：支援輸出至 Elasticsearch/Graylog
 
 ### 支援設備
@@ -78,19 +82,36 @@ curl -fsSL https://raw.githubusercontent.com/nox913106/net-lldp-topo/main/script
 那是次要的方式，用 `mf-topomon-docker` 管理，指令是對應的
 （`deploy`／`update`／`health`）。
 
-### 介面是有密碼的
+### 登入與後台
 
-這個系統沒有使用者的概念，認證整個落在 nginx 上：應用程式只聽
-`127.0.0.1:8080`，唯一的入口是 443，而 80 一律轉到 443。`/health` 與
-`/health/ready` 不要密碼（給負載平衡器與 `mf-topomon doctor`），其餘全部要，
-包含可以直接打 API 的 `/docs`。
+登入在應用程式裡：第一次登入用安裝時印出的 `admin` 帳密（另存一份在
+`/etc/mf-topomon/.admin-initial-password`，root 才讀得到），登入後會要求換掉。
+之後在**後台**（右上角帳號選單 → 後台，系統管理員才看得到）：
 
-憑證預設是自簽的，所以瀏覽器第一次會警告 —— 換成真憑證是覆蓋
-`/etc/mf-topomon/auth/tls.crt` 與 `tls.key` 再 `sudo systemctl reload nginx`。
+| 分頁 | 做什麼 |
+|---|---|
+| 系統狀態 | 健康檢查（收集器、資料新鮮度、備份、憑證到期、磁碟、通知），定時自動跑，異常時發通知；主機完整健檢 |
+| 帳號管理 | 本機帳號與 AD 帳號、角色、停用、重設密碼、全部登出；閒置登出與失敗鎖定 |
+| AD 驗證 | 伺服器（可多台）、網域、Base DN、允許的群組、LDAPS 的 CA，先測試再儲存 |
+| 稽核紀錄 | 依日期、動作、操作者、關鍵字查詢，匯出 CSV，保存天數 |
+| 通知 | Teams／Webhook／Email 通道、要送哪些事件、最低等級、訊息範本、發送紀錄與重送 |
+| 備份還原 | 排程、保留份數、立即備份、下載、還原 |
+| HTTPS 憑證 | 目前的憑證與到期日，上傳新的憑證 |
+| 系統資訊 | 硬體、作業系統、服務、資料庫、磁碟、Python 套件版本 |
+| 版本與升級 | 目前版本、檢查更新、一鍵升級（失敗自動回滾） |
 
-這一層有測試守著：`tests/test_proxy_auth.py` 用真的 nginx 跑
-`deploy/nginx.conf`，確認沒帶密碼的請求**根本到不了應用程式**，而兩個健康
-檢查路徑仍然通。CI 每次都跑。
+需要 root 的那幾件（備份、還原、升級、憑證）不是應用程式自己做的：它只送出
+請求，由 systemd 觸發的 root 工作重新驗證之後執行（docs/DEPLOYMENT.md
+「東西在哪裡」）。
+
+應用程式只聽 `127.0.0.1:8080`，唯一的入口是 nginx 的 443，80 一律轉到 443。
+`/health` 與 `/health/ready` 不用登入（給負載平衡器與 `mf-topomon doctor`），
+其餘全部要，包含可以直接打 API 的 `/docs`。這一層有測試守著：
+`tests/test_proxy_auth.py` 用真的 nginx 跑 `deploy/nginx.conf`、後面接真的
+應用程式，確認沒登入到不了任何東西、cookie 只走 HTTPS、沒有 CSRF 標頭的變更
+被拒絕。CI 每次都跑。
+
+後台進不去了（忘記密碼、帳號被鎖、AD 掛了）：`sudo mf-topomon password`。
 
 ### 開發用的起法
 
@@ -102,12 +123,13 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m app.collector             # 另一個行程
 ```
 
-預設資料庫是本地的 SQLite 檔，沒有代理也沒有密碼 —— 只適合本機。
+預設資料庫是本地的 SQLite 檔，沒有代理 —— 只適合本機。第一個帳號：
+`.venv/bin/python -m app.cli set-password admin`（印出隨機密碼）。
 
 ## 文件
 
 - [專案介紹網站](https://nox913106.github.io/net-lldp-topo/)（原始檔 [docs/index.html](docs/index.html)）—— 功能、實際畫面與部署方式，可切換繁中／簡中／英文；改了這個檔案推上 main 就會由 `.github/workflows/pages.yml` 重新發佈
-- [部署與維護](docs/DEPLOYMENT.md) —— 一鍵安裝、`topomon` 每一個指令、認證與憑證、備份
+- [部署與維護](docs/DEPLOYMENT.md) —— 一鍵安裝、`mf-topomon` 每一個指令、登入與 AD、憑證、備份、從舊版升級
 - [設定說明](docs/CONFIGURATION.md) —— 每個環境變數，以及設備端要不要改（不用）
 - [使用手冊](docs/USER_MANUAL.md) —— 介面怎麼用
 - [收不到 LLDP 排查指南](docs/TROUBLESHOOTING_LLDP.md) —— 拓撲空白時從這裡查

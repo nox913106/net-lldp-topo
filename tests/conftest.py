@@ -44,6 +44,59 @@ if not os.environ.get("DATABASE_URL"):
     atexit.register(shutil.rmtree, _db_dir, True)
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_db_dir}/test.db"
 
+
+class authed_client:
+    """
+    An httpx client logged in to the application, as a fresh local account.
+
+    Everything but the health probes and the login page needs a session since
+    the application has logins (app/core/security_middleware.py), so a test
+    that talks to the API talks to it the way the browser does: log in, keep
+    the cookie, send X-Requested-With on every change.
+
+        async with authed_client(app) as client:            # an administrator
+        async with authed_client(app, "viewer") as client:  # read-only
+    """
+
+    _count = 0
+    PASSWORD = "Test-password-123"
+
+    def __init__(self, app, role: str = "admin"):
+        self.app = app
+        self.role = role
+        self.client = None
+
+    async def __aenter__(self):
+        from httpx import ASGITransport, AsyncClient
+
+        from app.core import auth
+        from app.db.database import async_session_maker, init_db
+
+        await init_db()
+        authed_client._count += 1
+        username = f"t{self.role}{authed_client._count}{os.getpid()}"
+        async with async_session_maker() as db:
+            await auth.create_local_user(db, username, self.PASSWORD, self.role)
+        self.username = username
+        self.client = AsyncClient(
+            transport=ASGITransport(app=self.app), base_url="http://test",
+            headers={"X-Requested-With": "tests"},
+        )
+        await self.client.__aenter__()
+        r = await self.client.post("/api/v1/auth/login",
+                                   json={"username": username, "password": self.PASSWORD})
+        assert r.status_code == 200, r.text
+        self.client.username = username  # type: ignore[attr-defined]
+        return self.client
+
+    async def __aexit__(self, *exc):
+        await self.client.__aexit__(*exc)
+        # The login touched the database in this event loop; a test that
+        # calls asyncio.run() again must not be handed this loop's pooled
+        # connection (asyncpg: "attached to a different loop")
+        from app.db.database import engine
+        await engine.dispose()
+
 # The simulated chassis: 48 interfaces, three of them cabled, port 3 down.
 NIF = 48
 CABLED = (1, 2, 3)
@@ -373,7 +426,7 @@ def clean_db():
     import asyncio
 
     from app.db.database import Base, engine
-    from app.models import alert, collector, device, group, link, profile  # noqa: F401
+    from app.models import admin, alert, collector, device, group, link, profile  # noqa: F401
 
     async def reset():
         try:

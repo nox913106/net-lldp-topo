@@ -1,6 +1,6 @@
 services:
-  # 反向代理 —— 唯一對外的入口，也是整個系統的認證（deploy/nginx.conf 說明
-  # 為什麼認證在這裡）。憑證與 htpasswd 由 `mf-topomon-docker deploy` 產生在 auth/。
+  # 反向代理 —— 唯一對外的入口與 TLS（deploy/nginx.conf）。登入在應用程式裡。
+  # 憑證由 `mf-topomon-docker deploy` 產生在 auth/。
   proxy:
     image: nginx:1.27-alpine
     ports:

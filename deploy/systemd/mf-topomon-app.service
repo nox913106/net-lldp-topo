@@ -17,8 +17,12 @@ WorkingDirectory=@DIR@
 EnvironmentFile=@ENV_FILE@
 # 程式碼是 root 的，服務帳號寫不進去，所以也不要嘗試寫 .pyc
 Environment=PYTHONDONTWRITEBYTECODE=1
-# 只聽 127.0.0.1：唯一的入口是 nginx，認證在那裡（deploy/nginx.conf）。
+# 只聽 127.0.0.1：唯一的入口是 nginx（TLS 在那裡，登入在應用程式裡）。
 # --forwarded-allow-ips 只信本機，因為只有本機的 nginx 連得到這個埠。
+# 以 root（+）在每次啟動前補齊登入帳號：匯入舊版留下的 htpasswd、沒有任何
+# 管理員時建一個。升級若是由舊版的 mf-topomon 執行的（它不知道有這一步），
+# 這裡就是讓舊密碼照樣登得進去的地方。失敗不擋啟動（-），doctor 會指出來。
+ExecStartPre=-+/bin/bash @DIR@/scripts/mf-topomon.sh app-prestart
 ExecStart=@DIR@/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port @APP_PORT@ --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=5

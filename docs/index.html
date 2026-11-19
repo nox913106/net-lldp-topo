@@ -646,6 +646,21 @@ footer .wrap { padding-block: 2.2rem; }
           <h3 data-i18n="f.9.h">三語介面、深淺色主題</h3>
           <p data-i18n="f.9.p">介面支援繁體中文、簡體中文與英文。深色「隱形黑曜軍灰」適合機房與牆面大螢幕，淺色「北約戰術粉筆白」適合明亮的辦公室；設備依類型有各自的戰術圖示，顏色就是狀態。</p>
         </div>
+        <div class="feature">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="9" cy="8" r="3.5" stroke="var(--line)" stroke-width="1.6"/><path d="M3 19.5c.8-3.4 3.2-5.5 6-5.5s5.2 2.1 6 5.5" stroke="var(--line)" stroke-width="1.6" stroke-linecap="round"/><path d="M16 9.5l2 2 3.5-4" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <h3 data-i18n="f.10.h">帳號、角色與 AD 登入</h3>
+          <p data-i18n="f.10.p">系統管理員、維運人員、檢視者三種角色；可以用公司的 AD 帳號登入（LDAPS、限定群組），AD 故障時還有本機緊急帳號。每一個變更都記進稽核紀錄：誰、何時、從哪裡、成功與否。</p>
+        </div>
+        <div class="feature">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z" stroke="var(--line)" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 20.5h4" stroke="var(--line)" stroke-width="1.6" stroke-linecap="round"/><circle cx="18" cy="6" r="2.5" fill="var(--accent)"/></svg>
+          <h3 data-i18n="f.11.h">告警送到 Teams、Webhook、Email</h3>
+          <p data-i18n="f.11.p">每個通道選要哪些事件、最低等級；訊息範本可以改。核心交換機一斷帶走兩百台時，你收到的是一則彙整，不是兩百則。送不出去會自動重試，發送紀錄看得到原因。</p>
+        </div>
+        <div class="feature">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5" stroke="var(--line)" stroke-width="1.6"/><path d="M3.5 9h17M8 13h8M8 16h5" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round"/></svg>
+          <h3 data-i18n="f.12.h">維運都在網頁上</h3>
+          <p data-i18n="f.12.p">健康檢查定時自己跑、排程備份與一鍵還原、一鍵升級（沒過自動回滾）、上傳 HTTPS 憑證、系統資訊。需要 root 的事由主機上的背景執行器驗證之後才做，網頁本身沒有 root。</p>
+        </div>
       </div>
     </div>
   </div>
@@ -948,7 +963,7 @@ sudo mf-topomon doctor     <span class="c"># 全部正常嗎</span>
 sudo mf-topomon upgrade    <span class="c"># 更新（沒過會自己退回去）</span>
 sudo mf-topomon backup     <span class="c"># 備份資料庫與設定</span>
 sudo mf-topomon logs collector</code></pre>
-      <p style="color:var(--ink-soft);max-width:var(--measure)" data-i18n="install.sec"><strong>介面是有密碼的。</strong>對外只開反向代理，而且會轉到加密連線；應用程式與資料庫只在本機聽。連 API 的互動式文件頁都要登入 —— 因為從那裡可以直接操作整套系統。</p>
+      <p style="color:var(--ink-soft);max-width:var(--measure)" data-i18n="install.sec"><strong>要登入才看得到。</strong>每個人用自己的帳號或 AD 帳號登入，角色決定能看還是能改，每一個變更都進稽核紀錄。對外只開反向代理，而且會轉到加密連線；應用程式與資料庫只在本機聽。連 API 的互動式文件頁都要登入 —— 因為從那裡可以直接操作整套系統。</p>
     </div>
   </div>
 
@@ -1060,6 +1075,12 @@ sudo mf-topomon logs collector</code></pre>
       "f.8.p": "Cisco、HP／Aruba、Fortinet、Palo Alto、Ruckus、Juniper 等等；厂牌自动识别，不用一台一台告诉它这是什么。",
       "f.9.h": "三语界面、深浅色主题",
       "f.9.p": "界面支持繁体中文、简体中文与英文。深色「隐形黑曜军灰」适合机房与墙面大屏幕，浅色「北约战术粉笔白」适合明亮的办公室；设备按类型有各自的战术图标，颜色就是状态。",
+      "f.10.h": "账号、角色与 AD 登录",
+      "f.10.p": "系统管理员、运维人员、查看者三种角色；可以用公司的 AD 账号登录（LDAPS、限定组），AD 故障时还有本地紧急账号。每一个变更都记进审计日志：谁、何时、从哪里、是否成功。",
+      "f.11.h": "告警发到 Teams、Webhook、Email",
+      "f.11.p": "每个通道选要哪些事件、最低等级；消息模板可以改。核心交换机一断带走两百台时，你收到的是一条汇总，不是两百条。发不出去会自动重试，发送记录看得到原因。",
+      "f.12.h": "运维都在网页上",
+      "f.12.p": "健康检查定时自己跑、定时备份与一键还原、一键升级（没过自动回滚）、上传 HTTPS 证书、系统信息。需要 root 的事由主机上的后台执行器验证之后才做，网页本身没有 root。",
       "flow.kicker": "上手流程", "flow.h": "从没有东西，到有一张会自己更新的图",
       "flow.1.h": "安装", "flow.1.p": "一行命令，它会把需要的东西装好并跑起来。",
       "flow.2.h": "给一台设备", "flow.2.p": "IP 加 community，从核心交换机开始最省事。",
@@ -1124,7 +1145,7 @@ sudo mf-topomon logs collector</code></pre>
       "install.c2": "更新到最新版并重新检查。检查没过会自动回退到更新前的版本，不会把你留在坏掉的状态。",
       "install.c3": "备份数据库与配置，旧的备份自动轮替。需要的时候可以还原回去。",
       "install.c4": "跟着看任何一个服务的日志，查问题不用先去找文件放在哪里。",
-      "install.sec": "<strong>界面是有密码的。</strong>对外只开反向代理，而且会转到加密连接；应用程序与数据库只在本机监听。连 API 的交互式文档页都要登录 —— 因为从那里可以直接操作整套系统。",
+      "install.sec": "<strong>要登录才看得到。</strong>每个人用自己的账号或 AD 账号登录，角色决定能看还是能改，每一个变更都进审计日志。对外只开反向代理，而且会转到加密连接；应用程序与数据库只在本机监听。连 API 的交互式文档页都要登录 —— 因为从那里可以直接操作整套系统。",
       "support.kicker": "支持范围", "support.h": "它跟什么东西讲话",
       "support.1.h": "设备",
       "support.1.a": "Cisco IOS／NX-OS", "support.1.b": "HP ProCurve、Aruba",
@@ -1181,6 +1202,12 @@ sudo mf-topomon logs collector</code></pre>
       "f.8.p": "Cisco, HP/Aruba, Fortinet, Palo Alto, Ruckus, Juniper and more, recognised automatically — you do not have to tell it what each box is.",
       "f.9.h": "Three languages, light and dark",
       "f.9.p": "The interface comes in Traditional Chinese, Simplified Chinese and English. Dark \"Stealth Obsidian\" suits the NOC wall, light \"Tactical Chalk\" a bright office; every device type has its own tactical icon, and its colour is its status.",
+      "f.10.h": "Accounts, roles and AD login",
+      "f.10.p": "Administrator, operator and viewer roles; log in with your Active Directory account (LDAPS, restricted to groups), with a local emergency account for the day the directory is down. Every change goes into the audit log: who, when, from where, and whether it worked.",
+      "f.11.h": "Alerts to Teams, webhooks and e-mail",
+      "f.11.p": "Each channel picks its events and lowest severity; the message templates are yours to edit. When a core switch takes two hundred devices with it, you get one summary, not two hundred messages. Failed sends are retried, and the log says why.",
+      "f.12.h": "Operations from the browser",
+      "f.12.p": "Scheduled health checks, scheduled backups and one-click restore, one-click upgrade that rolls itself back, HTTPS certificate upload, system information. What needs root is validated and done by a runner on the host - the web process itself has no root.",
       "flow.kicker": "Getting started", "flow.h": "From nothing to a map that keeps itself current",
       "flow.1.h": "Install", "flow.1.p": "One command. It installs what it needs and starts everything.",
       "flow.2.h": "Add one device", "flow.2.p": "An address and a community. A core switch is the easiest place to start.",
@@ -1245,7 +1272,7 @@ sudo mf-topomon logs collector</code></pre>
       "install.c2": "Updates and re-checks. If the check fails it rolls back to the previous version by itself rather than leaving you broken.",
       "install.c3": "Backs up the database and the configuration, and rotates old backups. Restore when you need to.",
       "install.c4": "Follow the logs of any service without hunting for where the files are.",
-      "install.sec": "<strong>The interface has a password.</strong> Only the reverse proxy is exposed, and it redirects to an encrypted connection; the application and the database listen on localhost only. Even the interactive API documentation needs a login — anyone there can drive the whole system.",
+      "install.sec": "<strong>Nothing without a login.</strong> Everyone signs in with their own account or their Active Directory account, the role decides whether they can change things, and every change goes into the audit log. Only the reverse proxy is exposed, and it redirects to an encrypted connection; the application and the database listen on localhost only. Even the interactive API documentation needs a login — anyone there can drive the whole system.",
       "support.kicker": "What it talks to", "support.h": "Devices, protocols, environment",
       "support.1.h": "Devices",
       "support.1.a": "Cisco IOS / NX-OS", "support.1.b": "HP ProCurve, Aruba",

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in - mf-topomon</title>
+    <script src="/static/js/theme.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/theme-tactical.css">
+</head>
+
+<body class="login-page">
+    <script src="/static/js/i18n.js"></script>
+    <script src="/static/js/i18n-admin.js"></script>
+    <script src="/static/js/util.js"></script>
+
+    <main class="login-shell">
+        <div class="login-brand">
+            <span class="logo-icon"></span>
+            <span class="logo-text">mf-topomon</span>
+        </div>
+
+        <!-- Sign in -->
+        <form class="login-card settings-section" id="login-form" novalidate>
+            <div class="section-header"><h2 data-i18n="loginTitle">Sign in</h2></div>
+            <div class="section-content">
+                <div class="form-group">
+                    <label for="login-username" data-i18n="username">Username</label>
+                    <div class="login-user-row">
+                        <input id="login-username" name="username" autocomplete="username" autocapitalize="none"
+                            spellcheck="false" required autofocus>
+                        <span class="login-suffix" id="login-suffix" hidden></span>
+                    </div>
+                    <div class="form-help" id="login-hint" data-i18n="loginLocalHint" hidden></div>
+                </div>
+                <div class="form-group">
+                    <label for="login-password" data-i18n="password">Password</label>
+                    <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+                </div>
+                <div class="login-error" id="login-error" role="alert" hidden></div>
+                <button type="submit" class="btn-save login-submit" id="login-submit" data-i18n="signIn">Sign in</button>
+            </div>
+        </form>
+
+        <!-- Logged in, but no role yet -->
+        <section class="login-card settings-section" id="login-pending" hidden>
+            <div class="section-header"><h2 data-i18n="notGrantedTitle">Waiting for access</h2></div>
+            <div class="section-content">
+                <p class="login-text" data-i18n="notGrantedText"></p>
+                <p class="login-who" id="pending-who"></p>
+                <button type="button" class="btn-secondary" id="pending-logout" data-i18n="logout">Log out</button>
+            </div>
+        </section>
+
+        <!-- Change password (forced, or from the account menu) -->
+        <form class="login-card settings-section" id="change-form" hidden novalidate>
+            <div class="section-header"><h2 data-i18n="mustChangeTitle">Choose a new password</h2></div>
+            <div class="section-content">
+                <p class="login-text" id="change-why" data-i18n="mustChangeText"></p>
+                <div class="form-group">
+                    <label for="change-current" data-i18n="currentPassword">Current password</label>
+                    <input id="change-current" type="password" autocomplete="current-password" required>
+                </div>
+                <div class="form-group">
+                    <label for="change-new" data-i18n="newPassword">New password</label>
+                    <input id="change-new" type="password" autocomplete="new-password" required>
+                    <div class="form-help" data-i18n="passwordRules"></div>
+                </div>
+                <div class="form-group">
+                    <label for="change-repeat" data-i18n="repeatPassword">Repeat new password</label>
+                    <input id="change-repeat" type="password" autocomplete="new-password" required>
+                </div>
+                <div class="login-error" id="change-error" role="alert" hidden></div>
+                <div class="login-actions">
+                    <button type="button" class="btn-secondary" id="change-cancel" data-i18n="cancel" hidden>Cancel</button>
+                    <button type="submit" class="btn-save" data-i18n="changePassword">Change password</button>
+                </div>
+            </div>
+        </form>
+
+        <div class="login-lang">
+            <button type="button" data-lang="zh-TW">繁體中文</button>
+            <button type="button" data-lang="zh-CN">简体中文</button>
+            <button type="button" data-lang="en">English</button>
+        </div>
+    </main>
+
+    <script src="/static/js/login.js"></script>
+</body>
+
+</html>
