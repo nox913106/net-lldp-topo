@@ -1,0 +1,784 @@
+/*
+ * Tactical look - the style both themes share.
+ *
+ *   dark   STEALTH OBSIDIAN  隱形黑曜軍灰   (the default)
+ *   light  NATO TACTICAL CHALK  北約戰術粉筆白
+ *
+ * Loaded after style.css on every page. The two palettes differ only in the
+ * --t-* variables below; every rule after them is written once, against the
+ * variables, so the two themes cannot drift apart. The page-wide variables
+ * that style.css and the pages' own inline styles use (--bg-primary,
+ * --accent, ...) are set from the same palette, so those follow untouched.
+ *
+ *   palette   graphite or chalk, one command colour, and three status inks
+ *             that mean the same thing everywhere: green answers, amber look
+ *             at this, red down
+ *   type      Chakra Petch for headings and numbers, JetBrains Mono for
+ *             labels and data. Both ship in static/vendor/fonts/ - the
+ *             air-gap rule (tests/test_static_assets.py) covers fonts too.
+ *             Chinese falls back to the system's Noto Sans TC.
+ *   panels    a 1px grid-line frame and reticle brackets on all four
+ *             corners, drawn with background gradients so no page needs
+ *             extra markup
+ *   motion    a slow radar sweep on the map and traffic moving along each
+ *             link; both stop under prefers-reduced-motion
+ *
+ * Data values - hostnames, IPs, port names - are never upper-cased: a
+ * sysName is shown the way the device reports it. Only labels are.
+ */
+
+@font-face {
+    font-family: "Chakra Petch";
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url("/static/vendor/fonts/chakra-petch-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "Chakra Petch";
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url("/static/vendor/fonts/chakra-petch-latin-700-normal.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "JetBrains Mono";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url("/static/vendor/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "JetBrains Mono";
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url("/static/vendor/fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+}
+
+/* ---------------------------------------------------------------- palettes */
+
+/* STEALTH OBSIDIAN - dark, the default */
+:root {
+    --t-canvas: #0B0E11;
+    --t-panel: #12171D;
+    --t-well: #080B0E;
+    --t-grid: #222B35;
+    --t-reticle: #4B5B6E;
+    --t-ink: #E6EDF3;
+    --t-ink-2: #7D8B99;
+    --t-accent: #10B981;
+    --t-on-accent: #080B0E;
+    --t-ok: #10B981;
+    --t-ok-bg: rgba(16, 185, 129, 0.14);
+    --t-warn: #F59E0B;
+    --t-warn-bg: rgba(245, 158, 11, 0.15);
+    --t-crit: #EF4444;
+    --t-crit-bg: rgba(239, 68, 68, 0.16);
+    --t-gridline: rgba(34, 43, 53, 0.55);
+    --t-ring: #26313D;
+    --t-sweep: rgba(16, 185, 129, 0.11);
+    --t-led-glow: 0 0 8px currentColor;
+    --t-hover: rgba(230, 237, 243, 0.035);
+    --t-overlay: rgba(4, 6, 8, 0.78);
+
+    --t-display: "Chakra Petch", "Noto Sans TC", sans-serif;
+    --t-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "Noto Sans TC", monospace;
+
+    --bg-primary: var(--t-canvas);
+    --bg-secondary: var(--t-panel);
+    --bg-tertiary: var(--t-well);
+    --text-primary: var(--t-ink);
+    --text-secondary: var(--t-ink-2);
+    --text-muted: var(--t-ink-2);
+    --accent: var(--t-accent);
+    --accent-hover: #34D399;
+    --border: var(--t-grid);
+    --success: var(--t-ok);
+    --warning: var(--t-warn);
+    --danger: var(--t-crit);
+    --elevated: #34D399;
+    --svg-bg: transparent;
+    --link-label-color: var(--t-ink);
+
+    color-scheme: dark;
+}
+
+/* NATO TACTICAL CHALK - light. Status inks are darker than in the dark
+   theme: these have to hold up on a bright screen in a lit room. */
+:root[data-theme="light"] {
+    --t-canvas: #ECEEE9;
+    --t-panel: #F7F8F5;
+    --t-well: #E1E4DC;
+    --t-grid: #BFC5B8;
+    --t-reticle: #8F9887;
+    --t-ink: #181C16;
+    --t-ink-2: #4A5244;
+    --t-accent: #2B4C3F;
+    --t-on-accent: #FFFFFF;
+    --t-ok: #157A54;
+    --t-ok-bg: #D4ECE1;
+    --t-warn: #B85D00;
+    --t-warn-bg: #F7E5CE;
+    --t-crit: #B91C1C;
+    --t-crit-bg: #F8D7D7;
+    --t-gridline: rgba(143, 152, 135, 0.16);
+    --t-ring: rgba(143, 152, 135, 0.75);
+    --t-sweep: rgba(43, 76, 63, 0.10);
+    --t-led-glow: none;
+    --t-hover: rgba(24, 28, 22, 0.04);
+    --t-overlay: rgba(24, 28, 22, 0.45);
+
+    --accent-hover: #1F3A2F;
+    --elevated: #2B4C3F;
+
+    color-scheme: light;
+}
+
+/* ---------------------------------------------------------------- base */
+
+:root body {
+    font-family: var(--t-mono);
+    background: var(--t-canvas);
+    color: var(--t-ink);
+    counter-reset: t-panel;
+}
+
+:root ::selection {
+    background: var(--t-accent);
+    color: var(--t-on-accent);
+}
+
+:root ::-webkit-scrollbar { width: 6px; height: 6px; }
+:root ::-webkit-scrollbar-track { background: var(--t-well); }
+:root ::-webkit-scrollbar-thumb { background: var(--t-reticle); }
+
+/* ---------------------------------------------------------------- frames */
+
+/* The panel frame: a grid-line border and a reticle bracket on each corner.
+   A selector list rather than a class, so no page markup changes. */
+:root .topology-container,
+:root .alerts-bar,
+:root .detail-panel,
+:root .settings-section,
+:root .devices-table-container,
+:root .stat-card,
+:root .alerts-list-container,
+:root .history-panel,
+:root .groups-sidebar,
+:root .group-details,
+:root .modal,
+:root .hierarchy-modal {
+    border: 1px solid var(--t-grid) !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background:
+        linear-gradient(var(--t-reticle), var(--t-reticle)) left top / 10px 2px no-repeat,
+        linear-gradient(var(--t-reticle), var(--t-reticle)) left top / 2px 10px no-repeat,
+        linear-gradient(var(--t-reticle), var(--t-reticle)) right top / 10px 2px no-repeat,
+        linear-gradient(var(--t-reticle), var(--t-reticle)) right top / 2px 10px no-repeat,
+        linear-gradient(var(--t-reticle), var(--t-reticle)) left bottom / 10px 2px no-repeat,
+        linear-gradient(var(--t-reticle), var(--t-reticle)) left bottom / 2px 10px no-repeat,
+        linear-gradient(var(--t-reticle), var(--t-reticle)) right bottom / 10px 2px no-repeat,
+        linear-gradient(var(--t-reticle), var(--t-reticle)) right bottom / 2px 10px no-repeat,
+        var(--t-panel) !important;
+}
+
+/* Section headings: "01  ACTIVE ALERTS" - a numbered tab, spaced capitals */
+:root .section-header h2,
+:root .panel-header h3,
+:root .detail-section h4,
+:root .alerts-title,
+:root .history-header h3,
+:root .alerts-list-header h2,
+:root .details-header h2,
+:root .sidebar-header h2,
+:root .modal-header h3,
+:root .hierarchy-section h3 {
+    font-family: var(--t-display) !important;
+    font-size: 0.82rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--t-ink) !important;
+}
+
+/* The device panel's title is a hostname - data, so shown as the device
+   reports it */
+:root .panel-header h3 {
+    font-family: var(--t-mono) !important;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 1.05rem !important;
+}
+
+/* Running numbers in front of the main panel titles. Counted per page, so
+   they are only an ornament and never refer to anything. */
+:root .section-header h2::before,
+:root .alerts-title::before,
+:root .alerts-list-header h2::before,
+:root .sidebar-header h2::before,
+:root .details-header h2::before,
+:root .history-header h3::before {
+    counter-increment: t-panel;
+    content: counter(t-panel, decimal-leading-zero);
+    display: inline-block;
+    margin-right: 0.6rem;
+    padding: 0.05rem 0.35rem;
+    font-family: var(--t-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0;
+    background: var(--t-accent);
+    color: var(--t-on-accent);
+    vertical-align: 0.08rem;
+}
+
+:root .detail-section h4 {
+    font-size: 0.7rem !important;
+    color: var(--t-ink-2) !important;
+}
+
+/* ---------------------------------------------------------------- header */
+
+:root .header {
+    background: var(--t-panel) !important;
+    border-bottom: 1px solid var(--t-grid) !important;
+}
+
+:root .logo {
+    gap: 0.6rem;
+    padding: 0.35rem 0.75rem;
+    background: var(--t-well);
+    border: 1px solid var(--t-reticle);
+}
+
+/* The status LED in place of the emoji logo */
+:root .logo-icon {
+    font-size: 0;
+    width: 8px;
+    height: 8px;
+    background: var(--t-accent);
+    color: var(--t-accent);
+    box-shadow: var(--t-led-glow);
+}
+
+:root .logo-text {
+    font-family: var(--t-display);
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--t-ink);
+}
+
+:root .logo-text::after {
+    content: " // NETWORK OPS";
+    color: var(--t-accent);
+    white-space: pre;
+}
+
+/* The page tabs: one recessed strip, the current page filled */
+:root .nav {
+    gap: 0;
+    padding: 2px;
+    background: var(--t-well);
+    border: 1px solid var(--t-grid);
+}
+
+:root .nav-item {
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-radius: 0 !important;
+    color: var(--t-ink-2);
+}
+
+:root .nav-item:hover {
+    background: var(--t-hover);
+    color: var(--t-ink);
+}
+
+:root .nav-item.active {
+    background: var(--t-accent) !important;
+    color: var(--t-on-accent) !important;
+}
+
+:root .header-actions {
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    color: var(--t-ink-2);
+}
+
+:root .status-indicator {
+    border-radius: 0 !important;
+}
+
+:root .status-indicator.online {
+    background: var(--t-ok);
+    color: var(--t-ok);
+    box-shadow: var(--t-led-glow);
+}
+
+/* The status pills in the header (app.js fills them on the map page) */
+:root .ops-status {
+    display: inline-flex;
+    gap: 0.4rem;
+    align-items: center;
+    margin-right: 0.8rem;
+}
+
+:root .ops-status:empty { display: none; }
+
+:root .ops-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.55rem;
+    border: 1px solid var(--t-grid);
+    background: var(--t-well);
+    color: var(--t-ink);
+    font-weight: 700;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+:root .ops-pill i {
+    width: 6px;
+    height: 6px;
+    background: currentColor;
+}
+
+:root .ops-pill.ok { background: var(--t-ok-bg); border-color: var(--t-ok); color: var(--t-ok); }
+:root .ops-pill.crit { background: var(--t-crit-bg); border-color: var(--t-crit); color: var(--t-crit); }
+:root .ops-pill.quiet { color: var(--t-ink-2); }
+:root .ops-pill.clock { font-variant-numeric: tabular-nums; letter-spacing: 0.08em; }
+
+/* ---------------------------------------------------------------- controls */
+
+:root button,
+:root select,
+:root input,
+:root textarea {
+    font-family: var(--t-mono) !important;
+}
+
+:root .view-selector,
+:root .view-btn,
+:root .control-btn,
+:root .control-select,
+:root .btn-primary,
+:root .btn-secondary,
+:root .btn-save,
+:root .btn-cancel,
+:root .btn-add,
+:root .btn-icon,
+:root .btn-ack,
+:root .tab-btn,
+:root .filter-btn,
+:root input,
+:root select,
+:root textarea {
+    border-radius: 0 !important;
+}
+
+:root .view-selector {
+    padding: 2px;
+    background: var(--t-well) !important;
+    border: 1px solid var(--t-grid);
+}
+
+:root .view-btn,
+:root .control-btn,
+:root .btn-secondary,
+:root .btn-cancel,
+:root .btn-ack {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.72rem !important;
+}
+
+:root .control-btn,
+:root .btn-secondary,
+:root .btn-cancel,
+:root .btn-ack {
+    background: var(--t-well) !important;
+    border: 1px solid var(--t-grid) !important;
+    color: var(--t-ink) !important;
+}
+
+:root .control-btn:hover,
+:root .btn-secondary:hover,
+:root .btn-cancel:hover,
+:root .btn-ack:hover {
+    border-color: var(--t-reticle) !important;
+}
+
+:root .view-btn.active,
+:root .btn-primary,
+:root .btn-save,
+:root .btn-add {
+    background: var(--t-accent) !important;
+    color: var(--t-on-accent) !important;
+    border: 1px solid var(--t-accent) !important;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+:root input,
+:root select,
+:root textarea {
+    background-color: var(--t-well) !important;
+    border-color: var(--t-grid) !important;
+    color: var(--t-ink) !important;
+}
+
+:root input:focus,
+:root select:focus,
+:root textarea:focus {
+    outline: none;
+    border-color: var(--t-accent) !important;
+    box-shadow: 0 0 0 1px var(--t-accent);
+}
+
+/* ---------------------------------------------------------------- the map */
+
+:root .topology-container {
+    position: relative;
+    overflow: hidden;
+    margin: 0 1rem;
+}
+
+/* The coordinate grid, range rings and crosshair behind the graph */
+:root .topology-container::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+        linear-gradient(to right, transparent calc(50% - 0.5px), var(--t-ring) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+        linear-gradient(to bottom, transparent calc(50% - 0.5px), var(--t-ring) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+        repeating-radial-gradient(circle at 50% 50%, transparent 0 159px, var(--t-ring) 159px 160px),
+        linear-gradient(to right, var(--t-gridline) 1px, transparent 1px) 0 0 / 32px 32px,
+        linear-gradient(to bottom, var(--t-gridline) 1px, transparent 1px) 0 0 / 32px 32px;
+    opacity: 0.9;
+}
+
+/* The radar sweep */
+:root .topology-container::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 160vmax;
+    height: 160vmax;
+    margin: -80vmax 0 0 -80vmax;
+    pointer-events: none;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, var(--t-sweep), transparent 55deg, transparent 360deg);
+    animation: t-sweep 11s linear infinite;
+}
+
+@keyframes t-sweep {
+    to { transform: rotate(360deg); }
+}
+
+:root #topology-svg {
+    position: relative;
+    z-index: 1;
+    background: transparent !important;
+}
+
+/* The plate each device sits on: a square in the panel colour, framed in
+   the device's status ink. Drawn by topology.js, coloured here. */
+:root .node-plate {
+    fill: var(--t-panel);
+    stroke: var(--t-ok);
+    stroke-width: 2;
+}
+:root .node.status-offline .node-plate { stroke: var(--t-crit); fill: var(--t-crit-bg); }
+:root .node.status-unknown .node-plate,
+:root .node.status-discovered .node-plate { stroke: var(--t-reticle); }
+
+/* Device icons (topology.js): drawn in currentColor, so one colour per
+   status covers every part of every icon */
+:root .node foreignObject { color: var(--t-ok); overflow: visible; }
+:root .node.status-offline foreignObject { color: var(--t-crit); }
+:root .node.status-unknown foreignObject,
+:root .node.status-discovered foreignObject { color: var(--t-ink-2); }
+
+:root .dev-icon { display: block; overflow: visible; }
+:root .dev-icon .l {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.2;
+    stroke-linejoin: miter;
+    stroke-linecap: square;
+}
+:root .dev-icon .t { fill: currentColor; fill-opacity: 0.13; }
+:root .dev-icon .s { fill: currentColor; stroke: none; }
+:root .dev-icon .dash { stroke-dasharray: 5 3.5; stroke-linecap: butt; }
+:root .dev-icon .tag { fill: currentColor; }
+:root .dev-icon .tag-text {
+    fill: var(--t-panel);
+    font: 700 8.5px var(--t-mono);
+    letter-spacing: -0.02em;
+}
+:root .dev-icon .glyph {
+    fill: currentColor;
+    font: 700 26px var(--t-display);
+}
+
+/* Labels are drawn with a canvas-coloured halo, so they stay readable where
+   they cross a link or the grid */
+:root .node-hostname,
+:root .node-ip,
+:root .node-vendor,
+:root .link-label,
+:root .link-util {
+    paint-order: stroke;
+    stroke: var(--t-canvas);
+    stroke-width: 4px;
+    stroke-linejoin: round;
+}
+
+:root .node-hostname {
+    fill: var(--t-ink);
+    font-family: var(--t-mono);
+    font-weight: 700 !important;
+    font-size: 12px;
+}
+:root .node-ip,
+:root .node-vendor {
+    fill: var(--t-ink-2);
+    font-family: var(--t-mono);
+}
+:root .node-vendor { text-transform: uppercase; letter-spacing: 0.06em; }
+
+:root .offline-blink {
+    fill: transparent;
+    stroke: var(--t-crit);
+}
+
+/* The alert badge on a node: a square tag, like the mockup's "!" */
+:root .node > circle {
+    fill: var(--t-crit);
+    stroke: var(--t-panel);
+    stroke-width: 1.5;
+}
+:root .node > circle + text {
+    fill: #FFFFFF;
+    stroke: none;
+    font-family: var(--t-mono);
+    font-size: 10px;
+}
+
+/* Links: traffic moving along each cable, coloured by how full it is */
+:root .link {
+    stroke: var(--t-ok);
+    stroke-opacity: 0.9;
+    stroke-dasharray: 4 8;
+    animation: t-flow 1.4s linear infinite;
+}
+:root .link.status-elevated { stroke: var(--t-ok); stroke-dasharray: 8 4; }
+:root .link.status-warning {
+    stroke: var(--t-warn);
+    stroke-dasharray: 5 5;
+    animation-duration: 0.85s;
+}
+:root .link.status-critical {
+    stroke: var(--t-crit);
+    stroke-dasharray: 6 4;
+    animation-duration: 0.6s;
+}
+
+@keyframes t-flow {
+    to { stroke-dashoffset: -24; }
+}
+
+:root .link-label {
+    fill: var(--t-ink);
+    font-family: var(--t-mono);
+    font-size: 10px;
+    font-weight: 700;
+}
+:root .link-util {
+    fill: var(--t-ink-2);
+    font-family: var(--t-mono);
+    font-size: 10px;
+}
+
+/* ---------------------------------------------------------------- alerts bar */
+
+:root .alerts-bar {
+    margin: 0.75rem 1rem 1rem;
+}
+:root .alerts-icon { display: none; }
+:root .alerts-count {
+    border-radius: 0 !important;
+    background: var(--t-crit-bg) !important;
+    color: var(--t-crit) !important;
+    border: 1px solid var(--t-crit);
+    font-weight: 700;
+    padding: 0.05rem 0.45rem !important;
+}
+:root .alert-item {
+    background: var(--t-panel) !important;
+    border-radius: 0 !important;
+    border: 1px solid var(--t-grid);
+    border-left-width: 3px !important;
+}
+:root .alert-item.warning { border-left-color: var(--t-warn) !important; }
+:root .alert-item.critical { border-left-color: var(--t-crit) !important; }
+:root .alert-time { color: var(--t-ink-2); font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------- detail panel */
+
+:root .detail-label {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.68rem;
+    color: var(--t-ink-2);
+}
+:root .detail-value { font-weight: 700; }
+
+/* Each key/value row is a recessed cell, as on an instrument panel */
+:root .detail-row {
+    background: var(--t-well);
+    border: 1px solid var(--t-grid) !important;
+    padding: 0.45rem 0.6rem !important;
+    margin-bottom: 4px;
+}
+
+/* 20-segment meters for CPU and memory (app.js draws them) */
+:root .seg-meters {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    background: var(--t-well);
+    border: 1px solid var(--t-grid);
+}
+:root .seg-head {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.3rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+:root .seg-head span { text-transform: uppercase; }
+:root .seg-meter.normal .seg-head b { color: var(--t-ok); }
+:root .seg-meter.warning .seg-head b { color: var(--t-warn); }
+:root .seg-meter.critical .seg-head b { color: var(--t-crit); }
+:root .seg-meter.unknown .seg-head b { color: var(--t-ink-2); }
+:root .seg-cells {
+    display: grid;
+    grid-template-columns: repeat(20, 1fr);
+    gap: 2px;
+    height: 14px;
+    padding: 2px;
+    background: var(--t-panel);
+    border: 1px solid var(--t-grid);
+}
+:root .seg-cells i { background: var(--t-grid); }
+:root .seg-meter.normal .seg-cells i.on { background: var(--t-ok); }
+:root .seg-meter.warning .seg-cells i.on { background: var(--t-warn); }
+:root .seg-meter.critical .seg-cells i.on { background: var(--t-crit); }
+
+/* ---------------------------------------------------------------- the other pages */
+
+/* Big numbers: the alert counts, the system overview, the collector panel */
+:root .stat-info h3,
+:root .info-value,
+:root .group-count {
+    font-family: var(--t-display) !important;
+    font-weight: 700 !important;
+    color: var(--t-ink) !important;
+}
+:root .stat-info h3 { font-size: 2.2rem !important; line-height: 1.1; }
+/* The coloured emoji do not belong here; the number carries the colour */
+:root .stat-icon { display: none !important; }
+:root .stat-card:has(.stat-icon.critical) .stat-info h3 { color: var(--t-crit) !important; }
+:root .stat-card:has(.stat-icon.warning) .stat-info h3 { color: var(--t-warn) !important; }
+:root .stat-card:has(.stat-icon.success) .stat-info h3 { color: var(--t-ok) !important; }
+:root .stat-info p,
+:root .info-label {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.7rem !important;
+    color: var(--t-ink-2) !important;
+}
+
+:root .info-item {
+    border-radius: 0 !important;
+    background: var(--t-well) !important;
+    border: 1px solid var(--t-grid);
+}
+
+:root .alert-card {
+    border-radius: 0 !important;
+    background: var(--t-panel) !important;
+    border: 1px solid var(--t-grid);
+    border-left-width: 3px !important;
+}
+
+/* Severity and status tags: tinted fill, ink border */
+:root .alert-severity,
+:root .status-badge,
+:root .device-status {
+    border-radius: 0 !important;
+    border: 1px solid currentColor;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.66rem !important;
+}
+
+:root table th {
+    background: var(--t-well) !important;
+    font-weight: 700 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.68rem !important;
+    color: var(--t-ink-2) !important;
+}
+:root table td { border-color: var(--t-grid) !important; }
+:root tbody tr:hover { background: var(--t-hover) !important; }
+
+:root .metric-bar-bg {
+    border-radius: 0 !important;
+    background: var(--t-well) !important;
+    border: 1px solid var(--t-grid);
+}
+:root .metric-bar-fill { border-radius: 0 !important; }
+:root .metric-bar-fill.normal { background: var(--t-ok) !important; }
+:root .metric-bar-fill.warning { background: var(--t-warn) !important; }
+:root .metric-bar-fill.critical { background: var(--t-crit) !important; }
+
+:root .group-item { border-radius: 0 !important; }
+:root .group-item.active {
+    background: var(--t-well) !important;
+    box-shadow: inset 3px 0 0 var(--t-accent);
+}
+
+:root .modal-overlay,
+:root .hierarchy-modal-overlay {
+    background: var(--t-overlay) !important;
+}
+
+:root .collector-dot.live {
+    background: var(--t-ok) !important;
+    color: var(--t-ok);
+    box-shadow: var(--t-led-glow);
+}
+
+/* ---------------------------------------------------------------- motion */
+
+@media (prefers-reduced-motion: reduce) {
+    :root .topology-container::after { animation: none; display: none; }
+    :root .link { animation: none; }
+}

@@ -199,11 +199,20 @@ class App {
             if (!response.ok) throw new Error('Failed to load topology');
 
             const data = await response.json();
-            this.topology.setData(data);
+            // Fit the map to the view when it is a different map - another
+            // view or group - but not on the minute's refresh, which would
+            // throw away wherever the operator had zoomed to
+            const key = `${view}:${groupId || ''}`;
+            this.topology.setData(data, { fit: key !== this.lastTopologyKey });
+            this.lastTopologyKey = key;
             this.updateLastUpdate(data.last_updated);
+            this.opsCounts = {
+                online: (data.nodes || []).filter(n => n.status === 'managed').length,
+                total: (data.nodes || []).length,
+                alerts: this.opsCounts ? this.opsCounts.alerts : null
+            };
+            this.renderOpsStatus();
 
-            // Auto-fit on initial load
-            setTimeout(() => this.topology.fitView(), 500);
 
         } catch (error) {
             console.error('Error loading topology:', error);
@@ -240,11 +249,61 @@ class App {
         }
     }
 
+    // The status line in the header: how many of the devices on this map
+    // answer, how many alerts are open, and the time - the three things a
+    // wall screen is glanced at for.
+    renderOpsStatus() {
+        const el = document.getElementById('ops-status');
+        if (!el) return;
+        const c = this.opsCounts || {};
+        const parts = [];
+        if (c.total != null) {
+            const level = c.online < c.total ? 'crit' : 'ok';
+            parts.push(`<span class="ops-pill ${level}"><i></i>${c.online}/${c.total} ${escapeHtml(t('online'))}</span>`);
+        }
+        if (c.alerts != null) {
+            const level = c.alerts ? 'crit' : 'quiet';
+            parts.push(`<span class="ops-pill ${level}"><i></i>${c.alerts} ${escapeHtml(t('activeAlerts'))}</span>`);
+        }
+        parts.push('<span class="ops-pill clock" id="ops-clock"></span>');
+        el.innerHTML = parts.join('');
+        this.tickOpsClock();
+        if (!this.opsClockTimer) {
+            this.opsClockTimer = setInterval(() => this.tickOpsClock(), 1000);
+        }
+    }
+
+    tickOpsClock() {
+        const el = document.getElementById('ops-clock');
+        if (el) el.textContent = new Date().toLocaleTimeString([], { hour12: false });
+    }
+
+    // A 20-segment bar for one percentage, lit up to the value: green, amber
+    // from 70 %, red from 90 % - the same levels the metric bars use.
+    segMeter(label, value) {
+        const known = value != null && !Number.isNaN(value);
+        const pct = known ? Math.max(0, Math.min(100, value)) : 0;
+        const level = !known ? 'unknown' : pct >= 90 ? 'critical' : pct >= 70 ? 'warning' : 'normal';
+        const lit = Math.round(pct / 5);
+        let cells = '';
+        for (let i = 0; i < 20; i++) cells += `<i class="${i < lit ? 'on' : ''}"></i>`;
+        return `
+            <div class="seg-meter ${level}">
+                <div class="seg-head">
+                    <span>${escapeHtml(label)}</span>
+                    <b>${known ? pct.toFixed(1) + '%' : 'N/A'}</b>
+                </div>
+                <div class="seg-cells" role="img" aria-label="${escapeHtml(label)} ${known ? pct.toFixed(1) + '%' : 'N/A'}">${cells}</div>
+            </div>`;
+    }
+
     renderAlerts(alerts) {
         const countEl = document.getElementById('alerts-count');
         const listEl = document.getElementById('alerts-list');
 
         if (countEl) countEl.textContent = alerts.length;
+        this.opsCounts = Object.assign({}, this.opsCounts, { alerts: alerts.length });
+        this.renderOpsStatus();
 
         if (listEl) {
             listEl.innerHTML = alerts.map(alert => `
@@ -294,13 +353,9 @@ class App {
             </div>
             <div class="detail-section">
                 <h4>${t('metrics')}</h4>
-                <div class="detail-row">
-                    <span class="detail-label">${t('cpu')}</span>
-                    <span class="detail-value">${node.cpu_percent != null ? node.cpu_percent.toFixed(1) + '%' : 'N/A'}</span>
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">${t('memory')}</span>
-                    <span class="detail-value">${node.memory_percent != null ? node.memory_percent.toFixed(1) + '%' : 'N/A'}</span>
+                <div class="seg-meters">
+                    ${this.segMeter(t('cpu'), node.cpu_percent)}
+                    ${this.segMeter(t('memory'), node.memory_percent)}
                 </div>
             </div>
             ${node.alert_count > 0 ? `

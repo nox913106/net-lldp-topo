@@ -19,87 +19,96 @@ class TopologyGraph {
         this.onLinkClick = null;
 
         // Device icons (Cisco-style SVG paths)
+        // Device icons: tactical line art, one stroke weight, drawn in
+        // currentColor so the stylesheet colours each by the device's status.
+        //   .l  outline      .t  tinted fill      .s  solid
+        //   .k  knocked out of a solid (the panel colour)
+        //   .tag / .tag-text  the designator plate, e.g. "L3"
+        // Chamfered corners rather than rounded ones throughout.
+        const icon = (body, tag) => `<svg viewBox="0 0 64 64" width="52" height="52" class="dev-icon" aria-hidden="true">${body}${tag ? `
+                <path class="tag" d="M40 3 H58 V11 L55 14 H40 Z"/>
+                <text class="tag-text" x="48.5" y="11.2" text-anchor="middle">${tag}</text>` : ''}
+            </svg>`;
+        const l2Body = `
+                <path class="t l" d="M8 18 H52 L56 22 V46 H12 L8 42 Z"/>
+                <path class="l" d="M14 25 H44 M39 21 L44 25 L39 29"/>
+                <path class="l" d="M50 33 H20 M25 29 L20 33 L25 37"/>
+                <path class="s" d="M14 40 h5 v3 h-5 z M22 40 h5 v3 h-5 z M30 40 h5 v3 h-5 z M38 40 h5 v3 h-5 z M46 40 h5 v3 h-5 z"/>`;
+        const l3Body = `
+                <path class="t l" d="M8 18 H52 L56 22 V46 H12 L8 42 Z"/>
+                <path class="l" d="M32 21 V27 M29 24 L32 21 L35 24 M32 31 V37 M29 34 L32 37 L35 34"/>
+                <path class="l" d="M14 29 H24 M21 26 L24 29 L21 32 M50 29 H40 M43 26 L40 29 L43 32"/>
+                <path class="s" d="M14 40 h5 v3 h-5 z M22 40 h5 v3 h-5 z M30 40 h5 v3 h-5 z M38 40 h5 v3 h-5 z M46 40 h5 v3 h-5 z"/>`;
         this.deviceIcons = {
-            router: `<svg viewBox="0 0 64 64" width="48" height="48">
-                <rect x="8" y="20" width="48" height="24" rx="4" fill="#1a73e8" stroke="#0d47a1" stroke-width="2"/>
-                <line x1="16" y1="28" x2="16" y2="36" stroke="white" stroke-width="2"/>
-                <line x1="24" y1="28" x2="24" y2="36" stroke="white" stroke-width="2"/>
-                <line x1="32" y1="28" x2="32" y2="36" stroke="white" stroke-width="2"/>
-                <line x1="40" y1="28" x2="40" y2="36" stroke="white" stroke-width="2"/>
-                <line x1="48" y1="28" x2="48" y2="36" stroke="white" stroke-width="2"/>
-                <circle cx="32" cy="10" r="6" fill="#1a73e8" stroke="#0d47a1" stroke-width="2"/>
-                <line x1="32" y1="16" x2="32" y2="20" stroke="#0d47a1" stroke-width="2"/>
-            </svg>`,
-            core: `<svg viewBox="0 0 64 64" width="52" height="52">
-                <rect x="6" y="18" width="52" height="28" rx="4" fill="#6200ea" stroke="#4a148c" stroke-width="2"/>
-                <rect x="12" y="24" width="8" height="6" rx="1" fill="#b388ff"/>
-                <rect x="22" y="24" width="8" height="6" rx="1" fill="#b388ff"/>
-                <rect x="32" y="24" width="8" height="6" rx="1" fill="#b388ff"/>
-                <rect x="42" y="24" width="8" height="6" rx="1" fill="#b388ff"/>
-                <rect x="12" y="34" width="8" height="6" rx="1" fill="#b388ff"/>
-                <rect x="22" y="34" width="8" height="6" rx="1" fill="#b388ff"/>
-                <rect x="32" y="34" width="8" height="6" rx="1" fill="#b388ff"/>
-                <rect x="42" y="34" width="8" height="6" rx="1" fill="#b388ff"/>
-                <polygon points="32,2 38,12 26,12" fill="#6200ea" stroke="#4a148c" stroke-width="1"/>
-            </svg>`,
-            distribution: `<svg viewBox="0 0 64 64" width="48" height="48">
-                <rect x="8" y="18" width="48" height="28" rx="4" fill="#00897b" stroke="#004d40" stroke-width="2"/>
-                <rect x="14" y="24" width="6" height="6" rx="1" fill="#80cbc4"/>
-                <rect x="22" y="24" width="6" height="6" rx="1" fill="#80cbc4"/>
-                <rect x="30" y="24" width="6" height="6" rx="1" fill="#80cbc4"/>
-                <rect x="38" y="24" width="6" height="6" rx="1" fill="#80cbc4"/>
-                <rect x="14" y="34" width="6" height="6" rx="1" fill="#80cbc4"/>
-                <rect x="22" y="34" width="6" height="6" rx="1" fill="#80cbc4"/>
-                <rect x="30" y="34" width="6" height="6" rx="1" fill="#80cbc4"/>
-                <rect x="38" y="34" width="6" height="6" rx="1" fill="#80cbc4"/>
-                <rect x="46" y="24" width="6" height="16" rx="1" fill="#4db6ac"/>
-            </svg>`,
-            access: `<svg viewBox="0 0 64 64" width="44" height="44">
-                <rect x="10" y="20" width="44" height="24" rx="3" fill="#43a047" stroke="#2e7d32" stroke-width="2"/>
-                <rect x="16" y="26" width="4" height="5" rx="1" fill="#a5d6a7"/>
-                <rect x="22" y="26" width="4" height="5" rx="1" fill="#a5d6a7"/>
-                <rect x="28" y="26" width="4" height="5" rx="1" fill="#a5d6a7"/>
-                <rect x="34" y="26" width="4" height="5" rx="1" fill="#a5d6a7"/>
-                <rect x="40" y="26" width="4" height="5" rx="1" fill="#a5d6a7"/>
-                <rect x="16" y="33" width="4" height="5" rx="1" fill="#a5d6a7"/>
-                <rect x="22" y="33" width="4" height="5" rx="1" fill="#a5d6a7"/>
-                <rect x="28" y="33" width="4" height="5" rx="1" fill="#a5d6a7"/>
-                <rect x="34" y="33" width="4" height="5" rx="1" fill="#a5d6a7"/>
-                <rect x="40" y="33" width="4" height="5" rx="1" fill="#a5d6a7"/>
-            </svg>`,
-            firewall: `<svg viewBox="0 0 64 64" width="48" height="48">
-                <rect x="8" y="16" width="48" height="32" rx="4" fill="#e53935" stroke="#b71c1c" stroke-width="2"/>
-                <rect x="16" y="24" width="32" height="16" rx="2" fill="#ffcdd2"/>
-                <path d="M28 28 L32 24 L36 28 L32 40 Z" fill="#e53935"/>
-                <line x1="20" y1="10" x2="20" y2="16" stroke="#e53935" stroke-width="2"/>
-                <line x1="32" y1="8" x2="32" y2="16" stroke="#e53935" stroke-width="2"/>
-                <line x1="44" y1="10" x2="44" y2="16" stroke="#e53935" stroke-width="2"/>
-            </svg>`,
-            ap: `<svg viewBox="0 0 64 64" width="44" height="44">
-                <ellipse cx="32" cy="36" rx="20" ry="8" fill="#fb8c00" stroke="#e65100" stroke-width="2"/>
-                <rect x="28" y="28" width="8" height="8" fill="#fb8c00" stroke="#e65100" stroke-width="2"/>
-                <path d="M20 20 Q32 8 44 20" fill="none" stroke="#fb8c00" stroke-width="2"/>
-                <path d="M24 24 Q32 16 40 24" fill="none" stroke="#ffb74d" stroke-width="2"/>
-                <circle cx="32" cy="18" r="3" fill="#ffb74d"/>
-            </svg>`,
-            unknown: `<svg viewBox="0 0 64 64" width="40" height="40">
-                <rect x="12" y="16" width="40" height="32" rx="4" fill="#78909c" stroke="#455a64" stroke-width="2"/>
-                <text x="32" y="38" text-anchor="middle" fill="white" font-size="16">?</text>
-            </svg>`
+            // An octagon with traffic crossing it both ways
+            router: icon(`
+                <path class="t l" d="M23 9 H41 L55 23 V41 L41 55 H23 L9 41 V23 Z"/>
+                <path class="l" d="M14 32 H27 M23 28 L27 32 L23 36 M50 32 H37 M41 28 L37 32 L41 36"/>
+                <path class="l" d="M32 27 V14 M28 18 L32 14 L36 18 M32 37 V50 M28 46 L32 50 L36 46"/>
+                <rect class="s" x="29.5" y="29.5" width="5" height="5"/>`),
+            // Layer 3: routing arrows on a switch chassis. Core is stacked.
+            core: icon(`
+                <path class="l" d="M12 17 V12 H36"/>${l3Body}`, 'L3'),
+            distribution: icon(l3Body, 'L3'),
+            // Layer 2: the two opposed forwarding arrows
+            access: icon(l2Body, 'L2'),
+            // A shield, walled in brick
+            firewall: icon(`
+                <path class="t l" d="M32 6 L53 13 V31 C53 43 44 52 32 58 C20 52 11 43 11 31 V13 Z"/>
+                <path class="l" d="M15 23 H49 M15 34 H49 M19 45 H45 M32 13 V23 M24 23 V34 M40 23 V34 M32 34 V45"/>`),
+            // A lattice radio mast, radiating
+            ap: icon(`
+                <path class="l" d="M32 30 L25 56 M32 30 L39 56 M27 48 H37 M28.5 41 H35.5 M22 56 H42"/>
+                <rect class="s" x="29" y="23" width="6" height="6"/>
+                <path class="l" d="M25.6 19.6 A9 9 0 0 0 25.6 32.4 M38.4 19.6 A9 9 0 0 1 38.4 32.4"/>
+                <path class="l" d="M20.7 14.7 A16 16 0 0 0 20.7 37.3 M43.3 14.7 A16 16 0 0 1 43.3 37.3"/>`),
+            // A housing on a wall arm, lens forward, recording lamp lit
+            camera: icon(`
+                <path class="l" d="M12 20 L36 17"/>
+                <path class="t l" d="M14 24 L50 19 L52 35 L16 40 Z"/>
+                <path class="l" d="M14 26 H8 V38 H15"/>
+                <rect class="s" x="43" y="24" width="4" height="4"/>
+                <path class="l" d="M36 37 L39 49"/>
+                <path class="t l" d="M30 49 H48 V55 H30 Z"/>`, 'CAM'),
+            // One feed in, fanned out to three
+            loadbalancer: icon(`
+                <path class="t l" d="M8 18 H52 L56 22 V52 H12 L8 48 Z"/>
+                <path class="l" d="M13 35 H24"/>
+                <rect class="s" x="23" y="31.5" width="7" height="7"/>
+                <path class="l" d="M30 35 L44 25 M30 35 H44 M30 35 L44 45"/>
+                <path class="l" d="M41 22 L46 24 L43 28 M41 32 L46 35 L41 38 M43 42 L46 46 L41 48"/>`, 'LB'),
+            // A rack unit stack with drive bays
+            server: icon(`
+                <path class="t l" d="M16 6 H44 L48 10 V58 H16 Z"/>
+                <path class="l" d="M16 19 H48 M16 32 H48 M16 45 H48"/>
+                <path class="l" d="M21 12.5 H33 M21 25.5 H33 M21 38.5 H33"/>
+                <rect class="s" x="39" y="11" width="4" height="3"/>
+                <rect class="s" x="39" y="24" width="4" height="3"/>
+                <rect class="s" x="39" y="37" width="4" height="3"/>
+                <path class="l" d="M22 50 V54 M27 50 V54 M32 50 V54 M37 50 V54 M42 50 V54"/>`),
+            // A dashed frame - not a box you can touch - around a unit cube
+            vm: icon(`
+                <path class="l dash" d="M36 8 H8 V50 L14 56 H56 V18"/>
+                <path class="t l" d="M32 17 L46 24 V40 L32 47 L18 40 V24 Z"/>
+                <path class="l" d="M18 24 L32 31 L46 24 M32 31 V47"/>`, 'VM'),
+            unknown: icon(`
+                <path class="l dash" d="M14 12 H46 L52 18 V52 H18 L12 46 V12 Z"/>
+                <text class="glyph" x="32" y="42" text-anchor="middle">?</text>`)
         };
 
         this.init();
     }
 
     init() {
-        const rect = this.svg.node().getBoundingClientRect();
-        this.width = rect.width || 800;
-        this.height = rect.height || 600;
+        this.measure();
 
         this.zoom = d3.zoom()
             .scaleExtent([0.1, 4])
             .on('zoom', (event) => {
                 this.g.attr('transform', event.transform);
+                // A zoom or pan by hand: from here on the view is the
+                // operator's, and the automatic fit leaves it alone
+                if (event.sourceEvent) this.autoFit = false;
             });
 
         this.svg.call(this.zoom);
@@ -115,32 +124,78 @@ class TopologyGraph {
             .force('center', d3.forceCenter(this.width / 2, this.height / 2))
             .force('collision', d3.forceCollide().radius(80));
 
-        window.addEventListener('resize', () => this.handleResize());
+        // Once the layout has come to rest, fit it to the view - unless the
+        // operator has moved the view in the meantime
+        this.simulation.on('end.fit', () => {
+            if (this.autoFit) this.fitView();
+            this.autoFit = false;
+        });
+
+        // The map's size is read from the page, not assumed: it changes after
+        // load (the alerts bar fills in below it), with the window, and when
+        // the side panel opens. A size read once at start-up made "fit"
+        // aim at an area taller than the one on screen.
+        if (window.ResizeObserver) {
+            new ResizeObserver(() => this.handleResize()).observe(this.svg.node());
+        } else {
+            window.addEventListener('resize', () => this.handleResize());
+        }
+    }
+
+    // The map's current size on the page
+    measure() {
+        const rect = this.svg.node().getBoundingClientRect();
+        const width = rect.width || 800;
+        const height = rect.height || 600;
+        const changed = width !== this.width || height !== this.height;
+        this.width = width;
+        this.height = height;
+        return changed;
     }
 
     handleResize() {
-        const rect = this.svg.node().getBoundingClientRect();
-        this.width = rect.width || 800;
-        this.height = rect.height || 600;
-
+        if (!this.measure()) return;
         this.simulation.force('center', d3.forceCenter(this.width / 2, this.height / 2));
-        this.simulation.alpha(0.3).restart();
+        if (this.nodes && this.nodes.length) this.simulation.alpha(0.3).restart();
     }
 
-    setData(data) {
+    // fit: frame the map once its layout has come to rest
+    setData(data, { fit = true } = {}) {
+        // Devices already on the map stay where they are: the refresh then
+        // only nudges the layout instead of laying it out from scratch
+        const placed = new Map((this.nodes || []).map(n => [n.id, n]));
         this.nodes = data.nodes || [];
+        this.carriedOver = this.nodes.length > 0 && this.nodes.every(n => placed.has(n.id));
+        for (const n of this.nodes) {
+            const old = placed.get(n.id);
+            if (old) Object.assign(n, { x: old.x, y: old.y, vx: 0, vy: 0, fx: old.fx, fy: old.fy });
+        }
         this.links = data.links || [];
         this.render();
+        this.autoFit = fit;
     }
 
     getDeviceType(node) {
         const type = (node.device_type || '').toLowerCase();
+        const exact = {
+            core: 'core', distribution: 'distribution', dist: 'distribution', l3: 'distribution',
+            access: 'access', tor: 'access', switch: 'access', l2: 'access',
+            router: 'router', firewall: 'firewall', ap: 'ap', wireless: 'ap',
+            camera: 'camera', cctv: 'camera',
+            loadbalancer: 'loadbalancer', load_balancer: 'loadbalancer', lb: 'loadbalancer',
+            server: 'server', vm: 'vm', virtual_machine: 'vm'
+        };
+        if (exact[type]) return exact[type];
         if (type.includes('core')) return 'core';
         if (type.includes('dist')) return 'distribution';
         if (type.includes('router')) return 'router';
-        if (type.includes('access') || type === 'switch') return 'access';
         if (type.includes('firewall')) return 'firewall';
-        if (type.includes('ap') || type.includes('wireless')) return 'ap';
+        if (type.includes('camera') || type.includes('cctv')) return 'camera';
+        if (type.includes('balanc')) return 'loadbalancer';
+        if (type.includes('server')) return 'server';
+        if (type.includes('virtual')) return 'vm';
+        if (type.includes('access') || type.includes('switch')) return 'access';
+        if (type.includes('wireless')) return 'ap';
         return 'unknown';
     }
 
@@ -201,6 +256,15 @@ class TopologyGraph {
             .on('click', (event, d) => {
                 if (this.onNodeClick) this.onNodeClick(d);
             });
+
+        // The plate the icon sits on: a square frame in the device's status
+        // colour (the stylesheet colours it, by the node's status class)
+        nodeElements.append('rect')
+            .attr('class', 'node-plate')
+            .attr('x', -29)
+            .attr('y', -29)
+            .attr('width', 58)
+            .attr('height', 58);
 
         // Device icon using foreignObject
         nodeElements.append('foreignObject')
@@ -288,13 +352,14 @@ class TopologyGraph {
         });
 
         this.simulation.force('link').links(this.links);
-        this.simulation.alpha(1).restart();
+        this.simulation.alpha(this.carriedOver ? 0.1 : 1).restart();
     }
 
     drag() {
         return d3.drag()
             .on('start', (event, d) => {
                 if (!event.active) this.simulation.alphaTarget(0.3).restart();
+                this.autoFit = false;
                 d.fx = d.x;
                 d.fy = d.y;
             })
@@ -324,6 +389,7 @@ class TopologyGraph {
 
     fitView() {
         if (this.nodes.length === 0) return;
+        this.measure();
 
         const bounds = this.g.node().getBBox();
         const padding = 80;

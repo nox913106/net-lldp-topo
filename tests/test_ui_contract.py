@@ -503,9 +503,16 @@ def test_the_collector_does_not_probe_a_neighbour_outside_the_allowed_subnets(
     ("FGT60F", "fortinet", "firewall"),
     ("AP-3F-12", "ruckus", "ap"),
     ("access-sw-03", "cisco_ios", "access"),
+    ("cam-lobby-02", None, "camera"),
+    ("NVR1", None, "camera"),
+    ("dc-lb-01", None, "loadbalancer"),
+    ("srv-pve-01", None, "server"),
+    ("esxi3", None, "server"),
+    ("vm-web-01", None, "vm"),
     # Whole words only: these contain "core" and "ap" and are neither
     ("scoreboard", None, "access"),
     ("snapshot-host", None, "access"),
+    ("camelot", None, "access"),
     (None, None, "access"),
 ])
 def test_the_first_guess_at_a_discovered_devices_type(hostname, vendor, expected):

@@ -50,6 +50,10 @@ const i18n = {
             router: 'Router',
             firewall: 'Firewall',
             ap: 'Access Point',
+            camera: 'CCTV Camera',
+            loadbalancer: 'Load Balancer',
+            server: 'Server',
+            vm: 'Virtual Machine',
 
             // Details panel
             details: 'Details',
@@ -375,6 +379,10 @@ const i18n = {
             router: '路由器',
             firewall: '防火牆',
             ap: '無線基地台',
+            camera: '監視攝影機',
+            loadbalancer: '負載平衡器',
+            server: '伺服器',
+            vm: '虛擬機',
 
             // Details panel
             details: '詳細資訊',
@@ -701,6 +709,10 @@ const i18n = {
             router: '路由器',
             firewall: '防火墙',
             ap: '无线访问点',
+            camera: '监控摄像机',
+            loadbalancer: '负载均衡器',
+            server: '服务器',
+            vm: '虚拟机',
 
             // Details panel
             details: '详细信息',

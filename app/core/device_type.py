@@ -18,11 +18,15 @@ from typing import Optional
 # Checked in order; the first token that matches decides.
 _NAME_HINTS = (
     (("fw", "firewall", "fgt"), "firewall"),
+    (("cam", "cctv", "camera", "ipc", "nvr"), "camera"),
+    (("lb", "slb", "adc", "loadbalancer"), "loadbalancer"),
     (("core", "spine"), "core"),
     (("dist", "distribution", "agg", "aggregation"), "distribution"),
     (("rtr", "router", "gw"), "router"),
     (("ap", "wap"), "ap"),
     (("tor", "leaf"), "tor"),
+    (("srv", "server", "esx", "esxi", "pve"), "server"),
+    (("vm",), "vm"),
 )
 
 _VENDOR_TYPES = {
@@ -33,7 +37,8 @@ _VENDOR_TYPES = {
 
 
 def guess_device_type(hostname: Optional[str], vendor: Optional[str] = None) -> str:
-    """core / distribution / access / router / firewall / ap / tor"""
+    """core / distribution / access / router / firewall / ap / tor /
+    camera / loadbalancer / server / vm"""
     # Whole tokens only, with any trailing number dropped: "core-sw-01" and
     # "dist2" say what they are, "decorator" and "scoreboard" do not.
     tokens = [

@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Settings - mf-topomon</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/theme-tactical.css">
     <script src="/static/js/theme.js"></script>
     <style>
         .settings-container {
@@ -452,8 +453,8 @@
                         <div class="form-group">
                             <label data-i18n="theme">Theme</label>
                             <select id="theme-select" onchange="changeTheme(this.value)">
-                                <option value="dark">🌙 Dark</option>
-                                <option value="light">☀️ Light</option>
+                                <option value="dark">🌙 Dark · Obsidian</option>
+                                <option value="light">☀️ Light · Chalk</option>
                             </select>
                         </div>
                     </div>
@@ -1250,9 +1251,9 @@
             document.getElementById('language-select').value = savedLang;
 
             // Theme
-            const savedTheme = localStorage.getItem('theme') || 'dark';
+            // theme.js has already applied it, and folded unknown values to dark
+            const savedTheme = document.documentElement.getAttribute('data-theme') || 'dark';
             document.getElementById('theme-select').value = savedTheme;
-            document.documentElement.setAttribute('data-theme', savedTheme);
         }
 
         // Load settings on page load

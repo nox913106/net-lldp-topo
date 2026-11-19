@@ -26,3 +26,18 @@ sha256sum static/vendor/d3-<版本>.min.js   # 更新上表、README 與測試�
 ```
 
 然後把 `static/index.html` 裡的 `<script src>` 指向新檔名，並刪掉舊的。
+
+## fonts/ — Chakra Petch 與 JetBrains Mono
+
+介面主題（`static/css/theme-tactical.css`）用的字型，同樣隨程式送出，
+不從 Google Fonts 抓。中文字沒有包含在內，退回系統的 Noto Sans TC。
+
+| 檔案 | 來源（npm） | 授權 | sha256 |
+|---|---|---|---|
+| `chakra-petch-latin-600-normal.woff2` | `@fontsource/chakra-petch@5.3.0` | OFL 1.1（`fonts/LICENSE.chakra-petch`） | `a5888696e9eb1b4bbbecc8eb3922b8369f49d4bddb72263e033cbd17f399be76` |
+| `chakra-petch-latin-700-normal.woff2` | `@fontsource/chakra-petch@5.3.0` | OFL 1.1 | `ce5095dc1cb200aaa939e38067a0677018d10e9f26ec38cdcf1557ac524fc775` |
+| `jetbrains-mono-latin-400-normal.woff2` | `@fontsource/jetbrains-mono@5.3.0` | OFL 1.1（`fonts/LICENSE.jetbrains-mono`） | `14425ba9c695763c1547f48a206b7aa60350a33ae23de09f0407877f3fcd89eb` |
+| `jetbrains-mono-latin-700-normal.woff2` | `@fontsource/jetbrains-mono@5.3.0` | OFL 1.1 | `d0d4e818808f2a0ba39b2b09d1989366f63494e295f003c7ef436697378507e8` |
+
+取法：`npm pack @fontsource/<名稱>@<版本>`，解開後從 `package/files/` 複製，
+`package/LICENSE` 存成 `fonts/LICENSE.<名稱>`。

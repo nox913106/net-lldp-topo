@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>mf-topomon</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/theme-tactical.css">
     <script src="/static/js/theme.js"></script>
 </head>
 
@@ -25,6 +26,8 @@
                 <a href="/settings" class="nav-item" data-view="settings" data-i18n="settings">Settings</a>
             </nav>
             <div class="header-actions">
+                <!-- app.js keeps it current: devices answering, open alerts, the time -->
+                <span class="ops-status" id="ops-status" aria-live="off"></span>
                 <span class="status-indicator online"></span>
                 <span id="last-update"><span data-i18n="lastUpdate">Last update</span>: <span id="last-update-time">--</span></span>
             </div>
