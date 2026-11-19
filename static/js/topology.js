@@ -122,7 +122,14 @@ class TopologyGraph {
             .force('link', d3.forceLink().id(d => d.id).distance(180))
             .force('charge', d3.forceManyBody().strength(-600))
             .force('center', d3.forceCenter(this.width / 2, this.height / 2))
-            .force('collision', d3.forceCollide().radius(80));
+            .force('collision', d3.forceCollide().radius(80))
+            // A weak pull toward the middle. forceCenter only moves the whole
+            // picture; without this, parts of a map that are not linked to
+            // each other (a group of two separate subtrees, say) push each
+            // other away for ever, and fitting the view then shrinks the
+            // devices to specks.
+            .force('x', d3.forceX(this.width / 2).strength(0.06))
+            .force('y', d3.forceY(this.height / 2).strength(0.06));
 
         // Once the layout has come to rest, fit it to the view - unless the
         // operator has moved the view in the meantime
@@ -156,6 +163,8 @@ class TopologyGraph {
     handleResize() {
         if (!this.measure()) return;
         this.simulation.force('center', d3.forceCenter(this.width / 2, this.height / 2));
+        this.simulation.force('x').x(this.width / 2);
+        this.simulation.force('y').y(this.height / 2);
         if (this.nodes && this.nodes.length) this.simulation.alpha(0.3).restart();
     }
 

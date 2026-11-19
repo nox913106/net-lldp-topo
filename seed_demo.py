@@ -38,6 +38,10 @@ DEVICE_MODELS = {
     'ruckus': ['R750', 'R650', 'R550', 'T350', 'H550'],
     'juniper': ['EX4300-48P', 'EX2300-24P', 'MX204', 'SRX340'],
     'extreme': ['X465-48P', 'X440-G2-24p', 'X690-48x-2q'],
+    'f5': ['BIG-IP i5800', 'BIG-IP i4800'],
+    'dell': ['PowerEdge R760', 'PowerEdge R660'],
+    'vmware': ['Virtual Machine'],
+    'hikvision': ['DS-2CD2387G2', 'DS-2DE4425IW'],
 }
 
 FIRMWARE_VERSIONS = {
@@ -49,6 +53,10 @@ FIRMWARE_VERSIONS = {
     'ruckus': ['6.1.2.0.3001', '5.2.2.0.2056'],
     'juniper': ['21.4R3.14', '22.2R2.17', '20.4R3-S6'],
     'extreme': ['32.5.1', '31.7.2', '32.1.1'],
+    'f5': ['17.1.1', '16.1.4'],
+    'dell': ['iDRAC 7.10'],
+    'vmware': ['Ubuntu 24.04'],
+    'hikvision': ['V5.7.15'],
 }
 
 
@@ -255,7 +263,45 @@ async def seed_demo_data():
             await db.refresh(d)
         print(f"  Created {len(routers)} routers")
         
-        all_devices = core_switches + dist_switches + access_switches + aps + firewalls + routers
+        # =============================================
+        # Data center: load balancers on the core, servers behind them,
+        # VMs on the first hypervisors (seen through the vSwitch's LLDP);
+        # CCTV cameras on the floor access switches
+        # =============================================
+        def make(hostname, ip, vendor, device_type, parent, offline=False):
+            device = Device(
+                hostname=hostname, ip_address=ip, vendor=vendor,
+                model=random.choice(DEVICE_MODELS[vendor]),
+                firmware_version=random.choice(FIRMWARE_VERSIONS[vendor]),
+                device_type=device_type,
+                status=DeviceStatus.OFFLINE if offline else DeviceStatus.MANAGED,
+                snmp_community="public",
+                cpu_percent=None if offline else random_cpu(),
+                memory_percent=None if offline else random_memory(),
+                last_seen=None if offline else datetime.utcnow() - timedelta(minutes=random.randint(1, 10)),
+                parent_device_id=parent.id,
+            )
+            db.add(device)
+            return device
+
+        lbs = [make(f"lb-{i:02d}", f"192.168.150.{i}", "f5", "loadbalancer", core_switches[i - 1]) for i in (1, 2)]
+        await db.commit()
+        for d in lbs:
+            await db.refresh(d)
+        servers = [make(f"srv-pve-{i:02d}", f"192.168.151.{i}", "dell", "server", lbs[(i - 1) % 2]) for i in range(1, 5)]
+        await db.commit()
+        for d in servers:
+            await db.refresh(d)
+        vms = [make(f"vm-app-{i:02d}", f"192.168.152.{i}", "vmware", "vm", servers[(i - 1) % 2]) for i in range(1, 5)]
+        cameras = [make(f"cam-{i:02d}", f"192.168.60.{i}", "hikvision", "camera",
+                        access_switches[(i * 5) % len(access_switches)], offline=(i == 3)) for i in range(1, 9)]
+        await db.commit()
+        for d in vms + cameras:
+            await db.refresh(d)
+        print(f"  Created {len(lbs)} load balancers, {len(servers)} servers, {len(vms)} VMs, {len(cameras)} cameras")
+
+        all_devices = (core_switches + dist_switches + access_switches + aps + firewalls + routers
+                       + lbs + servers + vms + cameras)
         print(f"\nTotal devices: {len(all_devices)}")
         
         # =============================================
@@ -267,7 +313,7 @@ async def seed_demo_data():
         for device in all_devices:
             if device.parent_device_id:
                 # Create link from parent to child
-                bw = 10000 if device.device_type in ['distribution', 'firewall', 'router'] else 1000
+                bw = 10000 if device.device_type in ['distribution', 'firewall', 'router', 'loadbalancer', 'server', 'vm'] else 1000
                 link = MergedLink(
                     device_a_id=device.parent_device_id,
                     device_b_id=device.id,
@@ -307,6 +353,8 @@ async def seed_demo_data():
             DeviceGroup(name="Wireless", description="All access points"),
             DeviceGroup(name="Security", description="Firewalls"),
             DeviceGroup(name="WAN Edge", description="WAN routers"),
+            DeviceGroup(name="Data Center", description="Load balancers, servers and VMs"),
+            DeviceGroup(name="CCTV", description="Security cameras"),
         ]
         
         for group in groups:
@@ -340,6 +388,11 @@ async def seed_demo_data():
         for rtr in routers:
             memberships.append(DeviceGroupMember(group_id=groups[6].id, device_id=rtr.id))
         
+        for d in lbs + servers + vms:
+            memberships.append(DeviceGroupMember(group_id=groups[7].id, device_id=d.id))
+        for d in cameras:
+            memberships.append(DeviceGroupMember(group_id=groups[8].id, device_id=d.id))
+
         for m in memberships:
             db.add(m)
         
@@ -526,7 +579,10 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Seed demo data")
     parser.add_argument("--cascade", action="store_true", help="Enable cascade offline scenario")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed, for the same data every run")
     args = parser.parse_args()
+    if args.seed is not None:
+        random.seed(args.seed)
     
     asyncio.run(seed_demo_data())
     
