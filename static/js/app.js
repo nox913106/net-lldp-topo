@@ -12,7 +12,24 @@ class App {
         this.apiBase = '/api/v1';
         this.topology = null;
         this.currentView = 'overview';
+        this.currentGroupId = null;
         this.refreshInterval = null;
+        this.groups = [];
+
+        // Focus. Manual: a device the operator clicked. Anomaly: the devices
+        // that are offline, focused on their own (auto focus) until they
+        // recover - or until the operator clears it, which holds until the
+        // set of offline devices changes.
+        this.manualFocus = false;
+        this.anomaly = { active: false, key: '', ackKey: '', ids: [], back: null };
+        this.autoFocus = this.pref('autoFocus', 'on') !== 'off';
+        // Rotation: the overview and each group in turn, for a wall screen
+        this.rotation = {
+            on: this.pref('rotate', 'off') === 'on',
+            interval: parseInt(this.pref('rotateInterval', '30'), 10) || 30,
+            index: 0,
+            left: 0,
+        };
 
         this.init();
     }
@@ -20,8 +37,23 @@ class App {
     async init() {
         // Initialize topology graph
         this.topology = new TopologyGraph('#topology-svg');
-        this.topology.onNodeClick = (node) => this.showNodeDetails(node);
+        this.topology.onNodeClick = (node) => {
+            this.showNodeDetails(node);
+            this.focusDevice(node.id);
+        };
         this.topology.onLinkClick = (link) => this.showLinkDetails(link);
+        this.topology.onFocusChange = (info) => this.renderFocusBar(info);
+        this.topology.getInsets = () => {
+            const svg = document.getElementById('topology-svg').getBoundingClientRect();
+            const bar = document.getElementById('focus-bar');
+            const panel = document.getElementById('detail-panel');
+            const inset = { top: 0, right: 0 };
+            if (bar && !bar.hidden) inset.top = bar.getBoundingClientRect().bottom - svg.top + 8;
+            if (panel && panel.style.display !== 'none') {
+                inset.right = Math.max(0, svg.right - panel.getBoundingClientRect().left + 8);
+            }
+            return inset;
+        };
 
         // Set up event listeners
         this.setupEventListeners();
@@ -33,6 +65,8 @@ class App {
 
         // Start auto-refresh
         this.startAutoRefresh();
+        this.startRotationClock();
+        this.checkAnomalies();
 
         // Handle highlight parameter from URL
         this.handleHighlightParam();
@@ -42,23 +76,19 @@ class App {
         const params = new URLSearchParams(window.location.search);
         const highlightId = params.get('highlight');
 
-        if (highlightId) {
-            // Find and highlight the device
-            const nodeId = highlightId;
-
-            // Wait a bit for D3 to finish rendering, then highlight
-            setTimeout(() => {
-                // Find the node data
-                const node = this.topology.nodes?.find(n => n.id === nodeId || n.id === parseInt(nodeId));
-
-                if (node) {
-                    // Show node details panel
-                    this.showNodeDetails(node);
-
-                    // Highlight in the SVG
-                    this.highlightDevice(nodeId);
+        const focusId = params.get('focus') || highlightId;
+        if (focusId) {
+            // The whole map, so the device's path is on it, then focus it
+            (async () => {
+                if (!this.topology.nodes?.some(n => String(n.id) === String(focusId))) {
+                    await this.showView('full', null);
                 }
-            }, 500);
+                const node = this.topology.nodes?.find(n => String(n.id) === String(focusId));
+                if (node) {
+                    this.showNodeDetails(node);
+                    this.focusDevice(node.id);
+                }
+            })();
 
             // Clean up URL (remove the highlight param)
             history.replaceState({}, '', '/');
@@ -116,7 +146,7 @@ class App {
         }
 
         // View selector buttons
-        document.querySelectorAll('.view-btn').forEach(btn => {
+        document.querySelectorAll('.view-btn[data-view]').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 this.setView(e.target.dataset.view);
             });
@@ -125,7 +155,54 @@ class App {
         // Refresh button
         document.getElementById('refresh-btn')?.addEventListener('click', () => {
             this.loadTopology();
+            this.checkAnomalies();
         });
+
+        // Focus: Esc or a click on the empty map clears it
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !document.getElementById('hierarchy-modal')) {
+                this.clearFocus();
+                this.hideDetailPanel();
+            }
+        });
+        const svgEl = document.getElementById('topology-svg');
+        svgEl?.addEventListener('click', (e) => {
+            if (e.target === svgEl) this.clearFocus();
+        });
+        // Looking around the map holds the rotation for a full interval
+        ['wheel', 'pointerdown'].forEach(type => svgEl?.addEventListener(type, () => {
+            this.rotation.left = this.rotation.interval;
+        }, { passive: true }));
+
+        const autoBtn = document.getElementById('autofocus-btn');
+        const markAuto = () => autoBtn?.setAttribute('aria-pressed', String(this.autoFocus));
+        autoBtn?.addEventListener('click', () => {
+            this.autoFocus = !this.autoFocus;
+            this.setPref('autoFocus', this.autoFocus ? 'on' : 'off');
+            markAuto();
+            if (this.autoFocus) this.checkAnomalies();
+            else if (this.anomaly.active && !this.manualFocus) this.leaveAnomaly();
+        });
+        markAuto();
+
+        const rotateBtn = document.getElementById('rotate-btn');
+        const rotateSel = document.getElementById('rotate-interval');
+        const markRotate = () => rotateBtn?.setAttribute('aria-pressed', String(this.rotation.on));
+        if (rotateSel) rotateSel.value = String(this.rotation.interval);
+        rotateBtn?.addEventListener('click', () => {
+            this.rotation.on = !this.rotation.on;
+            this.setPref('rotate', this.rotation.on ? 'on' : 'off');
+            this.rotation.left = this.rotation.interval;
+            markRotate();
+            this.renderRotationStatus();
+        });
+        rotateSel?.addEventListener('change', () => {
+            this.rotation.interval = parseInt(rotateSel.value, 10) || 30;
+            this.rotation.left = this.rotation.interval;
+            this.setPref('rotateInterval', String(this.rotation.interval));
+            this.renderRotationStatus();
+        });
+        markRotate();
 
         // Fit button
         // Tree or free layout; the choice is remembered (topology.js)
@@ -145,7 +222,7 @@ class App {
         // Group select
         document.getElementById('group-select')?.addEventListener('change', (e) => {
             if (e.target.value) {
-                this.loadTopology('group', e.target.value);
+                this.showView('group', parseInt(e.target.value, 10));
             }
         });
 
@@ -172,33 +249,32 @@ class App {
     }
 
     async setView(view) {
-        // Update active button
-        document.querySelectorAll('.view-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.view === view);
-        });
-
-        // Show/hide group select
-        const groupSelect = document.getElementById('group-select');
-        if (groupSelect) {
-            groupSelect.style.display = view === 'group' ? 'block' : 'none';
-        }
-
-        this.currentView = view;
-
-        // For group view, get selected group ID
         if (view === 'group') {
-            const groupSelect = document.getElementById('group-select');
-            const groupId = groupSelect?.value;
-            if (groupId) {
-                await this.loadTopology(view, parseInt(groupId));
-            }
+            const groupId = parseInt(document.getElementById('group-select')?.value, 10);
             // Don't load if no group selected yet
+            await this.showView(view, Number.isNaN(groupId) ? null : groupId);
         } else {
-            await this.loadTopology(view);
+            await this.showView(view, null);
         }
     }
 
-    async loadTopology(view = this.currentView, groupId = null) {
+    // Switch the map to a view (and group), keeping the buttons in step
+    async showView(view, groupId = null, { fit } = {}) {
+        document.querySelectorAll('.view-btn[data-view]').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.view === view);
+        });
+        const groupSelect = document.getElementById('group-select');
+        if (groupSelect) {
+            groupSelect.style.display = view === 'group' ? 'block' : 'none';
+            if (view === 'group' && groupId) groupSelect.value = String(groupId);
+        }
+        this.currentView = view;
+        this.currentGroupId = view === 'group' ? groupId : null;
+        if (view === 'group' && !groupId) return;
+        await this.loadTopology(view, this.currentGroupId, { fit });
+    }
+
+    async loadTopology(view = this.currentView, groupId = this.currentGroupId, { fit } = {}) {
         this.showLoading(true);
 
         try {
@@ -213,7 +289,7 @@ class App {
             // view or group - but not on the minute's refresh, which would
             // throw away wherever the operator had zoomed to
             const key = `${view}:${groupId || ''}`;
-            this.topology.setData(data, { fit: key !== this.lastTopologyKey });
+            this.topology.setData(data, { fit: fit ?? key !== this.lastTopologyKey });
             this.lastTopologyKey = key;
             this.updateLastUpdate(data.last_updated);
             this.opsCounts = {
@@ -252,6 +328,7 @@ class App {
             if (!response.ok) throw new Error('Failed to load groups');
 
             const groups = await response.json();
+            this.groups = groups;
             this.renderGroupOptions(groups);
 
         } catch (error) {
@@ -331,6 +408,163 @@ class App {
 
         select.innerHTML = `<option value="">${t('selectGroup')}</option>` +
             groups.map(g => `<option value="${g.id}">${escapeHtml(g.name)} (${g.device_count})</option>`).join('');
+        if (this.currentGroupId) select.value = String(this.currentGroupId);
+    }
+
+    // -- Preferences (per browser; a blocked storage just means defaults)
+    pref(key, fallback) {
+        try { return localStorage.getItem(key) ?? fallback; } catch (e) { return fallback; }
+    }
+
+    setPref(key, value) {
+        try { localStorage.setItem(key, value); } catch (e) { /* blocked */ }
+    }
+
+    // -- Focus -------------------------------------------------------------
+
+    focusDevice(id) {
+        this.manualFocus = true;
+        this.topology.focusOn([String(id)]);
+        this.renderRotationStatus();
+    }
+
+    // Esc, the clear button, a click on the empty map
+    clearFocus() {
+        if (this.manualFocus) {
+            this.manualFocus = false;
+            if (this.anomaly.active) {
+                // back to the devices that are still offline
+                this.topology.focusOn(this.anomaly.ids);
+            } else {
+                this.topology.clearFocus();
+                this.checkAnomalies();
+            }
+        } else if (this.anomaly.active) {
+            // Seen it: leave it until the set of offline devices changes
+            this.anomaly.ackKey = this.anomaly.key;
+            this.leaveAnomaly();
+        }
+        this.renderRotationStatus();
+    }
+
+    async checkAnomalies() {
+        let ids;
+        try {
+            const response = await fetch(`${this.apiBase}/devices?status=offline&limit=0`);
+            if (!response.ok) return;
+            ids = (await response.json()).devices.map(d => String(d.id)).sort();
+        } catch (e) {
+            return;
+        }
+        const a = this.anomaly;
+        const key = ids.join(',');
+        if (!ids.length) {
+            // Everything is back: the normal view again, unfocused
+            a.ackKey = '';
+            if (a.active) await this.leaveAnomaly();
+            return;
+        }
+        if (!this.autoFocus || this.manualFocus || key === a.ackKey) return;
+        if (!a.active) {
+            a.active = true;
+            a.back = { view: this.currentView, groupId: this.currentGroupId };
+        }
+        a.ids = ids;
+        // The whole map: a group view does not carry the way up to the core
+        if (this.currentView !== 'full') await this.showView('full', null, { fit: false });
+        if (key !== a.key || !this.topology.focus) {
+            a.key = key;
+            this.topology.focusOn(ids);
+        }
+        this.renderRotationStatus();
+    }
+
+    async leaveAnomaly() {
+        const a = this.anomaly;
+        a.active = false;
+        a.key = '';
+        this.topology.clearFocus({ fit: false });
+        const back = a.back || { view: 'overview', groupId: null };
+        a.back = null;
+        await this.showView(back.view, back.groupId, { fit: true });
+        this.rotation.left = this.rotation.interval;
+        this.renderRotationStatus();
+    }
+
+    renderFocusBar(info) {
+        const bar = document.getElementById('focus-bar');
+        if (!bar) return;
+        if (!info) {
+            bar.hidden = true;
+            bar.innerHTML = '';
+            return;
+        }
+        const auto = this.anomaly.active && !this.manualFocus;
+        bar.classList.toggle('auto', auto);
+        const typeName = { wlc: t('wlc'), nvr: t('nvr'), core: t('core') };
+        const paths = info.paths.map(p => {
+            const hops = p.chain.map(h => `<span class="focus-hop ${h.status === 'offline' ? 'offline' : ''}" data-id="${escapeHtml(h.id)}">${escapeHtml(h.hostname)}</span>`)
+                .join('<span class="focus-arrow">→</span>');
+            const missing = p.found ? '' : ` <span class="focus-arrow">${escapeHtml(t('focusNoTarget').replace('{t}', typeName[p.target] || p.target))}</span>`;
+            return `<div class="focus-path">${hops}${missing}</div>`;
+        }).join('');
+        bar.innerHTML = `
+            <div class="focus-bar-head">
+                <strong>${escapeHtml(t(auto ? 'focusAutoLabel' : 'focusLabel'))}</strong>
+                ${info.impactCount ? `<span class="focus-impact-count">${escapeHtml(t('focusImpact').replace('{n}', info.impactCount))}</span>` : ''}
+                <button class="control-btn" id="focus-clear">✕ ${escapeHtml(t('focusClear'))}</button>
+            </div>
+            ${paths}`;
+        bar.hidden = false;
+        bar.querySelector('#focus-clear').addEventListener('click', () => this.clearFocus());
+        bar.querySelectorAll('.focus-hop').forEach(el => el.addEventListener('click', () => {
+            const node = this.topology.nodes.find(n => String(n.id) === el.dataset.id);
+            if (node) this.showNodeDetails(node);
+        }));
+    }
+
+    // -- Rotation ----------------------------------------------------------
+
+    rotationItems() {
+        return [{ view: 'overview', groupId: null }].concat(
+            (this.groups || []).filter(g => g.device_count > 0)
+                .map(g => ({ view: 'group', groupId: g.id, name: g.name })));
+    }
+
+    rotationPaused() {
+        return this.manualFocus || this.anomaly.active || document.hidden;
+    }
+
+    startRotationClock() {
+        this.rotation.left = this.rotation.interval;
+        this.renderRotationStatus();
+        setInterval(() => {
+            if (!this.rotation.on || this.rotationPaused()) { this.renderRotationStatus(); return; }
+            this.rotation.left -= 1;
+            if (this.rotation.left <= 0) this.rotateNext();
+            this.renderRotationStatus();
+        }, 1000);
+    }
+
+    async rotateNext() {
+        const items = this.rotationItems();
+        this.rotation.left = this.rotation.interval;
+        if (items.length < 2) return;
+        // carry on from wherever the map is now
+        const at = items.findIndex(i => i.view === this.currentView && i.groupId === this.currentGroupId);
+        this.rotation.index = ((at >= 0 ? at : this.rotation.index) + 1) % items.length;
+        const next = items[this.rotation.index];
+        await this.showView(next.view, next.groupId);
+    }
+
+    renderRotationStatus() {
+        const el = document.getElementById('rotate-status');
+        if (!el) return;
+        if (!this.rotation.on) { el.textContent = ''; return; }
+        const items = this.rotationItems();
+        const at = items.findIndex(i => i.view === this.currentView && i.groupId === this.currentGroupId);
+        const pos = `${at >= 0 ? at + 1 : '-'}/${items.length}`;
+        el.textContent = this.rotationPaused() ? `${pos} ⏸` : `${pos} · ${this.rotation.left}s`;
     }
 
     showNodeDetails(node) {
@@ -558,6 +792,9 @@ class App {
             this.loadTopology();
             this.loadAlerts();
         }, 60000);
+        // Offline devices are looked for more often than the map is redrawn:
+        // the auto focus is only as quick as this
+        this.anomalyInterval = setInterval(() => this.checkAnomalies(), 15000);
     }
 
     stopAutoRefresh() {

@@ -50,6 +50,17 @@
                         <button class="view-btn layout-btn" data-layout="tree" data-i18n="layoutTree">Tree</button>
                         <button class="view-btn layout-btn" data-layout="force" data-i18n="layoutForce">Free</button>
                     </div>
+                    <button id="autofocus-btn" class="control-btn toggle-btn" data-i18n-title="autoFocusTitle" aria-pressed="true">◎ <span data-i18n="autoFocus">Auto focus</span></button>
+                    <div class="rotate-control">
+                        <button id="rotate-btn" class="control-btn toggle-btn" data-i18n-title="rotateTitle" aria-pressed="false">⟳ <span data-i18n="rotate">Rotate</span></button>
+                        <select id="rotate-interval" class="control-select" aria-label="Rotate interval">
+                            <option value="15">15s</option>
+                            <option value="30" selected>30s</option>
+                            <option value="60">60s</option>
+                            <option value="120">2m</option>
+                        </select>
+                        <span class="rotate-status" id="rotate-status"></span>
+                    </div>
                     <button id="refresh-btn" class="control-btn">🔄 <span data-i18n="refresh">Refresh</span></button>
                     <button id="fit-btn" class="control-btn">⊡ <span data-i18n="fit">Fit</span></button>
                 </div>
@@ -58,6 +69,9 @@
             <!-- Topology Container -->
             <div class="topology-container">
                 <svg id="topology-svg"></svg>
+
+                <!-- The focused path, spelt out (app.js fills it) -->
+                <div class="focus-bar" id="focus-bar" hidden aria-live="polite"></div>
 
                 <!-- Loading Overlay -->
                 <div id="loading-overlay" class="loading-overlay" style="display: none;">

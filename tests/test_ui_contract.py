@@ -541,3 +541,23 @@ def test_a_timestamp_written_now_is_now_in_the_database():
     # created_at is the database's now(); last_seen is this process's
     assert abs((stored - created).total_seconds()) < 30
     assert stored.tzinfo is not None, "timestamps come back aware on every database"
+
+
+def test_the_map_page_has_focus_and_rotation_wired_up():
+    """The focus bar, auto focus and rotation controls are on the page, the
+    script looks for offline devices through a route that filters on it,
+    and every new string exists in all three languages."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    app_js = (STATIC / "js" / "app.js").read_text(encoding="utf-8")
+    topo_js = (STATIC / "js" / "topology.js").read_text(encoding="utf-8")
+    i18n_js = (STATIC / "js" / "i18n.js").read_text(encoding="utf-8")
+    for element in ('id="focus-bar"', 'id="autofocus-btn"', 'id="rotate-btn"', 'id="rotate-interval"'):
+        assert element in html
+    assert "/devices?status=offline" in app_js
+    for method in ("focusOn(", "clearFocus(", "zoomToFocus(", "computeFocus("):
+        assert method in topo_js
+    # the tree is the default layout now
+    assert "saved === 'force' ? 'force' : 'tree'" in topo_js
+    for key in ("autoFocus", "rotate", "focusLabel", "focusAutoLabel", "focusClear",
+                "focusImpact", "focusNoTarget"):
+        assert len(re.findall(rf"^\s+{key}: '", i18n_js, re.M)) == 3, key

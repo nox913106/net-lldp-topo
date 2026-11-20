@@ -18,13 +18,18 @@ class TopologyGraph {
         this.onNodeClick = null;
         this.onLinkClick = null;
 
-        // 'tree' (devices hung under their upstream device) or 'force' (the
-        // free layout). Remembered per browser. The tree is a preview for
-        // now, so the free layout stays the default until it is adopted.
+        // 'tree' (devices hung under their upstream device, the default) or
+        // 'force' (the free layout). Remembered per browser.
         let saved = null;
         try { saved = localStorage.getItem('topologyLayout'); } catch (e) { /* blocked */ }
-        this.layoutMode = saved === 'tree' ? 'tree' : 'force';
+        this.layoutMode = saved === 'force' ? 'force' : 'tree';
         this.treeBuses = [];
+
+        // Focus: the devices being looked at (ids), what they depend on and
+        // what depends on them. Survives the minute's refresh.
+        this.focusIds = null;
+        this.focus = null;
+        this.onFocusChange = null;
 
         // Device icons (Cisco-style SVG paths)
         // Device icons: tactical line art, one stroke weight, drawn in
@@ -142,6 +147,8 @@ class TopologyGraph {
         this.g = this.svg.append('g');
 
         this.linksGroup = this.g.append('g').attr('class', 'links');
+        // The focused path, drawn over the faded map and under the devices
+        this.focusGroup = this.g.append('g').attr('class', 'focus-routes');
         this.nodesGroup = this.g.append('g').attr('class', 'nodes');
 
         this.simulation = d3.forceSimulation()
@@ -259,8 +266,9 @@ class TopologyGraph {
     render() {
         this.linksGroup.selectAll('*').remove();
         this.nodesGroup.selectAll('*').remove();
+        this.focusGroup.selectAll('*').remove();
 
-        if (this.nodes.length === 0) return;
+        if (this.nodes.length === 0) { this.refreshFocus(); return; }
 
         const tree = this.layoutMode === 'tree';
         if (tree) {
@@ -412,6 +420,7 @@ class TopologyGraph {
             linkElements.select('path').attr('d', d => d.route ||
                 `M${end(d.source).x},${end(d.source).y} L${end(d.target).x},${end(d.target).y}`);
             nodeElements.attr('transform', d => `translate(${d.x}, ${d.y})`);
+            this.refreshFocus();
             return;
         }
 
@@ -425,10 +434,12 @@ class TopologyGraph {
                 .attr('y', d => (d.source.y + d.target.y) / 2);
 
             nodeElements.attr('transform', d => `translate(${d.x}, ${d.y})`);
+            if (this.focus) this.drawFocusRoutes();
         });
 
         this.simulation.force('link').links(this.links);
         this.simulation.alpha(this.carriedOver ? 0.1 : 1).restart();
+        this.refreshFocus();
     }
 
     // -- Tree layout -----------------------------------------------------------
@@ -477,8 +488,9 @@ class TopologyGraph {
         for (const n of this.nodes) { n.fx = null; n.fy = null; }
         this.carriedOver = false;
         this.render();
-        if (this.layoutMode === 'tree') this.fitView();
-        else this.autoFit = true;
+        if (this.focus && this.layoutMode === 'tree') this.zoomToFocus();
+        else if (this.layoutMode === 'tree') this.fitView();
+        else this.autoFit = !this.focus;
     }
 
     // Which link is which device's uplink, and every device's children
@@ -574,6 +586,7 @@ class TopologyGraph {
     computeTreeLayout() {
         const T = TopologyGraph.TREE;
         const { byId, roots, children, uplink, treeLinks } = this.buildTree();
+        const endId = e => (typeof e === 'object' ? e.id : e);
         const blocks = new Map();
         // Every block aims for the shape of the map on screen, so that when
         // the whole tree is fitted it fills the space instead of a corner of it
@@ -678,6 +691,7 @@ class TopologyGraph {
         // Positions, top down
         const buses = [];
         const entry = new Map();   // child id -> y its own link starts at (on its bus or column)
+        const busOf = new Map();   // child id -> y of the bus its row hangs from
         const place = (id, bx, by) => {
             const node = byId.get(id);
             node.x = bx + T.W / 2;
@@ -703,6 +717,7 @@ class TopologyGraph {
                         for (const leaf of item.ids) {
                             place(leaf, x, y);
                             entry.set(leaf, from);
+                            busOf.set(leaf, busY);
                             from = byId.get(leaf).y - 12;
                             y += T.H + STACK;
                         }
@@ -710,6 +725,7 @@ class TopologyGraph {
                     } else {
                         place(key, x, rowTop);
                         entry.set(key, busY);
+                        busOf.set(key, busY);
                     }
                     lastX = x;
                     x += sizeOf(key).w + T.GAP_X;
@@ -741,11 +757,17 @@ class TopologyGraph {
             link.labelX = x + 6;
             link.labelY = child.y - 12 - 6;
             link.inTree = true;
+            // The whole way from the parent, along the trunk and the bus:
+            // what the focus draws, when the shared lines are faded out
+            const par = byId.get(endId(link.source) === childId ? endId(link.target) : endId(link.source));
+            const trunkX = par.x - T.W / 2 + T.TRUNK;
+            link.fullRoute = `M${par.x - 29},${par.y + 12} H${trunkX} V${busOf.get(childId)} H${x} V${child.y - 12} H${child.x - 29}`;
         }
         for (const link of this.links) {
             if (treeLinks.has(link)) continue;
             link.inTree = false;
             link.route = null;
+            link.fullRoute = null;
         }
         this.treeBuses = buses;
     }
@@ -780,6 +802,185 @@ class TopologyGraph {
     formatBandwidth(mbps) {
         if (mbps >= 1000) return `${mbps / 1000}G`;
         return `${mbps}M`;
+    }
+
+    // -- Focus ---------------------------------------------------------------
+    //
+    // One device (or the devices in trouble) and only what matters for it:
+    // the way to what it depends on - an access point's controller, a
+    // camera's recorder, otherwise the core - and the devices hanging below
+    // it, which lose service with it. Everything else fades out, and the
+    // view zooms to the path. Clearing it fits the whole map again.
+
+    focusTargetType(node) {
+        const type = this.getDeviceType(node);
+        if (type === 'ap') return 'wlc';
+        if (type === 'camera') return 'nvr';
+        return 'core';
+    }
+
+    computeFocus(ids) {
+        const { byId, children, uplink } = this.buildTree();
+        const endId = e => (typeof e === 'object' ? e.id : e);
+        const treeLinks = new Set(uplink.values());
+        const adjacency = new Map(this.nodes.map(n => [n.id, []]));
+        for (const link of this.links) {
+            const a = endId(link.source), b = endId(link.target);
+            if (!adjacency.has(a) || !adjacency.has(b)) continue;
+            // a tree link is the expected way; a second uplink only when shorter
+            const w = treeLinks.has(link) ? 1 : 1.5;
+            adjacency.get(a).push([b, link, w]);
+            adjacency.get(b).push([a, link, w]);
+        }
+        const parentOf = new Map();
+        for (const [p, kids] of children) for (const k of kids) parentOf.set(k, p);
+        const linkTo = new Map();
+        for (const [child, link] of uplink) linkTo.set(child, link);
+
+        const keep = new Set(), impact = new Set(), keepLinks = new Set(), impactLinks = new Set();
+        const paths = [];
+        for (const id of ids) {
+            const node = byId.get(id);
+            if (!node) continue;
+            const want = this.focusTargetType(node);
+            // Cheapest way to the nearest device of the wanted type
+            const dist = new Map([[id, 0]]);
+            const prev = new Map();
+            const done = new Set();
+            let found = null;
+            for (;;) {
+                let cur = null, best = Infinity;
+                for (const [k, d] of dist) if (!done.has(k) && d < best) { best = d; cur = k; }
+                if (cur === null) break;
+                done.add(cur);
+                if (this.getDeviceType(byId.get(cur)) === want) { found = cur; break; }
+                for (const [other, link, w] of adjacency.get(cur)) {
+                    if (done.has(other)) continue;
+                    if (best + w < (dist.get(other) ?? Infinity)) {
+                        dist.set(other, best + w);
+                        prev.set(other, [cur, link]);
+                    }
+                }
+            }
+            const chain = [];
+            if (found !== null) {
+                for (let cur = found; cur !== undefined; cur = prev.get(cur)?.[0]) {
+                    chain.unshift(cur);
+                    const step = prev.get(cur);
+                    if (step) keepLinks.add(step[1]);
+                }
+            } else {
+                // Nothing of that type on this map: up the tree to its root
+                for (let cur = id; cur !== undefined; cur = parentOf.get(cur)) {
+                    chain.push(cur);
+                    if (linkTo.has(cur)) keepLinks.add(linkTo.get(cur));
+                }
+            }
+            chain.forEach(c => keep.add(c));
+            paths.push({ id, target: want, found: found !== null, chain: found !== null ? chain : chain.slice() });
+            // Everything that hangs below it
+            const stack = [...(children.get(id) || [])];
+            while (stack.length) {
+                const cur = stack.pop();
+                impact.add(cur);
+                if (linkTo.has(cur)) impactLinks.add(linkTo.get(cur));
+                stack.push(...(children.get(cur) || []));
+            }
+        }
+        for (const k of keep) impact.delete(k);
+        return { ids: ids.filter(i => byId.has(i)), keep, impact, keepLinks, impactLinks, paths, byId };
+    }
+
+    // ids: the devices to focus; zoom: frame the path
+    focusOn(ids, { zoom = true } = {}) {
+        this.focusIds = (ids || []).map(String);
+        this.refreshFocus();
+        if (zoom && this.focus) this.zoomToFocus();
+    }
+
+    clearFocus({ fit = true } = {}) {
+        const had = this.focusIds !== null;
+        this.focusIds = null;
+        this.refreshFocus();
+        if (fit && had) this.fitView();
+    }
+
+    // Recompute after a render (the refresh brings new node objects) and
+    // repaint; a focused device that left the map drops out of the focus
+    refreshFocus() {
+        const before = this.focus ? this.focus.ids.join(',') : '';
+        this.focus = this.focusIds && this.nodes.length ? this.computeFocus(this.focusIds) : null;
+        if (this.focus && !this.focus.ids.length) this.focus = null;
+        const on = !!this.focus;
+        const f = this.focus;
+        this.svg.classed('focus-mode', on);
+        this.nodesGroup.selectAll('g.node')
+            .classed('focus-keep', d => on && f.keep.has(d.id))
+            .classed('focus-origin', d => on && f.ids.includes(d.id))
+            .classed('focus-impact', d => on && f.impact.has(d.id));
+        this.linksGroup.selectAll('g.link-group')
+            .classed('focus-keep', d => on && f.keepLinks.has(d))
+            .classed('focus-impact', d => on && f.impactLinks.has(d));
+        this.drawFocusRoutes();
+        const after = on ? f.ids.join(',') : '';
+        if (this.onFocusChange && (before !== after || on)) this.onFocusChange(this.focusInfo());
+    }
+
+    drawFocusRoutes() {
+        const f = this.focus;
+        const endOf = e => (typeof e === 'object' ? e : f.byId.get(e));
+        const routeOf = l => (this.layoutMode === 'tree' && l.fullRoute) ? l.fullRoute
+            : `M${endOf(l.source).x},${endOf(l.source).y} L${endOf(l.target).x},${endOf(l.target).y}`;
+        const data = f ? [...f.impactLinks].map(l => ({ l, cls: 'impact' }))
+            .concat([...f.keepLinks].map(l => ({ l, cls: 'path' }))) : [];
+        this.focusGroup.selectAll('path').data(data).join('path')
+            .attr('class', d => `focus-route ${d.cls} status-${d.l.status}`)
+            .attr('d', d => routeOf(d.l));
+    }
+
+    // What the page shows above the map: each focused device's path, named
+    focusInfo() {
+        const f = this.focus;
+        if (!f) return null;
+        const view = id => {
+            const n = f.byId.get(id);
+            return { id, hostname: n.hostname, type: this.getDeviceType(n), status: n.status };
+        };
+        return {
+            ids: f.ids,
+            impactCount: f.impact.size,
+            paths: f.paths.map(p => ({ ...p, chain: p.chain.map(view) })),
+        };
+    }
+
+    zoomToFocus() {
+        const f = this.focus;
+        if (!f) return;
+        this.measure();
+        // the devices that lose service too, while there are few enough of
+        // them that the path stays big
+        const ids = f.impact.size <= 12 ? [...f.keep, ...f.impact] : [...f.keep];
+        const pts = ids.map(id => f.byId.get(id)).filter(n => n && n.x != null);
+        if (!pts.length) return;
+        const xs = pts.map(n => n.x), ys = pts.map(n => n.y);
+        // a device's box around its centre: icon, name and address
+        const x0 = Math.min(...xs) - 90, x1 = Math.max(...xs) + 90;
+        const y0 = Math.min(...ys) - 60, y1 = Math.max(...ys) + 90;
+        // What the page lays over the map (the focus bar, the side panel)
+        // is not room to draw in
+        const inset = Object.assign({ top: 0, right: 0, bottom: 0, left: 0 },
+            this.getInsets ? this.getInsets() : {});
+        const w = Math.max(100, this.width - inset.left - inset.right);
+        const h = Math.max(100, this.height - inset.top - inset.bottom);
+        const scale = Math.max(0.1, Math.min(1.6, w / (x1 - x0), h / (y1 - y0)));
+        this.autoFit = false;
+        this.svg.transition().duration(750).call(
+            this.zoom.transform,
+            d3.zoomIdentity
+                .translate(inset.left + w / 2, inset.top + h / 2)
+                .scale(scale)
+                .translate(-(x0 + x1) / 2, -(y0 + y1) / 2)
+        );
     }
 
     fitView() {
