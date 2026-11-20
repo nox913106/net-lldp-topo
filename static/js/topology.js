@@ -137,6 +137,8 @@ class TopologyGraph {
             .scaleExtent([0.1, 4])
             .on('zoom', (event) => {
                 this.g.attr('transform', event.transform);
+                // Close enough to read more: the links name their interfaces
+                this.svg.classed('zoom-detail', event.transform.k >= TopologyGraph.DETAIL_ZOOM);
                 // A zoom or pan by hand: from here on the view is the
                 // operator's, and the automatic fit leaves it alone
                 if (event.sourceEvent) this.autoFit = false;
@@ -296,18 +298,36 @@ class TopologyGraph {
         const utilization = d => Math.max(d.utilization_in_percent || 0, d.utilization_out_percent || 0);
         if (tree) {
             // One small label beside each uplink, not two in the middle of it
-            linkElements.filter(d => d.inTree).append('text')
-                .attr('class', 'link-label tree-link-label')
+            const treeLabel = linkElements.filter(d => d.inTree);
+            treeLabel.append('text')
+                .attr('class', 'link-label tree-link-label lbl-short')
                 .attr('x', d => d.labelX)
                 .attr('y', d => d.labelY)
                 .text(d => `${this.formatBandwidth(d.total_bandwidth_mbps)} ${utilization(d).toFixed(0)}%`);
+            // Zoomed in: the interfaces too, the upstream device's first
+            treeLabel.append('text')
+                .attr('class', 'link-label tree-link-label lbl-detail')
+                .attr('x', d => d.labelX)
+                .attr('y', d => d.detailY)
+                .text(d => {
+                    const ports = this.portLabel(d, d.parentId);
+                    return `${ports ? ports + ' ' : ''}${this.formatBandwidth(d.total_bandwidth_mbps)} ${utilization(d).toFixed(0)}%`;
+                });
         } else {
             // Link bandwidth labels
             linkElements.append('text')
-                .attr('class', 'link-label')
+                .attr('class', 'link-label lbl-short')
                 .attr('text-anchor', 'middle')
                 .attr('dy', -8)
                 .text(d => this.formatBandwidth(d.total_bandwidth_mbps));
+            linkElements.append('text')
+                .attr('class', 'link-label lbl-detail')
+                .attr('text-anchor', 'middle')
+                .attr('dy', -8)
+                .text(d => {
+                    const ports = this.portLabel(d, this.endId(d.source));
+                    return `${ports ? ports + ' ' : ''}${this.formatBandwidth(d.total_bandwidth_mbps)}`;
+                });
 
             // Link utilization labels
             linkElements.append('text')
@@ -598,7 +618,7 @@ class TopologyGraph {
         // stacked under one another on a vertical line, like a file tree.
         // Stacking the ends is what keeps the picture dense: a row of them
         // would make every row as wide as the longest list of APs.
-        const STACK = 8;                           // between stacked devices
+        const STACK = 14;                          // between stacked devices (room for a label)
         const MAX_STACK = 4;                       // devices per column
         const items = new Map();                   // id or 'col:<parent>:<i>' -> {w, h, ids?}
         const sizeOf = key => items.get(key) || blocks.get(key);
@@ -755,6 +775,11 @@ class TopologyGraph {
             // bus (or the device above it in a column) into the device
             link.route = `M${x},${from} V${child.y - 12} H${child.x - 29}`;
             link.labelX = x + 6;
+            // the longer, zoomed-in label: in the gap above the device's box,
+            // clear of its icon
+            link.detailY = child.y - T.CY - 3;
+            link.childId = childId;
+            link.parentId = endId(link.source) === childId ? endId(link.target) : endId(link.source);
             link.labelY = child.y - 12 - 6;
             link.inTree = true;
             // The whole way from the parent, along the trunk and the bus:
@@ -802,6 +827,45 @@ class TopologyGraph {
     formatBandwidth(mbps) {
         if (mbps >= 1000) return `${mbps / 1000}G`;
         return `${mbps}M`;
+    }
+
+    // -- Interfaces ----------------------------------------------------------
+
+    static DETAIL_ZOOM = 1;
+
+    endId(e) { return typeof e === 'object' && e !== null ? e.id : e; }
+
+    // GigabitEthernet1/0/45 -> Gi1/0/45: the names as the CLI abbreviates them
+    static shortPort(name) {
+        if (!name) return '';
+        const map = [
+            [/^HundredGig(abit)?E(thernet)?/i, 'Hu'], [/^FortyGig(abit)?E(thernet)?/i, 'Fo'],
+            [/^TwentyFiveGig(abit)?E(thernet)?/i, 'Twe'], [/^TenGig(abit)?E(thernet)?/i, 'Te'],
+            [/^GigabitEthernet/i, 'Gi'], [/^FastEthernet/i, 'Fa'], [/^Ethernet/i, 'Eth'],
+            [/^Port-?channel/i, 'Po'], [/^Bundle-Ether/i, 'BE'],
+        ];
+        for (const [re, short] of map) if (re.test(name)) return name.replace(re, short);
+        return name;
+    }
+
+    // The link's interfaces seen from one of its devices: {near, far, more}
+    portsOf(link, fromId) {
+        const pairs = link.port_details || [];
+        if (!pairs.length) return null;
+        const aSide = String(this.endId(link.source)) === String(fromId);
+        const p = pairs[0];
+        return {
+            near: TopologyGraph.shortPort(aSide ? p.local_port : p.remote_port),
+            far: TopologyGraph.shortPort(aSide ? p.remote_port : p.local_port),
+            more: pairs.length - 1,
+        };
+    }
+
+    // "Gi0/45⇄Gi0/1" (fromId's end first), "+1" for each further member of a bundle
+    portLabel(link, fromId) {
+        const p = this.portsOf(link, fromId);
+        if (!p || (!p.near && !p.far)) return '';
+        return `${p.near || '?'}⇄${p.far || '?'}${p.more ? ` +${p.more}` : ''}`;
     }
 
     // -- Focus ---------------------------------------------------------------
@@ -863,21 +927,22 @@ class TopologyGraph {
                 }
             }
             const chain = [];
+            const hops = [];      // hops[i]: the link between chain[i] and chain[i + 1]
             if (found !== null) {
                 for (let cur = found; cur !== undefined; cur = prev.get(cur)?.[0]) {
                     chain.unshift(cur);
                     const step = prev.get(cur);
-                    if (step) keepLinks.add(step[1]);
+                    if (step) { keepLinks.add(step[1]); hops.unshift(step[1]); }
                 }
             } else {
                 // Nothing of that type on this map: up the tree to its root
                 for (let cur = id; cur !== undefined; cur = parentOf.get(cur)) {
                     chain.push(cur);
-                    if (linkTo.has(cur)) keepLinks.add(linkTo.get(cur));
+                    if (linkTo.has(cur)) { keepLinks.add(linkTo.get(cur)); hops.push(linkTo.get(cur)); }
                 }
             }
             chain.forEach(c => keep.add(c));
-            paths.push({ id, target: want, found: found !== null, chain: found !== null ? chain : chain.slice() });
+            paths.push({ id, target: want, found: found !== null, chain, hops });
             // Everything that hangs below it
             const stack = [...(children.get(id) || [])];
             while (stack.length) {
@@ -936,6 +1001,23 @@ class TopologyGraph {
         this.focusGroup.selectAll('path').data(data).join('path')
             .attr('class', d => `focus-route ${d.cls} status-${d.l.status}`)
             .attr('d', d => routeOf(d.l));
+        // The path's links named in full: interfaces at both ends, speed,
+        // load. Where its own label would be, or halfway along.
+        const util = l => Math.max(l.utilization_in_percent || 0, l.utilization_out_percent || 0);
+        const labels = f ? f.paths.flatMap(p => p.hops.map((l, i) => ({ l, from: p.chain[i] }))) : [];
+        const seen = new Set();
+        const unique = labels.filter(d => !seen.has(d.l) && seen.add(d.l));
+        const tree = this.layoutMode === 'tree';
+        this.focusGroup.selectAll('text').data(unique).join('text')
+            .attr('class', 'focus-label')
+            .attr('x', d => tree && d.l.inTree ? d.l.labelX : (endOf(d.l.source).x + endOf(d.l.target).x) / 2)
+            .attr('y', d => tree && d.l.inTree ? d.l.detailY : (endOf(d.l.source).y + endOf(d.l.target).y) / 2 - 6)
+            .text(d => {
+                // upstream end first in the tree, the path's own direction otherwise
+                const from = tree && d.l.inTree ? d.l.parentId : d.from;
+                const ports = this.portLabel(d.l, from);
+                return `${ports ? ports + ' · ' : ''}${this.formatBandwidth(d.l.total_bandwidth_mbps)} ${util(d.l).toFixed(0)}%`;
+            });
     }
 
     // What the page shows above the map: each focused device's path, named
@@ -949,7 +1031,12 @@ class TopologyGraph {
         return {
             ids: f.ids,
             impactCount: f.impact.size,
-            paths: f.paths.map(p => ({ ...p, chain: p.chain.map(view) })),
+            paths: f.paths.map(p => ({
+                ...p,
+                chain: p.chain.map(view),
+                // each hop's interfaces: chain[i]'s end, then chain[i + 1]'s
+                hops: p.hops.map((l, i) => this.portsOf(l, p.chain[i])),
+            })),
         };
     }
 

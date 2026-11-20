@@ -1137,3 +1137,31 @@
     color: var(--t-on-accent);
     border-color: var(--t-accent);
 }
+
+/* ------------------------------------------------------ interfaces */
+
+/* A link's label: speed and load; zoomed in, its interfaces as well */
+:root .lbl-detail { display: none; }
+:root #topology-svg.zoom-detail .lbl-detail { display: inline; }
+:root #topology-svg.zoom-detail .lbl-short { display: none; }
+
+/* In focus the path's links carry their own, full label (drawn with the
+   route), so the usual one steps aside */
+:root #topology-svg.focus-mode .link-group.focus-keep text { display: none; }
+:root .focus-label {
+    font-family: var(--t-mono);
+    font-size: 10px;
+    font-weight: 700;
+    fill: var(--t-ink);
+    paint-order: stroke;
+    stroke: var(--t-canvas);
+    stroke-width: 4px;
+    stroke-linejoin: round;
+    pointer-events: none;
+}
+:root .focus-port {
+    font-family: var(--t-mono);
+    font-size: 0.72rem;
+    color: var(--t-ink-2);
+    white-space: nowrap;
+}

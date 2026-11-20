@@ -503,8 +503,17 @@ class App {
         bar.classList.toggle('auto', auto);
         const typeName = { wlc: t('wlc'), nvr: t('nvr'), core: t('core') };
         const paths = info.paths.map(p => {
-            const hops = p.chain.map(h => `<span class="focus-hop ${h.status === 'offline' ? 'offline' : ''}" data-id="${escapeHtml(h.id)}">${escapeHtml(h.hostname)}</span>`)
-                .join('<span class="focus-arrow">→</span>');
+            // device, then the interfaces joining it to the next one:
+            //   ap-31  Gi0/1 ⇄ Gi0/45  access-sw-01 ...
+            const hops = p.chain.map((h, i) => {
+                const hop = `<span class="focus-hop ${h.status === 'offline' ? 'offline' : ''}" data-id="${escapeHtml(h.id)}">${escapeHtml(h.hostname)}</span>`;
+                if (i === p.chain.length - 1) return hop;
+                const ports = p.hops[i];
+                const via = ports && (ports.near || ports.far)
+                    ? `<span class="focus-port">${escapeHtml(ports.near || '?')} ⇄ ${escapeHtml(ports.far || '?')}${ports.more ? ` +${ports.more}` : ''}</span>`
+                    : '<span class="focus-arrow">→</span>';
+                return hop + via;
+            }).join('');
             const missing = p.found ? '' : ` <span class="focus-arrow">${escapeHtml(t('focusNoTarget').replace('{t}', typeName[p.target] || p.target))}</span>`;
             return `<div class="focus-path">${hops}${missing}</div>`;
         }).join('');

@@ -556,6 +556,10 @@ def test_the_map_page_has_focus_and_rotation_wired_up():
     assert "/devices?status=offline" in app_js
     for method in ("focusOn(", "clearFocus(", "zoomToFocus(", "computeFocus("):
         assert method in topo_js
+    # interfaces: in the focused path, and on every link once zoomed in
+    for needle in ("portLabel(", "shortPort(", "lbl-detail", "zoom-detail", "focus-label"):
+        assert needle in topo_js, needle
+    assert "focus-port" in app_js
     # the tree is the default layout now
     assert "saved === 'force' ? 'force' : 'tree'" in topo_js
     for key in ("autoFocus", "rotate", "focusLabel", "focusAutoLabel", "focusClear",
