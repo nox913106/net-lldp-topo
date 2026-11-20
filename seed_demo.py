@@ -60,8 +60,24 @@ FIRMWARE_VERSIONS = {
 }
 
 
-async def seed_demo_data():
-    """Create ~100 demo devices with proper hierarchy"""
+# The fixed part of the demo network: 2 core, 6 distribution, 3 firewalls,
+# 3 routers, 2 load balancers, 4 servers, 4 VMs, 8 cameras
+FIXED_DEVICES = 32
+
+
+def access_and_ap_counts(total):
+    """
+    Split what --devices leaves after the fixed part between access switches
+    and access points, in the default demo's proportion (42 : 50).
+    """
+    rest = max(2, total - FIXED_DEVICES)
+    access = max(1, round(rest * 42 / 92))
+    return access, rest - access
+
+
+async def seed_demo_data(total=124):
+    """Create `total` demo devices with proper hierarchy (124 by default)"""
+    n_access, n_ap = access_and_ap_counts(total)
     print("Dropping and recreating all tables...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -128,24 +144,18 @@ async def seed_demo_data():
         print(f"  Created {len(dist_switches)} distribution switches")
         
         # =============================================
-        # LAYER 3: Access Switches (42) - 14 per floor
-        # Floor 1: access-sw-01 to 14 -> dist-sw-01, dist-sw-02
-        # Floor 2: access-sw-15 to 28 -> dist-sw-03, dist-sw-04
-        # Floor 3: access-sw-29 to 42 -> dist-sw-05, dist-sw-06
+        # LAYER 3: Access Switches - a third per floor (42 by default)
+        # Floor 1 -> dist-sw-01, dist-sw-02
+        # Floor 2 -> dist-sw-03, dist-sw-04
+        # Floor 3 -> dist-sw-05, dist-sw-06
         # =============================================
         access_switches = []
         floor_assignments = {}  # Track which floor each access switch belongs to
+        per_floor = -(-n_access // 3)  # ceiling
         
-        for i in range(1, 43):
-            if i <= 14:
-                floor = 1
-                parent_dist = dist_switches[(i - 1) % 2]  # dist 0 or 1
-            elif i <= 28:
-                floor = 2
-                parent_dist = dist_switches[2 + ((i - 15) % 2)]  # dist 2 or 3
-            else:
-                floor = 3
-                parent_dist = dist_switches[4 + ((i - 29) % 2)]  # dist 4 or 5
+        for i in range(1, n_access + 1):
+            floor = min(3, (i - 1) // per_floor + 1)
+            parent_dist = dist_switches[(floor - 1) * 2 + ((i - 1) % 2)]
             
             vendor = random.choice(['cisco_ios', 'hp_aruba', 'extreme'])
             is_offline = random.random() < 0.05
@@ -174,10 +184,10 @@ async def seed_demo_data():
         print(f"  Created {len(access_switches)} access switches")
         
         # =============================================
-        # LAYER 4: Access Points (50) - connected to access switches
+        # LAYER 4: Access Points (50 by default) - connected to access switches
         # =============================================
         aps = []
-        for i in range(1, 51):
+        for i in range(1, n_ap + 1):
             parent_access = access_switches[(i - 1) % len(access_switches)]
             
             device = Device(
@@ -580,11 +590,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Seed demo data")
     parser.add_argument("--cascade", action="store_true", help="Enable cascade offline scenario")
     parser.add_argument("--seed", type=int, default=None, help="Random seed, for the same data every run")
+    parser.add_argument("--devices", type=int, default=124,
+                        help=f"How many devices in total (at least {FIXED_DEVICES + 2}; default 124)")
     args = parser.parse_args()
     if args.seed is not None:
         random.seed(args.seed)
     
-    asyncio.run(seed_demo_data())
+    asyncio.run(seed_demo_data(args.devices))
     
     if args.cascade:
         asyncio.run(enable_cascade_offline_scenario())
