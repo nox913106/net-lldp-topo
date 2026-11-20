@@ -988,6 +988,48 @@
     :root .user-menu-name { max-width: 7rem; }
 }
 
+/* ------------------------------------------------------- tree layout */
+
+/* The shared trunk and buses: structure, not status, so a quiet grid line */
+:root .tree-bus {
+    fill: none;
+    stroke: var(--t-reticle);
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+}
+
+/* A link that is not part of the tree (a second uplink, core to core):
+   hidden until one of its devices is pointed at. (Its status class is how
+   full it is, not whether it is up, so "critical" is no reason to show it.) */
+:root .link-extra { display: none; }
+:root .link-extra.show { display: inline; }
+:root .link-extra .link {
+    stroke-opacity: 0.85;
+    stroke-width: 2 !important;
+    stroke-dasharray: 3 5;
+    animation: none;
+}
+
+/* The label beside each uplink, with a halo so a line under it cannot cut it */
+:root .tree-link-label {
+    font-size: 9px;
+    font-weight: 700;
+    paint-order: stroke;
+    stroke: var(--t-canvas);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+}
+
+/* Halo behind every device label, for the same reason */
+:root .node-hostname,
+:root .node-ip,
+:root .node-vendor {
+    paint-order: stroke;
+    stroke: var(--t-canvas);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+}
+
 /* ---------------------------------------------------------------- motion */
 
 @media (prefers-reduced-motion: reduce) {

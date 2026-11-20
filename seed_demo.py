@@ -61,8 +61,9 @@ FIRMWARE_VERSIONS = {
 
 
 # The fixed part of the demo network: 2 core, 6 distribution, 3 firewalls,
-# 3 routers, 2 load balancers, 4 servers, 4 VMs, 8 cameras
-FIXED_DEVICES = 32
+# 3 routers, 2 load balancers, 4 servers, 4 VMs, 8 cameras, 2 wireless LAN
+# controllers and 1 NVR
+FIXED_DEVICES = 35
 
 
 def access_and_ap_counts(total):
@@ -303,15 +304,19 @@ async def seed_demo_data(total=124):
         for d in servers:
             await db.refresh(d)
         vms = [make(f"vm-app-{i:02d}", f"192.168.152.{i}", "vmware", "vm", servers[(i - 1) % 2]) for i in range(1, 5)]
+        # The controllers the access points tunnel to, and the recorder the
+        # cameras stream to - what a focus path from an AP or a camera ends at
+        wlcs = [make(f"wlc-{i:02d}", f"192.168.70.{i}", "ruckus", "wlc", core_switches[i - 1]) for i in (1, 2)]
+        nvrs = [make("nvr-01", "192.168.60.200", "hikvision", "nvr", core_switches[1])]
         cameras = [make(f"cam-{i:02d}", f"192.168.60.{i}", "hikvision", "camera",
                         access_switches[(i * 5) % len(access_switches)], offline=(i == 3)) for i in range(1, 9)]
         await db.commit()
-        for d in vms + cameras:
+        for d in vms + cameras + wlcs + nvrs:
             await db.refresh(d)
-        print(f"  Created {len(lbs)} load balancers, {len(servers)} servers, {len(vms)} VMs, {len(cameras)} cameras")
+        print(f"  Created {len(lbs)} load balancers, {len(servers)} servers, {len(vms)} VMs, {len(cameras)} cameras, {len(wlcs)} WLCs, {len(nvrs)} NVR")
 
         all_devices = (core_switches + dist_switches + access_switches + aps + firewalls + routers
-                       + lbs + servers + vms + cameras)
+                       + lbs + servers + vms + cameras + wlcs + nvrs)
         print(f"\nTotal devices: {len(all_devices)}")
         
         # =============================================
@@ -323,7 +328,8 @@ async def seed_demo_data(total=124):
         for device in all_devices:
             if device.parent_device_id:
                 # Create link from parent to child
-                bw = 10000 if device.device_type in ['distribution', 'firewall', 'router', 'loadbalancer', 'server', 'vm'] else 1000
+                bw = 10000 if device.device_type in ['distribution', 'firewall', 'router', 'loadbalancer',
+                                                     'server', 'vm', 'wlc', 'nvr'] else 1000
                 link = MergedLink(
                     device_a_id=device.parent_device_id,
                     device_b_id=device.id,
@@ -335,6 +341,23 @@ async def seed_demo_data(total=124):
                 links.append(link)
                 db.add(link)
         
+        # Every distribution switch also has an uplink to the other core, as in
+        # any network built for redundancy. These are the links that are not
+        # part of the tree, and the layout has to show them without letting
+        # them tangle the picture.
+        if len(core_switches) >= 2:
+            for i, dist in enumerate(dist_switches):
+                other = core_switches[1 - i % 2]  # the core it is not a child of
+                link = MergedLink(
+                    device_a_id=other.id, device_b_id=dist.id,
+                    port_pairs=[{"a": f"Te1/{i + 10}", "b": "Te0/2"}],
+                    total_bandwidth_mbps=10000,
+                    utilization_in_percent=random_utilization(),
+                    utilization_out_percent=random_utilization(),
+                )
+                links.append(link)
+                db.add(link)
+
         # Core-to-core link
         if len(core_switches) >= 2:
             link = MergedLink(

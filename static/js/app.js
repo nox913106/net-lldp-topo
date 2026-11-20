@@ -128,6 +128,16 @@ class App {
         });
 
         // Fit button
+        // Tree or free layout; the choice is remembered (topology.js)
+        const layoutButtons = document.querySelectorAll('.layout-btn');
+        const markLayout = () => layoutButtons.forEach(b =>
+            b.classList.toggle('active', b.dataset.layout === this.topology.layoutMode));
+        layoutButtons.forEach(b => b.addEventListener('click', () => {
+            this.topology.setLayout(b.dataset.layout);
+            markLayout();
+        }));
+        markLayout();
+
         document.getElementById('fit-btn')?.addEventListener('click', () => {
             this.topology.fitView();
         });

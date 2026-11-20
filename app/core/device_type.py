@@ -18,7 +18,12 @@ from typing import Optional
 # Checked in order; the first token that matches decides.
 _NAME_HINTS = (
     (("fw", "firewall", "fgt"), "firewall"),
-    (("cam", "cctv", "camera", "ipc", "nvr"), "camera"),
+    # Before camera and ap: an NVR is named for the cameras it records and a
+    # WLC for the access points it runs, and both are what a focus path from
+    # one of those ends at
+    (("nvr", "dvr"), "nvr"),
+    (("wlc", "smartzone", "vsz", "wifictl"), "wlc"),
+    (("cam", "cctv", "camera", "ipc"), "camera"),
     (("lb", "slb", "adc", "loadbalancer"), "loadbalancer"),
     (("core", "spine"), "core"),
     (("dist", "distribution", "agg", "aggregation"), "distribution"),
@@ -37,8 +42,8 @@ _VENDOR_TYPES = {
 
 
 def guess_device_type(hostname: Optional[str], vendor: Optional[str] = None) -> str:
-    """core / distribution / access / router / firewall / ap / tor /
-    camera / loadbalancer / server / vm"""
+    """core / distribution / access / router / firewall / ap / wlc / tor /
+    camera / nvr / loadbalancer / server / vm"""
     # Whole tokens only, with any trailing number dropped: "core-sw-01" and
     # "dist2" say what they are, "decorator" and "scoreboard" do not.
     tokens = [

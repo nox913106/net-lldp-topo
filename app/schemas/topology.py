@@ -37,6 +37,10 @@ class TopologyNode(BaseModel):
     cpu_percent: Optional[float] = None
     memory_percent: Optional[float] = None
     alert_count: int = 0
+    # The upstream device, as discovery found it (the device whose neighbour
+    # table this one was learned from). The map's tree layout hangs each
+    # device under it; None for a core or anything added by hand.
+    parent_id: Optional[str] = None
     # For aggregated nodes
     is_aggregated: bool = False
     child_count: int = 0

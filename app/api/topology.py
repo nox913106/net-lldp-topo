@@ -121,7 +121,8 @@ async def get_topology(
             status=device.status or "unknown",
             cpu_percent=device.cpu_percent,
             memory_percent=device.memory_percent,
-            alert_count=alert_counts.get(device.id, 0)
+            alert_count=alert_counts.get(device.id, 0),
+            parent_id=str(device.parent_device_id) if device.parent_device_id else None,
         ))
     
     # Get merged links between these devices

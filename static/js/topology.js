@@ -18,6 +18,14 @@ class TopologyGraph {
         this.onNodeClick = null;
         this.onLinkClick = null;
 
+        // 'tree' (devices hung under their upstream device) or 'force' (the
+        // free layout). Remembered per browser. The tree is a preview for
+        // now, so the free layout stays the default until it is adopted.
+        let saved = null;
+        try { saved = localStorage.getItem('topologyLayout'); } catch (e) { /* blocked */ }
+        this.layoutMode = saved === 'tree' ? 'tree' : 'force';
+        this.treeBuses = [];
+
         // Device icons (Cisco-style SVG paths)
         // Device icons: tactical line art, one stroke weight, drawn in
         // currentColor so the stylesheet colours each by the device's status.
@@ -62,6 +70,24 @@ class TopologyGraph {
                 <rect class="s" x="29" y="23" width="6" height="6"/>
                 <path class="l" d="M25.6 19.6 A9 9 0 0 0 25.6 32.4 M38.4 19.6 A9 9 0 0 1 38.4 32.4"/>
                 <path class="l" d="M20.7 14.7 A16 16 0 0 0 20.7 37.3 M43.3 14.7 A16 16 0 0 1 43.3 37.3"/>`),
+            // A controller chassis with the radio it manages rising from it
+            wlc: icon(`
+                <path class="t l" d="M8 30 H52 L56 34 V54 H12 L8 50 Z"/>
+                <path class="s" d="M14 47 h5 v3 h-5 z M22 47 h5 v3 h-5 z M30 47 h5 v3 h-5 z"/>
+                <path class="l" d="M38 40 H50 M38 45 H46"/>
+                <path class="l" d="M32 30 V22"/>
+                <rect class="s" x="29" y="17" width="6" height="6"/>
+                <path class="l" d="M25.3 13.3 A9.5 9.5 0 0 0 25.3 26.7 M38.7 13.3 A9.5 9.5 0 0 1 38.7 26.7"/>
+                <path class="l" d="M20.4 8.4 A16.5 16.5 0 0 0 20.4 31.6 M43.6 8.4 A16.5 16.5 0 0 1 43.6 31.6"/>`, 'WLC'),
+            // A recorder: drive bays, a reel of footage, the record lamp
+            nvr: icon(`
+                <path class="t l" d="M8 18 H52 L56 22 V50 H12 L8 46 Z"/>
+                <path class="l" d="M14 24 H34 V44 H14 Z"/>
+                <path class="l" d="M14 29 H34 M14 34 H34 M14 39 H34"/>
+                <circle class="l" cx="45" cy="31" r="6"/>
+                <circle class="s" cx="45" cy="31" r="2"/>
+                <path class="l" d="M39 42 H51"/>
+                <rect class="s" x="48" y="45" width="3" height="3"/>`, 'NVR'),
             // A housing on a wall arm, lens forward, recording lamp lit
             camera: icon(`
                 <path class="l" d="M12 20 L36 17"/>
@@ -162,6 +188,7 @@ class TopologyGraph {
 
     handleResize() {
         if (!this.measure()) return;
+        if (this.layoutMode === 'tree') return;
         this.simulation.force('center', d3.forceCenter(this.width / 2, this.height / 2));
         this.simulation.force('x').x(this.width / 2);
         this.simulation.force('y').y(this.height / 2);
@@ -182,6 +209,11 @@ class TopologyGraph {
         this.links = data.links || [];
         this.render();
         this.autoFit = fit;
+        // The tree is laid out at once, there is no simulation to wait for
+        if (this.layoutMode === 'tree' && fit) {
+            this.autoFit = false;
+            this.fitView();
+        }
     }
 
     getDeviceType(node) {
@@ -191,6 +223,8 @@ class TopologyGraph {
             access: 'access', tor: 'access', switch: 'access', l2: 'access',
             router: 'router', firewall: 'firewall', ap: 'ap', wireless: 'ap',
             camera: 'camera', cctv: 'camera',
+            nvr: 'nvr', dvr: 'nvr',
+            wlc: 'wlc', wireless_controller: 'wlc', controller: 'wlc',
             loadbalancer: 'loadbalancer', load_balancer: 'loadbalancer', lb: 'loadbalancer',
             server: 'server', vm: 'vm', virtual_machine: 'vm'
         };
@@ -199,6 +233,8 @@ class TopologyGraph {
         if (type.includes('dist')) return 'distribution';
         if (type.includes('router')) return 'router';
         if (type.includes('firewall')) return 'firewall';
+        if (type.includes('nvr') || type.includes('recorder')) return 'nvr';
+        if (type.includes('controller') || type.includes('wlc')) return 'wlc';
         if (type.includes('camera') || type.includes('cctv')) return 'camera';
         if (type.includes('balanc')) return 'loadbalancer';
         if (type.includes('server')) return 'server';
@@ -226,42 +262,59 @@ class TopologyGraph {
 
         if (this.nodes.length === 0) return;
 
+        const tree = this.layoutMode === 'tree';
+        if (tree) {
+            this.simulation.stop();
+            this.computeTreeLayout();
+            // The shared trunk and buses, under the links
+            this.linksGroup.append('g').attr('class', 'tree-buses')
+                .selectAll('path').data(this.treeBuses).join('path')
+                .attr('class', 'tree-bus').attr('d', d => d);
+        }
+
         // Render links
         const linkElements = this.linksGroup.selectAll('g.link-group')
             .data(this.links)
             .join('g')
-            .attr('class', 'link-group');
+            .attr('class', d => `link-group${tree && !d.inTree ? ' link-extra' : ''}`);
 
-        linkElements.append('line')
+        linkElements.append('path')
             .attr('class', d => `link status-${d.status}`)
             .attr('stroke-width', d => this.getLinkWidth(d.total_bandwidth_mbps))
             .on('click', (event, d) => {
                 if (this.onLinkClick) this.onLinkClick(d);
             });
 
-        // Link bandwidth labels
-        linkElements.append('text')
-            .attr('class', 'link-label')
-            .attr('text-anchor', 'middle')
-            .attr('dy', -8)
-            .text(d => this.formatBandwidth(d.total_bandwidth_mbps));
+        const utilization = d => Math.max(d.utilization_in_percent || 0, d.utilization_out_percent || 0);
+        if (tree) {
+            // One small label beside each uplink, not two in the middle of it
+            linkElements.filter(d => d.inTree).append('text')
+                .attr('class', 'link-label tree-link-label')
+                .attr('x', d => d.labelX)
+                .attr('y', d => d.labelY)
+                .text(d => `${this.formatBandwidth(d.total_bandwidth_mbps)} ${utilization(d).toFixed(0)}%`);
+        } else {
+            // Link bandwidth labels
+            linkElements.append('text')
+                .attr('class', 'link-label')
+                .attr('text-anchor', 'middle')
+                .attr('dy', -8)
+                .text(d => this.formatBandwidth(d.total_bandwidth_mbps));
 
-        // Link utilization labels
-        linkElements.append('text')
-            .attr('class', 'link-util')
-            .attr('text-anchor', 'middle')
-            .attr('dy', 12)
-            .text(d => {
-                const maxUtil = Math.max(d.utilization_in_percent || 0, d.utilization_out_percent || 0);
-                return `${maxUtil.toFixed(0)}%`;
-            });
+            // Link utilization labels
+            linkElements.append('text')
+                .attr('class', 'link-util')
+                .attr('text-anchor', 'middle')
+                .attr('dy', 12)
+                .text(d => `${utilization(d).toFixed(0)}%`);
+        }
 
         // Render nodes
         const nodeElements = this.nodesGroup.selectAll('g.node')
             .data(this.nodes)
             .join('g')
             .attr('class', d => `node device-${this.getDeviceType(d)} status-${d.status === 'managed' ? 'online' : d.status}`)
-            .call(this.drag())
+            .call(tree ? () => {} : this.drag())
             .on('click', (event, d) => {
                 if (this.onNodeClick) this.onNodeClick(d);
             });
@@ -296,8 +349,8 @@ class TopologyGraph {
             .attr('stroke', '#f85149')
             .attr('stroke-width', 2);
 
-        // Vendor label (above icon)
-        nodeElements.append('text')
+        // Vendor label (above icon; free layout only, see TREE above)
+        nodeElements.filter(() => !tree).append('text')
             .attr('dy', -35)
             .attr('text-anchor', 'middle')
             .attr('class', 'node-vendor')
@@ -345,13 +398,27 @@ class TopologyGraph {
             .attr('fill', 'white')
             .text(d => d.alert_count);
 
+        if (tree) {
+            // A link outside the tree (a second uplink, core to core) is shown
+            // while either of its devices is under the pointer, and always
+            // when it is down - otherwise these are what tangle the picture
+            const endOf = e => (typeof e === 'object' ? e.id : e);
+            nodeElements
+                .on('mouseenter.extra', (event, d) => linkElements
+                    .classed('show', l => endOf(l.source) === d.id || endOf(l.target) === d.id))
+                .on('mouseleave.extra', () => linkElements.classed('show', false));
+            const byId = new Map(this.nodes.map(n => [n.id, n]));
+            const end = e => (typeof e === 'object' ? e : byId.get(e));
+            linkElements.select('path').attr('d', d => d.route ||
+                `M${end(d.source).x},${end(d.source).y} L${end(d.target).x},${end(d.target).y}`);
+            nodeElements.attr('transform', d => `translate(${d.x}, ${d.y})`);
+            return;
+        }
+
         // Simulation tick handler
         this.simulation.nodes(this.nodes).on('tick', () => {
-            linkElements.select('line')
-                .attr('x1', d => d.source.x)
-                .attr('y1', d => d.source.y)
-                .attr('x2', d => d.target.x)
-                .attr('y2', d => d.target.y);
+            linkElements.select('path')
+                .attr('d', d => `M${d.source.x},${d.source.y} L${d.target.x},${d.target.y}`);
 
             linkElements.selectAll('text')
                 .attr('x', d => (d.source.x + d.target.x) / 2)
@@ -362,6 +429,325 @@ class TopologyGraph {
 
         this.simulation.force('link').links(this.links);
         this.simulation.alpha(this.carriedOver ? 0.1 : 1).restart();
+    }
+
+    // -- Tree layout -----------------------------------------------------------
+    //
+    // A force layout knows nothing about up and down: a 100-device map of what
+    // is in reality a tree came out with 196 crossing lines and 40 lines run
+    // through devices they have nothing to do with. This lays the tree out as
+    // a compact org chart instead:
+    //
+    //   * each device hangs under its upstream device (parent_id, from
+    //     discovery); the cores are the roots
+    //   * a parent sits at the top left of its block, its children in rows
+    //     below and indented, joined by a right-angled bus - no tree link can
+    //     cross another or pass through a device
+    //   * a parent with many children wraps them into several rows, so the
+    //     picture stays close to the screen's shape instead of becoming one
+    //     very long row that the fit then shrinks to unreadable
+    //   * links that are not part of the tree (a distribution switch's second
+    //     uplink, the core-to-core link) are drawn as faint dashed lines
+    //
+    // Positions follow from the structure, so the same network is drawn the
+    // same way every time.
+
+    static TREE = {
+        // A device's box: the icon, name and IP below it. The vendor is not
+        // drawn in the tree (it is in the device panel): 100 devices fitted
+        // to one screen cannot spare the line.
+        W: 126,
+        H: 92,
+        CY: 33,          // the icon's centre, from the top of the box
+        INDENT: 32,      // children start this far right of their parent
+        GAP_X: 14,
+        GAP_Y: 34,       // the bus runs in this gap, above each row
+        TRUNK: 8,        // the trunk's x, from the left of the parent's box
+    };
+
+    static TYPE_ORDER = {
+        core: 0, router: 1, firewall: 2, distribution: 3, loadbalancer: 4, wlc: 5,
+        nvr: 6, server: 7, access: 8, vm: 9, ap: 10, camera: 11, unknown: 12
+    };
+
+    setLayout(mode) {
+        this.layoutMode = mode === 'force' ? 'force' : 'tree';
+        try { localStorage.setItem('topologyLayout', this.layoutMode); } catch (e) { /* blocked */ }
+        // A fresh layout either way: carried-over positions belong to the other one
+        for (const n of this.nodes) { n.fx = null; n.fy = null; }
+        this.carriedOver = false;
+        this.render();
+        if (this.layoutMode === 'tree') this.fitView();
+        else this.autoFit = true;
+    }
+
+    // Which link is which device's uplink, and every device's children
+    buildTree() {
+        const byId = new Map(this.nodes.map(n => [n.id, n]));
+        const adjacency = new Map(this.nodes.map(n => [n.id, []]));
+        const endId = e => (typeof e === 'object' ? e.id : e);
+        for (const link of this.links) {
+            const a = endId(link.source), b = endId(link.target);
+            if (adjacency.has(a) && adjacency.has(b)) {
+                adjacency.get(a).push([b, link]);
+                adjacency.get(b).push([a, link]);
+            }
+        }
+        const rank = n => TopologyGraph.TYPE_ORDER[this.getDeviceType(n)] ?? 12;
+        const parent = new Map();
+        const uplink = new Map();
+
+        // 1. The upstream device discovery recorded, when it is on this map
+        //    and actually cabled to the device
+        for (const n of this.nodes) {
+            if (!n.parent_id || !byId.has(n.parent_id)) continue;
+            const via = adjacency.get(n.id).find(([other]) => other === n.parent_id);
+            if (via) { parent.set(n.id, n.parent_id); uplink.set(n.id, via[1]); }
+        }
+        // ...without cycles (a stale parent_id can point back down the tree)
+        for (const n of this.nodes) {
+            const seen = new Set([n.id]);
+            let cur = parent.get(n.id);
+            while (cur !== undefined) {
+                if (seen.has(cur)) { parent.delete(n.id); uplink.delete(n.id); break; }
+                seen.add(cur);
+                cur = parent.get(cur);
+            }
+        }
+        // 2. Everything else: breadth first from the devices with no parent,
+        //    highest tier first, so a device hangs under the closest one.
+        //    A core with no recorded parent is a root in its own right: the
+        //    core-to-core link must not hang one core under the other.
+        const roots = this.nodes.filter(n => !parent.has(n.id)).sort((a, b) => rank(a) - rank(b) ||
+            adjacency.get(b.id).length - adjacency.get(a.id).length);
+        const placed = new Set();
+        for (const r of roots) if (this.getDeviceType(r) === 'core') placed.add(r.id);
+        const markTree = id => {
+            const stack = [id];
+            while (stack.length) {
+                const cur = stack.pop();
+                if (placed.has(cur)) continue;
+                placed.add(cur);
+                for (const n of this.nodes) if (parent.get(n.id) === cur) stack.push(n.id);
+            }
+        };
+        const realRoots = [];
+        for (const r of roots) {
+            const isCore = this.getDeviceType(r) === 'core';
+            if (placed.has(r.id) && !isCore) continue;
+            if (isCore && realRoots.includes(r.id)) continue;
+            realRoots.push(r.id);
+            placed.delete(r.id);
+            markTree(r.id);
+            const queue = [r.id];
+            while (queue.length) {
+                const cur = queue.shift();
+                const sub = [cur];
+                // the whole subtree already hanging under cur is reachable too
+                for (let i = 0; i < sub.length; i++) {
+                    for (const n of this.nodes) if (parent.get(n.id) === sub[i]) sub.push(n.id);
+                }
+                for (const s of sub) {
+                    for (const [other, link] of adjacency.get(s)) {
+                        // never re-parent a device whose upstream discovery
+                        // recorded (it hangs under its own root's walk)
+                        if (placed.has(other) || parent.has(other)) continue;
+                        parent.set(other, s);
+                        uplink.set(other, link);
+                        markTree(other);
+                        queue.push(other);
+                    }
+                }
+            }
+        }
+        const children = new Map(this.nodes.map(n => [n.id, []]));
+        for (const n of this.nodes) if (parent.has(n.id)) children.get(parent.get(n.id)).push(n.id);
+        const natural = (a, b) => byId.get(a).hostname.localeCompare(byId.get(b).hostname, undefined, { numeric: true });
+        for (const list of children.values()) {
+            list.sort((a, b) => rank(byId.get(a)) - rank(byId.get(b)) || natural(a, b));
+        }
+        realRoots.sort((a, b) => rank(byId.get(a)) - rank(byId.get(b)) || natural(a, b));
+        const treeLinks = new Set(uplink.values());
+        return { byId, roots: realRoots, children, uplink, treeLinks };
+    }
+
+    computeTreeLayout() {
+        const T = TopologyGraph.TREE;
+        const { byId, roots, children, uplink, treeLinks } = this.buildTree();
+        const blocks = new Map();
+        // Every block aims for the shape of the map on screen, so that when
+        // the whole tree is fitted it fills the space instead of a corner of it
+        const screenAspect = Math.max(1.3, this.width / Math.max(1, this.height));
+        let screen = screenAspect;
+
+        // A child group is either a device with its own subtree (a block),
+        // or a column of end devices - access points, cameras, servers -
+        // stacked under one another on a vertical line, like a file tree.
+        // Stacking the ends is what keeps the picture dense: a row of them
+        // would make every row as wide as the longest list of APs.
+        const STACK = 8;                           // between stacked devices
+        const MAX_STACK = 4;                       // devices per column
+        const items = new Map();                   // id or 'col:<parent>:<i>' -> {w, h, ids?}
+        const sizeOf = key => items.get(key) || blocks.get(key);
+
+        const rowsOf = (keys, limit) => {
+            const rows = [];
+            let row = [], width = 0;
+            for (const key of keys) {
+                const w = sizeOf(key).w;
+                if (row.length && width + T.GAP_X + w > limit) { rows.push(row); row = []; width = 0; }
+                width += (row.length ? T.GAP_X : 0) + w;
+                row.push(key);
+            }
+            if (row.length) rows.push(row);
+            return rows;
+        };
+        const limitFor = (keys, aspect) => {
+            const area = keys.reduce((s, k) => s + (sizeOf(k).w + T.GAP_X) * (sizeOf(k).h + T.GAP_Y), 0);
+            const widest = Math.max(...keys.map(k => sizeOf(k).w));
+            return Math.max(widest, Math.sqrt(area * aspect));
+        };
+        const rowWidth = row => row.reduce((s, k, i) => s + sizeOf(k).w + (i ? T.GAP_X : 0), 0);
+        const rowHeight = row => Math.max(...row.map(k => sizeOf(k).h));
+        // The row width that makes this block biggest once the map is fitted
+        // to the screen: try every place a row could break, keep the one
+        // whose width/height binds least. Estimating from area alone came
+        // out much too tall, because a row is as tall as its tallest member.
+        const bestRows = (keys, extraW, extraH) => {
+            let best = null;
+            let total = 0;
+            const candidates = new Set();
+            for (const k of keys) { total += sizeOf(k).w + T.GAP_X; candidates.add(total); }
+            candidates.add(Math.max(...keys.map(k => sizeOf(k).w)));
+            for (const limit of candidates) {
+                const rows = rowsOf(keys, limit);
+                const w = extraW + Math.max(...rows.map(rowWidth));
+                const h = extraH + rows.reduce((s, r) => s + T.GAP_Y + rowHeight(r), 0);
+                const cost = Math.max(w / screen, h);
+                if (!best || cost < best.cost) best = { rows, cost };
+            }
+            return best.rows;
+        };
+
+        // Sizes, bottom up
+        const measure = id => {
+            const kids = children.get(id);
+            kids.forEach(measure);
+            if (!kids.length) { blocks.set(id, { w: T.W, h: T.H }); return; }
+            const ends = kids.filter(k => !children.get(k).length);
+            // Subtrees tallest first: a row is as tall as its tallest member,
+            // so like sizes together waste the least space
+            const inner = kids.filter(k => children.get(k).length)
+                .sort((a, b) => blocks.get(b).h - blocks.get(a).h);
+            const keys = [];
+            const columns = Math.ceil(ends.length / MAX_STACK);
+            for (let c = 0; c < columns; c++) {
+                const ids = ends.slice(c * Math.ceil(ends.length / columns), (c + 1) * Math.ceil(ends.length / columns));
+                if (!ids.length) continue;
+                const key = `col:${id}:${c}`;
+                items.set(key, { w: T.W, h: ids.length * T.H + (ids.length - 1) * STACK, ids });
+                keys.push(key);
+            }
+            keys.push(...inner);
+            const rows = bestRows(keys, T.INDENT, T.H);
+            const w = Math.max(T.W, T.INDENT + Math.max(...rows.map(rowWidth)));
+            const h = T.H + rows.reduce((s, r) => s + T.GAP_Y + rowHeight(r), 0);
+            blocks.set(id, { w, h, rows });
+        };
+        // Each block is shaped on its own, which is not the same as the best
+        // shape for the whole map. So lay it out for a range of target shapes
+        // and keep the one that comes out biggest when fitted to the screen.
+        const PAD = 160;
+        let bestFactor = 1, bestScale = -1;
+        for (const factor of [0.35, 0.5, 0.7, 1, 1.4, 2, 2.8]) {
+            screen = screenAspect * factor;
+            blocks.clear();
+            items.clear();
+            roots.forEach(measure);
+            const rows = bestRows(roots, 0, 0);
+            const w = Math.max(...rows.map(rowWidth)) + T.GAP_X * 2 * (Math.max(...rows.map(r => r.length)) - 1);
+            const h = rows.reduce((s, r) => s + rowHeight(r) + T.GAP_Y * 2, 0);
+            const scale = Math.min(this.width / (w + PAD), this.height / (h + PAD));
+            if (scale > bestScale) { bestScale = scale; bestFactor = factor; }
+        }
+        screen = screenAspect * bestFactor;
+        blocks.clear();
+        items.clear();
+        roots.forEach(measure);
+
+        // Positions, top down
+        const buses = [];
+        const entry = new Map();   // child id -> y its own link starts at (on its bus or column)
+        const place = (id, bx, by) => {
+            const node = byId.get(id);
+            node.x = bx + T.W / 2;
+            node.y = by + T.CY;
+            node.fx = node.x;
+            node.fy = node.y;
+            const block = blocks.get(id);
+            if (!block.rows) return;
+            const trunkX = bx + T.TRUNK;
+            let top = by + T.H;
+            let lastBus = null;
+            for (const row of block.rows) {
+                const busY = top + T.GAP_Y / 2;
+                const rowTop = top + T.GAP_Y;
+                let x = bx + T.INDENT;
+                let lastX = x;
+                for (const key of row) {
+                    const item = items.get(key);
+                    if (item) {
+                        // a column of end devices on one vertical line
+                        let y = rowTop;
+                        let from = busY;
+                        for (const leaf of item.ids) {
+                            place(leaf, x, y);
+                            entry.set(leaf, from);
+                            from = byId.get(leaf).y - 12;
+                            y += T.H + STACK;
+                        }
+                        buses.push(`M${x + T.TRUNK},${busY} V${from}`);
+                    } else {
+                        place(key, x, rowTop);
+                        entry.set(key, busY);
+                    }
+                    lastX = x;
+                    x += sizeOf(key).w + T.GAP_X;
+                }
+                buses.push(`M${trunkX},${busY} H${lastX + T.TRUNK}`);
+                lastBus = busY;
+                top = rowTop + rowHeight(row);
+            }
+            // The trunk leaves the parent from the left of its icon
+            buses.push(`M${node.x - 29},${node.y + 12} H${trunkX} V${lastBus}`);
+        };
+        const top = bestRows(roots, 0, 0);
+        let y = 0;
+        for (const row of top) {
+            let x = 0;
+            for (const id of row) { place(id, x, y); x += blocks.get(id).w + T.GAP_X * 3; }
+            y += rowHeight(row) + T.GAP_Y * 2;
+        }
+
+        // Each tree link is drawn from the bus down into its device's left
+        // side - the part that belongs to it alone, so its colour is its own
+        for (const [childId, link] of uplink) {
+            const child = byId.get(childId);
+            const x = child.x - T.W / 2 + T.TRUNK;
+            const from = entry.get(childId);
+            // Only the part of the line that is this link's alone: from its
+            // bus (or the device above it in a column) into the device
+            link.route = `M${x},${from} V${child.y - 12} H${child.x - 29}`;
+            link.labelX = x + 6;
+            link.labelY = child.y - 12 - 6;
+            link.inTree = true;
+        }
+        for (const link of this.links) {
+            if (treeLinks.has(link)) continue;
+            link.inTree = false;
+            link.route = null;
+        }
+        this.treeBuses = buses;
     }
 
     drag() {
